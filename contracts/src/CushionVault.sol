@@ -38,6 +38,13 @@ contract CushionVault {
 
     mapping(address => mapping(bytes32 => Cover)) internal _covers;
 
+    struct CoverRef {
+        address user;
+        bytes32 key;
+    }
+
+    CoverRef[] internal _coverRefs;
+
     event CoverOpened(address indexed user, bytes32 indexed key, uint8 venue, bytes32 symbol, address keeper, uint128 capPerDay);
     event CoverFunded(address indexed user, bytes32 indexed key, uint128 amount);
     event CoverWithdrawn(address indexed user, bytes32 indexed key, uint128 amount, address to);
@@ -49,12 +56,24 @@ contract CushionVault {
     error OverDailyCap(uint256 used, uint256 cap);
     error InsufficientCover(uint256 have, uint256 need);
     error VenusError(uint256 code);
+    error HorizonTooLong();
+    error BelowMinLoan(uint256 remaining, uint256 minLoan);
 
     constructor(SessionOracle oracle_, IMoolah moolah_, uint32 shieldHorizon_) {
+        if (shieldHorizon_ > 1 days) revert HorizonTooLong();
         sessionOracle = oracle_;
         calendar = oracle_.calendar();
         moolah = moolah_;
         shieldHorizon = shieldHorizon_;
+    }
+
+    function coverCount() external view returns (uint256) {
+        return _coverRefs.length;
+    }
+
+    function coverAt(uint256 i) external view returns (address user, bytes32 key) {
+        CoverRef memory r = _coverRefs[i];
+        return (r.user, r.key);
     }
 
     function cover(address user, bytes32 key) external view returns (Cover memory) {
@@ -67,6 +86,7 @@ contract CushionVault {
     {
         key = keccak256(abi.encode(VENUE_LISTA, mp));
         Cover storage c = _covers[msg.sender][key];
+        if (c.venue == 0) _coverRefs.push(CoverRef(msg.sender, key));
         c.venue = VENUE_LISTA;
         c.mp = mp;
         c.token = mp.loanToken;
@@ -79,6 +99,7 @@ contract CushionVault {
     {
         key = keccak256(abi.encode(VENUE_VENUS, vDebt));
         Cover storage c = _covers[msg.sender][key];
+        if (c.venue == 0) _coverRefs.push(CoverRef(msg.sender, key));
         c.venue = VENUE_VENUS;
         c.vDebt = vDebt;
         c.token = IVToken(vDebt).underlying();
@@ -124,6 +145,7 @@ contract CushionVault {
         c.usedToday += amount;
         c.balance -= amount;
         if (c.venue == VENUE_LISTA) {
+            _checkListaMinLoan(c.mp, user, amount);
             IERC20(c.token).forceApprove(address(moolah), amount);
             moolah.repay(c.mp, amount, 0, user, "");
         } else {
@@ -132,6 +154,19 @@ contract CushionVault {
             if (code != 0) revert VenusError(code);
         }
         emit ShieldedFor(user, key, amount);
+    }
+
+    /// @dev Moolah rejects a repay that leaves a dust loan; surface that as a clear error up front.
+    function _checkListaMinLoan(MarketParams memory mp, address user, uint128 amount) internal {
+        moolah.accrueInterest(mp);
+        bytes32 id = keccak256(abi.encode(mp));
+        (, uint128 shares,) = moolah.position(id, user);
+        (,, uint128 tba, uint128 tbs,,) = moolah.market(id);
+        uint256 debt = (uint256(shares) * (uint256(tba) + 1) + uint256(tbs) + 1e6 - 1) / (uint256(tbs) + 1e6);
+        if (amount >= debt) return;
+        uint256 remaining = debt - amount;
+        uint256 minLoan = moolah.minLoan(mp);
+        if (remaining < minLoan) revert BelowMinLoan(remaining, minLoan);
     }
 
     function _open(Cover storage c, bytes32 key, bytes32 sym, address keeper, uint128 capPerDay, uint128 amount) internal {

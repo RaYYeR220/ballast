@@ -5,9 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {CushionVault} from "../../src/CushionVault.sol";
-import {MarketParams} from "../../src/interfaces/External.sol";
+import {MarketParams, IVToken, IComptroller} from "../../src/interfaces/External.sol";
 
 contract CushionVaultForkTest is ForkBase {
+    using stdJson for string;
+
     CushionVault vault;
     MarketParams mp;
     address user = address(0xA11CE);
@@ -73,5 +75,77 @@ contract CushionVaultForkTest is ForkBase {
         vm.prank(user);
         vault.withdraw(key, 400e18, user);
         assertEq(IERC20(usd1).balanceOf(user), b0 + 400e18);
+    }
+
+    function test_userWithdrawsRemainderAfterShield() public {
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vault.shieldFor(user, key, 200e18);
+        uint256 b0 = IERC20(usd1).balanceOf(user);
+        vm.prank(user);
+        vault.withdraw(key, 200e18, user);
+        assertEq(IERC20(usd1).balanceOf(user), b0 + 200e18);
+        assertEq(vault.cover(user, key).balance, 0);
+    }
+
+    function test_crossUserIsolation() public {
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vm.expectRevert(CushionVault.NoCover.selector); // key exists for `user` only
+        vault.shieldFor(address(0xB0B), key, 100e18);
+        vm.prank(address(0xB0B));
+        vm.expectRevert(abi.encodeWithSelector(CushionVault.InsufficientCover.selector, uint256(0), uint256(1)));
+        vault.withdraw(key, 1, address(0xB0B)); // someone else's key holds nothing for them
+    }
+
+    function test_listaMinLoanGivesClearError() public {
+        vm.startPrank(user);
+        vault.openListaCover(mp, "NVDA", keeper, 2000e18, 0);
+        vault.topUp(key, 900e18); // balance now 1300
+        vm.stopPrank();
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vm.expectPartialRevert(CushionVault.BelowMinLoan.selector); // would leave ~$5 of debt
+        vault.shieldFor(user, key, 995e18);
+    }
+
+    function test_horizonBounded() public {
+        vm.expectRevert(CushionVault.HorizonTooLong.selector);
+        new CushionVault(sOracle, moolah, 1 days + 1);
+    }
+
+    function test_enumeration() public {
+        assertEq(vault.coverCount(), 1);
+        (address u, bytes32 k) = vault.coverAt(0);
+        assertEq(u, user);
+        assertEq(k, key);
+        vm.prank(user);
+        vault.openListaCover(mp, "NVDA", keeper, 100e18, 0); // reopening the same cover does not duplicate
+        assertEq(vault.coverCount(), 1);
+    }
+
+    function test_venusCover_repaysOnBehalf() public {
+        address vT = cfg.readAddress(".venus.vTSLAB");
+        address vU = cfg.readAddress(".venus.vUSDT");
+        address userV = address(0xB0B);
+        _fund(tslab, userV, 1e18);
+        vm.startPrank(userV);
+        IERC20(tslab).approve(vT, type(uint256).max);
+        assertEq(IVToken(vT).mint(1e18), 0);
+        address[] memory ms = new address[](1);
+        ms[0] = vT;
+        IComptroller(cfg.readAddress(".venus.comptroller")).enterMarkets(ms);
+        assertEq(IVToken(vU).borrow(100e18), 0);
+        IERC20(usdt).approve(address(vault), type(uint256).max);
+        bytes32 k = vault.openVenusCover(vU, "TSLA", keeper, 80e18, 60e18);
+        vm.stopPrank();
+
+        vm.warp(_hourBeforeNextClose());
+        uint256 d0 = IVToken(vU).borrowBalanceStored(userV);
+        vm.prank(keeper);
+        vault.shieldFor(userV, k, 50e18);
+        assertLt(IVToken(vU).borrowBalanceStored(userV), d0);
+        assertEq(vault.cover(userV, k).balance, 10e18);
+        assertEq(vault.coverCount(), 2);
     }
 }

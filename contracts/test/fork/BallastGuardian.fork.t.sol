@@ -37,13 +37,13 @@ contract BallastGuardianForkTest is ForkBase {
     function setUp() public override {
         super.setUp();
         factory = new BallastFactory(
-            address(this), sOracle, moolah, IPcsV3SwapRouter(router),
+            sOracle, moolah, IPcsV3SwapRouter(router),
             IComptroller(cfg.readAddress(".venus.comptroller")), IVenusOracle(cfg.readAddress(".venus.oracle"))
         );
         guardian = new BallastGuardian(IACP(kernel), factory, IIdentityRegistry(identity), IReputationRegistry(reputation), 0.01e18, 1 hours);
         mp = _mp("NVDAB_USD1");
         vm.prank(user);
-        acct = ListaAccount(factory.createListaAccount(mp, "NVDA", agent, BallastAccountBase.Mandate(6000, 150, true)));
+        acct = ListaAccount(factory.createListaAccount(mp, "NVDA", agent, BallastAccountBase.Mandate(6000, 5000, 150, true)));
         _fund(nvdab, user, 10e18);
         _fund(usd1, user, 1100e18);
         vm.startPrank(user);

@@ -56,7 +56,7 @@ contract Deploy is Script {
         }
 
         BallastFactory factory = new BallastFactory(
-            owner, oracle, IMoolah(cfg.readAddress(".lista.moolah")), IPcsV3SwapRouter(cfg.readAddress(".pancake.v3SwapRouter")),
+            oracle, IMoolah(cfg.readAddress(".lista.moolah")), IPcsV3SwapRouter(cfg.readAddress(".pancake.v3SwapRouter")),
             IComptroller(cfg.readAddress(".venus.comptroller")), IVenusOracle(cfg.readAddress(".venus.oracle"))
         );
         CushionVault vault = new CushionVault(oracle, IMoolah(cfg.readAddress(".lista.moolah")), 3 hours);

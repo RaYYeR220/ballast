@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {SessionOracle} from "../SessionOracle.sol";
 import {BallastAccountBase} from "./BallastAccountBase.sol";
@@ -11,7 +10,7 @@ import {MarketParams, IMoolah, IPcsV3SwapRouter, IComptroller, IVenusOracle, IVT
 
 /// @title BallastFactory
 /// @notice Creates per-user Ballast accounts (EIP-1167 clones) and keeps the registry the guardian checks.
-contract BallastFactory is Ownable2Step {
+contract BallastFactory {
     uint8 public constant VENUE_LISTA = 1;
     uint8 public constant VENUE_VENUS = 2;
 
@@ -23,19 +22,19 @@ contract BallastFactory is Ownable2Step {
     IComptroller public immutable comptroller;
     IVenusOracle public immutable venusOracle;
 
+    address[] public allAccounts;
     mapping(address => bool) public isAccount;
     mapping(address => address[]) internal _accountsOf;
 
     event AccountCreated(address indexed owner, address indexed account, uint8 venue, bytes32 symbol);
 
     constructor(
-        address owner_,
         SessionOracle oracle_,
         IMoolah moolah_,
         IPcsV3SwapRouter router_,
         IComptroller comptroller_,
         IVenusOracle venusOracle_
-    ) Ownable(owner_) {
+    ) {
         sessionOracle = oracle_;
         moolah = moolah_;
         router = router_;
@@ -43,6 +42,10 @@ contract BallastFactory is Ownable2Step {
         venusOracle = venusOracle_;
         listaImpl = address(new ListaAccount());
         venusImpl = address(new VenusAccount());
+    }
+
+    function accountCount() external view returns (uint256) {
+        return allAccounts.length;
     }
 
     function accountsOf(address owner_) external view returns (address[] memory) {
@@ -75,6 +78,7 @@ contract BallastFactory is Ownable2Step {
 
     function _register(address account, uint8 venue, bytes32 sym) internal {
         isAccount[account] = true;
+        allAccounts.push(account);
         _accountsOf[msg.sender].push(account);
         emit AccountCreated(msg.sender, account, venue, sym);
     }

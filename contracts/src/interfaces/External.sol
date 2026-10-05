@@ -101,6 +101,8 @@ interface IVToken {
 interface IComptroller {
     function enterMarkets(address[] calldata vTokens) external returns (uint256[] memory);
     function getAccountLiquidity(address account) external view returns (uint256 err, uint256 liquidity, uint256 shortfall);
+    /// @dev Venus diamond returns more fields after these four; extra return data is ignored.
+    function markets(address vToken) external view returns (bool isListed, uint256 collateralFactorMantissa, bool isVenus, uint256 liquidationThresholdMantissa);
 }
 
 interface IVenusOracle {

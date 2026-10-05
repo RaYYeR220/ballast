@@ -9,7 +9,7 @@ import {IVToken, IComptroller, IVenusOracle} from "../interfaces/External.sol";
 
 /// @title VenusAccount
 /// @notice Ballast account on the Venus core pool: bStock collateral vToken, stablecoin debt vToken.
-///         Cushion repay and gated restore only — Venus has no flash loan, so near-threshold deleverage is
+///         Cushion repay and gated restore only, Venus has no flash loan, so near-threshold deleverage is
 ///         Lista-only. Collateral is tracked in vTokens so a liquidation seizure is detected exactly.
 contract VenusAccount is BallastAccountBase {
     using SafeERC20 for IERC20;
@@ -41,7 +41,11 @@ contract VenusAccount is BallastAccountBase {
         vCollateral = vCollateral_;
         vDebt = vDebt_;
         venusOracle = venusOracle_;
-        if (oracle_.ticker(sym).bStock != vCollateral_.underlying()) revert BadMandate();
+        if (oracle_.ticker(sym).bStock != vCollateral_.underlying()) revert BadMarket();
+        if (address(vDebt_) == address(vCollateral_)) revert BadMarket();
+        (bool collListed,,,) = comptroller_.markets(address(vCollateral_));
+        (bool debtListed,,,) = comptroller_.markets(address(vDebt_));
+        if (!collListed || !debtListed) revert BadMarket();
         address[] memory markets = new address[](1);
         markets[0] = address(vCollateral_);
         uint256[] memory errs = comptroller_.enterMarkets(markets);
@@ -91,7 +95,14 @@ contract VenusAccount is BallastAccountBase {
 
     function _repay(uint256 assets) internal override {
         IERC20(loanToken()).forceApprove(address(vDebt), assets);
-        _ok(vDebt.repayBorrow(assets));
+        // At or above the full debt, repay the exact balance (max sentinel) instead of failing on overshoot.
+        _ok(vDebt.repayBorrow(assets >= vDebt.borrowBalanceCurrent(address(this)) ? type(uint256).max : assets));
+        IERC20(loanToken()).forceApprove(address(vDebt), 0);
+    }
+
+    /// @dev vCollateral is the tracked collateral; moving it out would fake a liquidation.
+    function _beforeRescue(address token) internal view override {
+        if (token == address(vCollateral)) revert Unsupported();
     }
 
     function _repayAll() internal override returns (uint256 paid) {

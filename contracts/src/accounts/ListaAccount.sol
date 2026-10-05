@@ -10,7 +10,7 @@ import {MarketParams, IMoolah, IMoolahFlashLoanCallback, IPcsV3SwapRouter} from 
 /// @title ListaAccount
 /// @notice Ballast account on one Lista Lending (Moolah) market. Adds flash-loan deleverage: borrow the loan
 ///         token from Moolah, repay, withdraw collateral, sell it on PancakeSwap v3 with an oracle-bound
-///         minimum, and return the flash loan — the only shape that works close to the liquidation LTV.
+///         minimum, and return the flash loan, the only shape that works close to the liquidation LTV.
 contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     using SafeERC20 for IERC20;
 
@@ -23,6 +23,14 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     bytes32 public marketId;
     MarketParams internal _mp;
     bool private _inFlash;
+    bytes32 public deleveragePathHash;
+
+    event DeleveragePathSet(bytes32 indexed pathHash);
+
+    error DeleverageDisabled();
+    error NotInShieldWindow();
+    error BelowShieldLtv(uint256 ltvBps, uint256 shieldLtvBps);
+    error OverDeleverage(uint256 ltvAfterBps, uint256 shieldLtvBps);
 
     constructor() {
         _disableInitializers();
@@ -38,15 +46,32 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
         MarketParams calldata mp,
         IPcsV3SwapRouter router_
     ) external initializer {
-        __BallastAccount_init(owner_, keeper_, sym, oracle_, m);
         moolah = moolah_;
         router = router_;
         _mp = mp;
-        marketId = keccak256(abi.encode(mp));
-        (address loan,,,, uint256 lltv) = moolah_.idToMarketParams(marketId);
-        if (loan != mp.loanToken || lltv != mp.lltv) revert BadMandate();
-        if (uint256(m.maxLtvBps) * 1e14 >= mp.lltv) revert BadMandate();
-        if (oracle_.ticker(sym).bStock != mp.collateralToken) revert BadMandate();
+        _verifyMarket(moolah_, oracle_, sym, mp);
+        __BallastAccount_init(owner_, keeper_, sym, oracle_, m);
+    }
+
+    function _verifyMarket(IMoolah moolah_, SessionOracle oracle_, bytes32 sym, MarketParams calldata mp) internal {
+        bytes32 id = keccak256(abi.encode(mp));
+        marketId = id;
+        (address loan, address coll, address mOracle, address mIrm, uint256 lltv) = moolah_.idToMarketParams(id);
+        if (loan != mp.loanToken || coll != mp.collateralToken || mOracle != mp.oracle || mIrm != mp.irm || lltv != mp.lltv) {
+            revert BadMarket();
+        }
+        if (oracle_.ticker(sym).bStock != mp.collateralToken) revert BadMarket();
+    }
+
+    /// @notice Owner fixes the one swap route the keeper may use for deleverage (empty path disables it).
+    function setDeleveragePath(bytes calldata path) external onlyOwner {
+        if (path.length == 0) {
+            deleveragePathHash = bytes32(0);
+        } else {
+            _checkPath(path);
+            deleveragePathHash = keccak256(path);
+        }
+        emit DeleveragePathSet(deleveragePathHash);
     }
 
     function marketParams() external view returns (MarketParams memory) {
@@ -74,33 +99,45 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     }
 
     /// @notice Sell `collateralToSell` into debt through a Moolah flash loan of `repayAssets`.
-    function shieldDeleverage(uint256 repayAssets, uint256 collateralToSell, bytes calldata path)
+    /// @dev Bounded: owner-fixed route, only inside the pre-closure window (or at/above the owner's max LTV),
+    ///      only while LTV is above the owner's shield LTV, never lands more than 1% below it, and the swap
+    ///      must beat both the oracle floor and the caller's `minOut`.
+    function shieldDeleverage(uint256 repayAssets, uint256 collateralToSell, bytes calldata path, uint256 minOut)
         external
         onlyKeeperOrOwner
         lock
     {
-        _checkPath(path);
+        bytes32 h = deleveragePathHash;
+        if (h == bytes32(0)) revert DeleverageDisabled();
+        if (keccak256(path) != h) revert BadPath();
         _accrue();
         uint256 l0 = _ltvBps();
+        Mandate memory m = mandate;
+        if (l0 <= m.shieldLtvBps) revert BelowShieldLtv(l0, m.shieldLtvBps);
+        if (l0 < m.maxLtvBps && !_windowNear()) revert NotInShieldWindow();
         uint256 d0 = _debt();
         _checkMinLoan(d0, repayAssets);
         _inFlash = true;
-        moolah.flashLoan(_mp.loanToken, repayAssets, abi.encode(collateralToSell, path));
+        moolah.flashLoan(_mp.loanToken, repayAssets, abi.encode(collateralToSell, path, minOut));
         _inFlash = false;
-        trackedCollateral -= collateralToSell;
-        if (_ltvBps() >= l0) revert RiskNotReduced();
+        _reduceTracked(collateralToSell);
+        uint256 l1 = _ltvBps();
+        if (l1 >= l0) revert RiskNotReduced();
+        if (l1 + 100 < m.shieldLtvBps) revert OverDeleverage(l1, m.shieldLtvBps);
         emit Shielded(1, d0, _debt(), collateralToSell);
     }
 
     function onMoolahFlashLoan(uint256 assets, bytes calldata data) external {
         if (msg.sender != address(moolah) || !_inFlash) revert Unauthorized();
-        (uint256 coll, bytes memory path) = abi.decode(data, (uint256, bytes));
+        (uint256 coll, bytes memory path, uint256 userMinOut) = abi.decode(data, (uint256, bytes, uint256));
         IERC20 loan = IERC20(_mp.loanToken);
         loan.forceApprove(address(moolah), assets);
         moolah.repay(_mp, assets, 0, address(this), "");
         moolah.withdrawCollateral(_mp, coll, address(this), address(this));
-        uint256 minOut = coll * moolah.getPrice(_mp) / ORACLE_SCALE * (10_000 - mandate.maxSlippageBps) / 10_000;
-        IERC20(_mp.collateralToken).forceApprove(address(router), coll);
+        uint256 floor = coll * moolah.getPrice(_mp) / ORACLE_SCALE * (10_000 - mandate.maxSlippageBps) / 10_000;
+        uint256 minOut = userMinOut > floor ? userMinOut : floor;
+        IERC20 collToken = IERC20(_mp.collateralToken);
+        collToken.forceApprove(address(router), coll);
         router.exactInput(
             IPcsV3SwapRouter.ExactInputParams({
                 path: path,
@@ -110,7 +147,14 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
                 amountOutMinimum: minOut
             })
         );
+        collToken.forceApprove(address(router), 0);
         loan.forceApprove(address(moolah), assets); // Moolah pulls the flash loan back
+    }
+
+    function _windowNear() internal view returns (bool) {
+        (, uint64 startsAt,,) = sessionOracle.windowAhead(symbol);
+        (, uint32 horizon,,,,,) = sessionOracle.params();
+        return startsAt != 0 && startsAt <= block.timestamp + horizon;
     }
 
     // --------------------------------------------------------- venue hooks
@@ -132,7 +176,20 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
 
     function _repay(uint256 assets) internal override {
         IERC20(_mp.loanToken).forceApprove(address(moolah), assets);
-        moolah.repay(_mp, assets, 0, address(this), "");
+        _accrue();
+        if (assets >= _debt()) {
+            // Full repay goes by shares so no dust is left and the amount never exceeds `assets`.
+            (, uint128 shares,) = moolah.position(marketId, address(this));
+            if (shares != 0) moolah.repay(_mp, 0, shares, address(this), "");
+        } else {
+            moolah.repay(_mp, assets, 0, address(this), "");
+        }
+        IERC20(_mp.loanToken).forceApprove(address(moolah), 0);
+    }
+
+    function _validateMandate(Mandate memory m) internal view override {
+        super._validateMandate(m);
+        if (uint256(m.maxLtvBps) * 1e14 >= _mp.lltv) revert BadMandate();
     }
 
     function _repayAll() internal override returns (uint256 paid) {

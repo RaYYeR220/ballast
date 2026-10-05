@@ -9,13 +9,14 @@ import {SessionOracle} from "../SessionOracle.sol";
 /// @title BallastAccountBase
 /// @notice Per-user account holding one collateralised loan. The owner can do anything. The keeper can only
 ///         make the loan safer (repay from the cushion, sell collateral into debt) and, when the owner allows
-///         it, borrow back into the cushion — but only when the SessionOracle says risk may be added and
+///         it, borrow back into the cushion, but only when the SessionOracle says risk may be added and
 ///         within the owner's LTV cap. Nothing the keeper does can move assets out of the account.
 abstract contract BallastAccountBase is Initializable {
     using SafeERC20 for IERC20;
 
     struct Mandate {
-        uint16 maxLtvBps;
+        uint16 maxLtvBps; // ceiling for restore, and the LTV at which deleverage no longer needs a window
+        uint16 shieldLtvBps; // deleverage only above this LTV and never lands more than 1% below it
         uint16 maxSlippageBps;
         bool autoRestore;
     }
@@ -29,7 +30,8 @@ abstract contract BallastAccountBase is Initializable {
     uint256 private _locked;
 
     event KeeperSet(address indexed keeper);
-    event MandateSet(uint16 maxLtvBps, uint16 maxSlippageBps, bool autoRestore);
+    event MandateSet(uint16 maxLtvBps, uint16 shieldLtvBps, uint16 maxSlippageBps, bool autoRestore);
+    event Rescued(address indexed token, address indexed to, uint256 amount);
     event CollateralDeposited(uint256 amount);
     event CollateralWithdrawn(uint256 amount, address indexed to);
     event Borrowed(uint256 assets, address indexed to);
@@ -48,6 +50,7 @@ abstract contract BallastAccountBase is Initializable {
     error InsufficientCushion(uint256 have, uint256 need);
     error BelowMinLoan(uint256 remaining, uint256 minLoan);
     error BadMandate();
+    error BadMarket();
     error BadPath();
     error Unsupported();
     error Locked();
@@ -99,7 +102,7 @@ abstract contract BallastAccountBase is Initializable {
     }
 
     function withdrawCollateral(uint256 amount, address to) external onlyOwner lock {
-        trackedCollateral -= _withdrawCollateral(amount, to);
+        _reduceTracked(_withdrawCollateral(amount, to));
         emit CollateralWithdrawn(amount, to);
     }
 
@@ -129,7 +132,9 @@ abstract contract BallastAccountBase is Initializable {
     }
 
     function rescue(address token, address to, uint256 amount) external onlyOwner lock {
+        _beforeRescue(token);
         IERC20(token).safeTransfer(to, amount);
+        emit Rescued(token, to, amount);
     }
 
     // ----------------------------------------------------------------- keeper
@@ -203,9 +208,22 @@ abstract contract BallastAccountBase is Initializable {
 
     function _checkMinLoan(uint256 debt, uint256 repayAssets) internal view virtual;
 
-    function _setMandate(Mandate memory m) internal {
+    /// @dev Venues that track collateral by a token balance block rescuing that token here.
+    function _beforeRescue(address token) internal view virtual {}
+
+    function _validateMandate(Mandate memory m) internal view virtual {
         if (m.maxLtvBps == 0 || m.maxLtvBps > 9000 || m.maxSlippageBps > 500) revert BadMandate();
+        if (m.shieldLtvBps == 0 || m.shieldLtvBps >= m.maxLtvBps) revert BadMandate();
+    }
+
+    /// @dev Donations can push the venue balance above what the account tracked, so never underflow.
+    function _reduceTracked(uint256 units) internal {
+        trackedCollateral = units >= trackedCollateral ? 0 : trackedCollateral - units;
+    }
+
+    function _setMandate(Mandate memory m) internal {
+        _validateMandate(m);
         mandate = m;
-        emit MandateSet(m.maxLtvBps, m.maxSlippageBps, m.autoRestore);
+        emit MandateSet(m.maxLtvBps, m.shieldLtvBps, m.maxSlippageBps, m.autoRestore);
     }
 }
