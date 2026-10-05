@@ -12,7 +12,7 @@ import {IPriceSource, IAggregatorV3, IEIP8056, IBackedToken, IOndoSharesOracle} 
 /// @dev On-chain inputs: SessionCalendar, the bStock raw price source (Lista resilient oracle), EIP-8056
 ///      multipliers, Chainlink underlying feeds, Ondo's on-chain sValue, xStocks multipliers. The publisher
 ///      posts a bounded, expiring overlay (halts, corporate actions, earnings, Ondo live multiplier, a
-///      reference for tickers without Chainlink).
+///      reference for tickers without Chainlink, accepted only in the regular session and kept past overlay expiry).
 contract SessionOracle is Ownable2Step {
     enum Reason {
         OK,
@@ -68,6 +68,12 @@ contract SessionOracle is Ownable2Step {
         uint64 postedAt;
     }
 
+    /// @dev Last accepted reference print for tickers without a Chainlink feed. Independent of overlay expiry.
+    struct LastReference {
+        uint128 price; // per-share USD, 1e8
+        uint64 postedAt;
+    }
+
     struct Params {
         uint32 restoreDelay;
         uint32 horizon;
@@ -88,6 +94,7 @@ contract SessionOracle is Ownable2Step {
 
     mapping(bytes32 => Ticker) internal _tickers;
     mapping(bytes32 => Overlay) internal _overlays;
+    mapping(bytes32 => LastReference) internal _lastRef;
 
     event TickerListed(bytes32 indexed symbol, address bStock, address ondo, address xStock, address chainlink);
     event OverlayPosted(bytes32 indexed symbol, uint64 validUntil, uint64 nextEarnings, uint8 flags, uint128 ondoMultiplier, uint128 referencePrice);
@@ -164,6 +171,10 @@ contract SessionOracle is Ownable2Step {
         return _overlays[sym];
     }
 
+    function lastReference(bytes32 sym) external view returns (LastReference memory) {
+        return _lastRef[sym];
+    }
+
     function rawPrice(bytes32 sym) public view returns (uint256, bool) {
         Ticker storage t = _tickers[sym];
         if (!t.listed) return (0, false);
@@ -176,17 +187,36 @@ contract SessionOracle is Ownable2Step {
         return _perShare(t);
     }
 
+    /// @notice Shares per token for `issuer`. Never reverts: unavailable or paused data answers stale = true.
     function sharesPerToken(bytes32 sym, Issuer issuer) external view returns (uint256 multiplier, bool stale) {
         Ticker storage t = _tickers[sym];
-        if (issuer == Issuer.BSTOCK) return (IEIP8056(t.bStock).uiMultiplier(), false);
+        if (!t.listed) return (0, true);
+        if (issuer == Issuer.BSTOCK) {
+            try IEIP8056(t.bStock).uiMultiplier() returns (uint256 m) {
+                return (m, false);
+            } catch {
+                return (0, true);
+            }
+        }
         if (issuer == Issuer.XSTOCK) {
             if (t.xStock == address(0)) return (0, true);
-            return (IBackedToken(t.xStock).multiplier(), false);
+            try IBackedToken(t.xStock).multiplier() returns (uint256 m) {
+                return (m, false);
+            } catch {
+                return (0, true);
+            }
         }
         if (t.ondo == address(0)) return (0, true);
+        uint128 sv;
+        bool paused;
+        try ondoShares.getSValue(t.ondo) returns (uint128 v, bool p) {
+            sv = v;
+            paused = p;
+        } catch {
+            paused = true;
+        }
         Overlay storage o = _overlays[sym];
-        if (o.ondoMultiplier != 0 && o.validUntil >= block.timestamp) return (o.ondoMultiplier, false);
-        (uint128 sv,) = ondoShares.getSValue(t.ondo);
+        if (o.ondoMultiplier != 0 && o.validUntil >= block.timestamp) return (o.ondoMultiplier, paused);
         return (sv, true);
     }
 
@@ -202,9 +232,9 @@ contract SessionOracle is Ownable2Step {
                 return (0, 0, false);
             }
         }
-        Overlay storage o = _overlays[sym];
-        if (o.referencePrice == 0 || o.validUntil < block.timestamp) return (0, 0, false);
-        return (o.referencePrice, o.postedAt, true);
+        LastReference storage r = _lastRef[sym];
+        if (r.price == 0) return (0, 0, false);
+        return (r.price, r.postedAt, true);
     }
 
     function converged(bytes32 sym) public view returns (bool ok, uint256 devBps, Reason reason) {
@@ -268,7 +298,8 @@ contract SessionOracle is Ownable2Step {
         (bool conv,, Reason r) = converged(sym);
         if (!conv) return (false, r);
         (, uint64 startsAt,,) = windowAhead(sym);
-        if (startsAt != 0 && startsAt <= block.timestamp + params.horizon) return (false, Reason.WINDOW_AHEAD);
+        if (startsAt == 0) return (false, Reason.CALENDAR_UNKNOWN);
+        if ( startsAt <= block.timestamp + params.horizon) return (false, Reason.WINDOW_AHEAD);
         return (true, Reason.OK);
     }
 
@@ -291,8 +322,10 @@ contract SessionOracle is Ownable2Step {
         }
         if (o.referencePrice != 0) {
             if (t.chainlink != address(0)) revert ReferenceNotAllowed();
+            if (calendar.session(block.timestamp) != SessionCalendar.Session.REGULAR) revert ReferenceNotAllowed();
             (uint256 ps, bool ok) = _perShare(t);
             if (!ok || _devBps(o.referencePrice, ps) > params.maxRefDeviationBps) revert ReferenceOutOfBounds(o.referencePrice, ps);
+            _lastRef[sym] = LastReference({price: o.referencePrice, postedAt: uint64(block.timestamp)});
         }
         _overlays[sym] = Overlay({
             validUntil: o.validUntil,
@@ -307,7 +340,7 @@ contract SessionOracle is Ownable2Step {
 
     function _earningsAt(bytes32 sym, uint256 from, uint256 to) internal view returns (bool) {
         Overlay storage o = _overlays[sym];
-        return o.validUntil >= block.timestamp && o.nextEarnings != 0 && o.nextEarnings > from && o.nextEarnings <= to;
+        return o.postedAt + 7 days >= block.timestamp && o.nextEarnings != 0 && o.nextEarnings > from && o.nextEarnings <= to;
     }
 
     function _raw(Ticker storage t) internal view returns (uint256, bool) {
@@ -321,9 +354,12 @@ contract SessionOracle is Ownable2Step {
     function _perShare(Ticker storage t) internal view returns (uint256, bool) {
         (uint256 raw, bool ok) = _raw(t);
         if (!ok) return (0, false);
-        uint256 m = IEIP8056(t.bStock).uiMultiplier();
-        if (m == 0) return (0, false);
-        return (raw * 1e18 / m, true);
+        try IEIP8056(t.bStock).uiMultiplier() returns (uint256 m) {
+            if (m == 0) return (0, false);
+            return (raw * 1e18 / m, true);
+        } catch {
+            return (0, false);
+        }
     }
 
     function _devBps(uint256 a, uint256 b) internal pure returns (uint256) {

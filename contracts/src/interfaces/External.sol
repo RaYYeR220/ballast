@@ -9,7 +9,7 @@ struct MarketParams {
     uint256 lltv;
 }
 
-/// @notice Lista Lending (Moolah) — Morpho Blue compatible core.
+/// @notice Lista Lending (Moolah) - Morpho Blue compatible core.
 interface IMoolah {
     function supplyCollateral(MarketParams memory mp, uint256 assets, address onBehalf, bytes calldata data) external;
     function withdrawCollateral(MarketParams memory mp, uint256 assets, address onBehalf, address receiver) external;

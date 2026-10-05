@@ -104,6 +104,7 @@ contract SessionOracleTest is Test {
 
     function test_canAddRisk_refusedTooSoonAfterOpen() public {
         vm.warp(WED_1400);
+        cl.set(225e8, block.timestamp - 600);
         assertEq(uint8(_reason()), uint8(SessionOracle.Reason.TOO_SOON_AFTER_OPEN));
     }
 
@@ -161,6 +162,7 @@ contract SessionOracleTest is Test {
 
     function test_currentWindow_weekendGap() public {
         vm.warp(SAT_1500);
+        cl.set(225e8, block.timestamp - 600);
         (SessionOracle.RiskWindow w, uint16 gap, uint256 closedAt) = oracle.currentWindow(NVDA);
         assertEq(uint8(w), uint8(SessionOracle.RiskWindow.WEEKEND));
         assertEq(gap, 737);
@@ -215,6 +217,83 @@ contract SessionOracleTest is Test {
         (m, stale) = oracle.sharesPerToken(NVDA, SessionOracle.Issuer.BSTOCK);
         assertEq(m, 1.000778e18);
         assertFalse(stale);
+    }
+
+    function test_canAddRisk_neverPostedOverlay_isStale() public view {
+        (bool ok, SessionOracle.Reason r) = oracle.canAddRisk(CRCL);
+        assertFalse(ok);
+        assertEq(uint8(r), uint8(SessionOracle.Reason.OVERLAY_STALE));
+    }
+
+    function test_canAddRisk_futureChainlinkReference_isStale() public {
+        cl.set(225e8, block.timestamp + 100);
+        assertEq(uint8(_reason()), uint8(SessionOracle.Reason.REFERENCE_STALE));
+    }
+
+    function test_canAddRisk_failsClosedAtTableEnd() public {
+        vm.warp(1830279600); // Fri 2027-12-31 14:00 EST, regular session, no closure inside the table
+        cl.set(225e8, block.timestamp - 600);
+        _post(NVDA, 0, 0, 0, 0);
+        assertEq(uint8(cal.session(block.timestamp)), uint8(SessionCalendar.Session.REGULAR));
+        assertEq(uint8(_reason()), uint8(SessionOracle.Reason.CALENDAR_UNKNOWN));
+    }
+
+    function test_canAddRisk_uiMultiplierRevert_isPriceUnavailable() public {
+        vm.mockCallRevert(address(bNvda), abi.encodeWithSignature("uiMultiplier()"), "boom");
+        assertEq(uint8(_reason()), uint8(SessionOracle.Reason.PRICE_UNAVAILABLE));
+    }
+
+    function test_reference_survivesOverlayExpiry() public {
+        _post(CRCL, 0, 0, 0, 93.2e8);
+        uint256 postedAt = block.timestamp;
+        vm.warp(block.timestamp + 3601); // overlay expired
+        (uint256 ref, uint256 upd, bool ok) = oracle.referenceFor(CRCL);
+        assertTrue(ok);
+        assertEq(ref, 93.2e8);
+        assertEq(upd, postedAt);
+    }
+
+    function test_reference_zeroPostKeepsLast() public {
+        _post(CRCL, 0, 0, 0, 93.2e8);
+        _post(CRCL, 0, 0, 0, 0);
+        (uint256 ref,, bool ok) = oracle.referenceFor(CRCL);
+        assertTrue(ok);
+        assertEq(ref, 93.2e8);
+    }
+
+    function test_reference_postRejectedOutsideRegularSession() public {
+        vm.warp(SAT_1500);
+        vm.expectRevert(SessionOracle.ReferenceNotAllowed.selector);
+        this.postExternal(CRCL, 0, 0, 0, 93.2e8);
+    }
+
+    function test_earningsUpgrade_persistsAfterOverlayExpiry() public {
+        _post(NVDA, uint64(THU_OPEN), 0, 0, 0);
+        vm.warp(block.timestamp + 3601); // overlay expired
+        cl.set(225e8, block.timestamp - 600);
+        (SessionOracle.RiskWindow w,,, uint16 gap) = oracle.windowAhead(NVDA);
+        assertEq(uint8(w), uint8(SessionOracle.RiskWindow.EARNINGS));
+        assertEq(gap, 502);
+    }
+
+    function test_sharesPerToken_unlistedAndBrokenNeverRevert() public {
+        (uint256 m, bool stale) = oracle.sharesPerToken("NOPE", SessionOracle.Issuer.BSTOCK);
+        assertEq(m, 0);
+        assertTrue(stale);
+        vm.mockCallRevert(address(bNvda), abi.encodeWithSignature("uiMultiplier()"), "boom");
+        (m, stale) = oracle.sharesPerToken(NVDA, SessionOracle.Issuer.BSTOCK);
+        assertEq(m, 0);
+        assertTrue(stale);
+    }
+
+    function test_sharesPerToken_ondoPausedIsStale() public {
+        _post(NVDA, 0, 0, 1.001715e18, 0);
+        vm.mockCall(
+            address(ondoShares), abi.encodeCall(IOndoSharesOracle.getSValue, (ondoNvda)), abi.encode(uint128(1.000932e18), true)
+        );
+        (uint256 m, bool stale) = oracle.sharesPerToken(NVDA, SessionOracle.Issuer.ONDO);
+        assertEq(m, 1.001715e18);
+        assertTrue(stale);
     }
 
     function postExternal(bytes32 sym, uint64 e, uint8 f, uint128 om, uint128 ref) external {

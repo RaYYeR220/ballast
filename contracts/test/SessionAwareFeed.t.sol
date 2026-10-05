@@ -99,4 +99,80 @@ contract SessionAwareFeedTest is Test {
         assertEq(lo, anchor * (10_000 - bandBps) / 10_000);
         assertEq(hi, anchor * (10_000 + bandBps) / 10_000);
     }
+
+    bytes32 constant CRCL = "CRCL";
+
+    function _listCrcl() internal returns (MockBStock bc) {
+        bc = new MockBStock();
+        oracle.listTicker(CRCL, SessionOracle.Ticker(address(bc), address(0), address(0), address(0), 513, 466, 357, 447, true));
+        feed.mapAsset(address(bc), CRCL);
+        oracle.setPublisher(address(this), 7);
+        up.set(address(bc), 93e8);
+        bytes32[] memory syms = new bytes32[](1);
+        syms[0] = CRCL;
+        SessionOracle.Overlay[] memory o = new SessionOracle.Overlay[](1);
+        o[0] = SessionOracle.Overlay(uint64(block.timestamp + 3600), 0, 0, 0, 93.2e8, 0);
+        oracle.postOverlays(syms, o); // regular session, the reference persists past the overlay
+    }
+
+    function test_noChainlinkTicker_holdsBandAcrossWeekend() public {
+        MockBStock bc = _listCrcl();
+        vm.warp(SAT_0800Z);
+        up.set(address(bc), 70e8);
+        (uint256 lo,, uint256 bandBps, bool ok) = feed.band(CRCL);
+        assertTrue(ok);
+        assertEq(bandBps, uint256(466) + uint256(466) * 12 / 24);
+        assertEq(lo, 93.2e8 * (10_000 - bandBps) / 10_000);
+        assertEq(feed.peek(address(bc)), lo);
+    }
+
+    function test_holidayClosure_usesHolidayGap() public {
+        uint256 close = 1788552000; // Fri 2026-09-04 16:00 EDT, Labor Day weekend follows
+        vm.warp(close + 12 hours);
+        cl.set(225e8, close - 60);
+        up.set(address(b), 180e8);
+        (uint256 lo,, uint256 bandBps, bool ok) = feed.band(NVDA);
+        assertTrue(ok);
+        assertEq(bandBps, uint256(450) + uint256(450) * 12 / 24);
+        assertEq(feed.peek(address(b)), lo);
+    }
+
+    function test_earlyCloseDay_bandStartsAtThe1pmClose() public {
+        uint256 close = 1795802400; // Fri 2026-11-27 13:00 EST
+        vm.warp(close + 1 hours);
+        cl.set(225e8, close - 60);
+        up.set(address(b), 150e8);
+        (uint256 lo,, uint256 bandBps, bool ok) = feed.band(NVDA);
+        assertTrue(ok);
+        assertEq(bandBps, uint256(737) + uint256(737) * 1 hours / 1 days);
+        assertEq(feed.peek(address(b)), lo);
+    }
+
+    function test_earningsOverlay_bandUsesEarningsGap() public {
+        oracle.setPublisher(address(this), 7);
+        vm.warp(WED_1545);
+        cl.set(225e8, block.timestamp - 60);
+        bytes32[] memory syms = new bytes32[](1);
+        syms[0] = NVDA;
+        SessionOracle.Overlay[] memory o = new SessionOracle.Overlay[](1);
+        o[0] = SessionOracle.Overlay(uint64(block.timestamp + 3600), 1790861400, 0, 0, 0, 0); // Thu open
+        oracle.postOverlays(syms, o);
+        uint256 close = 1790798400; // Wed 16:00 EDT
+        vm.warp(close + 2 hours);
+        cl.set(225e8, close - 60);
+        up.set(address(b), 150e8);
+        (uint256 lo,, uint256 bandBps, bool ok) = feed.band(NVDA);
+        assertTrue(ok);
+        assertEq(bandBps, uint256(502) + uint256(502) * 2 hours / 1 days); // earnings 502 beats overnight 417
+        assertEq(feed.peek(address(b)), lo);
+    }
+
+    function test_uiMultiplierRevert_degradesToUpstream() public {
+        vm.warp(SAT_0800Z);
+        up.set(address(b), 180e8);
+        vm.mockCallRevert(address(b), abi.encodeWithSignature("uiMultiplier()"), "boom");
+        (,,, bool ok) = feed.band(NVDA);
+        assertFalse(ok);
+        assertEq(feed.peek(address(b)), 180e8);
+    }
 }

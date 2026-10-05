@@ -59,7 +59,14 @@ contract SessionAwareFeed is Ownable2Step, IPriceSource {
         (,,, uint32 maxRefAge,,,) = oracle.params();
         if (!okR || upd + maxRefAge < closedAt) return (0, 0, 0, false);
         SessionOracle.Ticker memory t = oracle.ticker(sym);
-        uint256 anchor = ref * IEIP8056(t.bStock).uiMultiplier() / 1e18;
+        uint256 mult;
+        try IEIP8056(t.bStock).uiMultiplier() returns (uint256 m) {
+            mult = m;
+        } catch {
+            return (0, 0, 0, false);
+        }
+        if (mult == 0) return (0, 0, 0, false);
+        uint256 anchor = ref * mult / 1e18;
         uint256 elapsed = block.timestamp - closedAt;
         bandBps = uint256(base) + uint256(base) * elapsed / 1 days;
         uint256 cap = uint256(base) * MAX_BAND_MULTIPLE;

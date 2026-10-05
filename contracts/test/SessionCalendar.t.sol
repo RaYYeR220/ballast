@@ -96,4 +96,31 @@ contract SessionCalendarTest is Test {
             assertLt(ts, cal.regularCloseAt(day));
         }
     }
+
+    function test_dayIndexedFunctions_rangeGuarded() public view {
+        assertEq(uint8(cal.dayType(21186)), uint8(SessionCalendar.DayType.UNKNOWN)); // Mon 2028-01-03
+        assertFalse(cal.isTradingDay(21186));
+        assertFalse(cal.isTradingDay(21200)); // MLK 2028 must not read as a trading day
+        assertFalse(cal.isTradingDay(20453)); // Wed 2025-12-31
+        assertTrue(cal.isTradingDay(21183)); // Fri 2027-12-31 stays inside the table
+    }
+
+    function test_localDay_doesNotUnderflow() public view {
+        (uint256 d, uint256 s) = cal.localDay(3 hours);
+        assertEq(d, 0);
+        assertEq(s, 0);
+        (d, s) = cal.localDay(0);
+        assertEq(d, 0);
+    }
+
+    function testFuzz_closedMomentsSitBetweenCloseAndOpen(uint256 ts) public view {
+        ts = bound(ts, cal.VALID_FROM() + 10 days, cal.VALID_THROUGH() - 10 days);
+        SessionCalendar.Session s = cal.session(ts);
+        if (s == SessionCalendar.Session.REGULAR) return;
+        assertTrue(s != SessionCalendar.Session.UNKNOWN);
+        assertLe(cal.prevClose(ts), ts);
+        assertLt(ts, cal.nextOpen(ts));
+        (SessionCalendar.WindowType w,,) = cal.currentWindow(ts);
+        assertTrue(w != SessionCalendar.WindowType.NONE);
+    }
 }

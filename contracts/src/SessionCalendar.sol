@@ -29,11 +29,15 @@ contract SessionCalendar {
         TRADING,
         EARLY_CLOSE,
         HOLIDAY,
-        WEEKEND
+        WEEKEND,
+        UNKNOWN
     }
 
     uint256 public constant VALID_FROM = 1767243600; // 2026-01-01 00:00 ET
     uint256 public constant VALID_THROUGH = 1830315600; // 2028-01-01 00:00 ET
+
+    uint256 internal constant FIRST_DAY = 20454; // local day of VALID_FROM (2026-01-01)
+    uint256 internal constant END_DAY = 21184; // local day of VALID_THROUGH (2028-01-01), exclusive
 
     uint256 internal constant DST_START_2026 = 1772953200; // 2026-03-08 07:00 UTC
     uint256 internal constant DST_END_2026 = 1793512800; // 2026-11-01 06:00 UTC
@@ -55,9 +59,10 @@ contract SessionCalendar {
         return isDst(ts) ? 4 hours : 5 hours;
     }
 
-    /// @return day Days since 1970-01-01 in New York local time.
+    /// @return day Days since 1970-01-01 in New York local time (0 for timestamps before the epoch offset).
     /// @return secondOfDay Seconds since local midnight.
     function localDay(uint256 ts) public pure returns (uint256 day, uint256 secondOfDay) {
+        if (ts < 5 hours) return (0, 0);
         uint256 local = ts - utcOffset(ts);
         return (local / 1 days, local % 1 days);
     }
@@ -67,7 +72,10 @@ contract SessionCalendar {
         return (day + 4) % 7;
     }
 
+    /// @notice Type of local day `day`. Days outside the table [2026-01-01, 2028-01-01) are UNKNOWN and
+    ///         never count as trading days.
     function dayType(uint256 day) public pure returns (DayType) {
+        if (day < FIRST_DAY || day >= END_DAY) return DayType.UNKNOWN;
         uint256 wd = weekday(day);
         if (wd == 0 || wd == 6) return DayType.WEEKEND;
         if (_isHoliday(day)) return DayType.HOLIDAY;
@@ -175,6 +183,7 @@ contract SessionCalendar {
 
     function _evening(uint256 day) internal pure returns (Session) {
         if (isTradingDay(day + 1)) return Session.OVERNIGHT;
+        if (dayType(day + 1) == DayType.UNKNOWN) return Session.UNKNOWN;
         return dayType(day + 1) == DayType.WEEKEND ? Session.CLOSED_WEEKEND : Session.CLOSED_HOLIDAY;
     }
 
