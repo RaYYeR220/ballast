@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 
-/** HMAC-SHA256 (base64) over timestamp + METHOD + requestPath + body — the Binance Web3 API scheme. */
+/** HMAC-SHA256 (base64) over timestamp + METHOD + requestPath + body, the Binance Web3 API scheme. */
 export function signWeb3(secret: string, timestamp: string, method: string, requestPath: string, body: string): string {
   return createHmac("sha256", secret)
     .update(`${timestamp}${method.toUpperCase()}${requestPath}${body}`, "utf8")

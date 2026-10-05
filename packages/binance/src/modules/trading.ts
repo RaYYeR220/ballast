@@ -14,9 +14,9 @@ export const quote = (c: Web3Client, q: QuoteQuery) => c.get<unknown>("/api/v1/d
 export const swap = (c: Web3Client, q: SwapQuery) => c.get<unknown>("/api/v1/dex/aggregator/swap", { ...q });
 export const approveTransaction = (c: Web3Client, q: { binanceChainId: string; tokenContractAddress?: string; approveAmount: string; vendor?: string }) =>
   c.get<unknown>("/api/v1/dex/aggregator/approve-transaction", q);
-export const submitRfqOrder = (c: Web3Client, body: { requestId: string; userSignature: string; vendor: string; quoteId: string; signingScheme?: string }) => c.post<unknown>("/api/v1/dex/aggregator/order/submit", body, { idempotent: true });
+export const submitRfqOrder = (c: Web3Client, body: { requestId: string; userSignature: string; vendor: string; quoteId: string; signingScheme?: string }) => c.post<unknown>("/api/v1/dex/aggregator/order/submit", body);
 const ORDER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export const order = (c: Web3Client, orderId: string) => {
-  if (!ORDER_ID.test(orderId)) throw new Error("invalid orderId");
+  if (!ORDER_ID.test(orderId)) return Promise.reject(new Error("invalid orderId"));
   return c.get<unknown>(`/api/v1/dex/aggregator/order/${encodeURIComponent(orderId)}`);
 };

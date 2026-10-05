@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { Web3Client, Web3ApiError, isGeoBlocked } from "../src/client";
 import { signWeb3 } from "../src/sign";
+import { b402, defi, rwa, trading, transaction } from "../src";
 
 function res(status: number, body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -187,5 +188,63 @@ describe("hardening", () => {
     const c = new Web3Client({ apiKey: "k", apiSecret: "super-secret-value" });
     expect(JSON.stringify(c)).not.toContain("super-secret-value");
     expect(Object.values(c as unknown as Record<string, unknown>).map(String).join()).not.toContain("super-secret-value");
+  });
+});
+
+describe("final-review fixes", () => {
+  it("signs exactly the URL that fetch receives (apostrophe, space, plus, ampersand)", async () => {
+    let sent = "";
+    let sig = "";
+    const f = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      sent = String(url);
+      sig = (init!.headers as Record<string, string>)["X-OC-SIGN"]!;
+      return res(200, { code: 0, data: [] });
+    }) as unknown as typeof fetch;
+    const { c } = client(f);
+    await c.get("/api/v1/dex/market/rwa/search", { keyword: "McDonald's a+b&c", platformId: "ondo" });
+    const u = new URL(sent);
+    expect(sig).toBe(signWeb3("secret", "2026-05-11T10:08:57.715Z", "GET", u.pathname + u.search, ""));
+    expect(u.search).toContain("%27");
+  });
+
+  it("settle timeout surfaces TIMEOUT_OUTCOME_UNKNOWN after one call", async () => {
+    const f = vi.fn(() => Promise.reject(new DOMException("t", "TimeoutError")));
+    const { c } = client(f as unknown as typeof fetch);
+    const err = (await b402.settle(c, { x: 1 }).catch((e) => e)) as Web3ApiError;
+    expect(err.code).toBe("TIMEOUT_OUTCOME_UNKNOWN");
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("read-only POSTs are retried on network errors", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? Promise.reject(new TypeError("x")) : res(200, { code: 0, data: { status: "SUCCESS" } })));
+    const { c } = client(f as unknown as typeof fetch);
+    await transaction.simulate(c, { binanceChainId: "56", evmTx: { from: "0x1", to: "0x2", value: "0", data: "0x" } });
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("non-idempotent POST transport error is not retryable", async () => {
+    const { c } = client(vi.fn(() => Promise.reject(new TypeError("x"))) as unknown as typeof fetch);
+    const err = (await c.post("/api/v1/x", {}).catch((e) => e)) as Web3ApiError;
+    expect(err.retryable).toBe(false);
+  });
+
+  it("rwa.price rejects more than 100 addresses", () => {
+    const { c } = client(vi.fn() as unknown as typeof fetch);
+    expect(() => rwa.price(c, "56", Array.from({ length: 101 }, (_, i) => `0x${i}`))).toThrow(RangeError);
+  });
+
+  it("trading.order returns a rejected promise", async () => {
+    const { c } = client(vi.fn() as unknown as typeof fetch);
+    await expect(trading.order(c, "../x")).rejects.toThrow(/invalid orderId/);
+  });
+
+  it("shares one limiter bucket across DeFi paths", async () => {
+    const sleeps: number[] = [];
+    const f = vi.fn(async () => res(200, { code: 0, data: {} }));
+    const c = new Web3Client({ apiKey: "k", apiSecret: "s", fetch: f as unknown as typeof fetch, probe: () => {}, sleep: async (ms) => void sleeps.push(ms) });
+    await defi.protocols(c);
+    await defi.positions(c, ["0x1"]);
+    expect(sleeps.length).toBeGreaterThan(0);
   });
 });

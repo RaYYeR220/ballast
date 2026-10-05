@@ -65,9 +65,9 @@ describe("module request shapes", () => {
 });
 
 describe("trading.order id validation", () => {
-  it("rejects path-injection ids without calling fetch", () => {
+  it("rejects path-injection ids without calling fetch", async () => {
     const { c, calls } = capture();
-    expect(() => trading.order(c, "../x")).toThrow(/invalid orderId/);
+    await expect(trading.order(c, "../x")).rejects.toThrow(/invalid orderId/);
     expect(calls).toHaveLength(0);
   });
   it("accepts a normal id", async () => {

@@ -4,8 +4,10 @@ export interface RwaPrice { platformId: string; tokenContractAddress?: string; t
 export type PlatformId = "ondo" | "bstock";
 
 export const platforms = (c: Web3Client, platformId?: PlatformId) => c.get<unknown[]>("/api/v1/dex/market/rwa/platforms", { platformId });
-export const price = (c: Web3Client, binanceChainId: string, addresses: string[]) =>
-  c.get<RwaPrice[]>("/api/v1/dex/market/rwa/price", { binanceChainId, tokenContractAddresses: addresses.join(",") });
+export const price = (c: Web3Client, binanceChainId: string, addresses: string[]) => {
+  if (addresses.length > 100) throw new RangeError(`at most 100 token addresses per request, got ${addresses.length}`);
+  return c.get<RwaPrice[]>("/api/v1/dex/market/rwa/price", { binanceChainId, tokenContractAddresses: addresses.join(",") });
+};
 export const search = (c: Web3Client, keyword: string, platformId?: PlatformId) => c.get<unknown[]>("/api/v1/dex/market/rwa/search", { keyword, platformId });
 export const underlyingProfile = (c: Web3Client, binanceChainId: string, tokenContractAddress: string) =>
   c.get<unknown>("/api/v1/dex/market/rwa/underlying-profile", { binanceChainId, tokenContractAddress });

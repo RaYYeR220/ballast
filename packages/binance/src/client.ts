@@ -68,7 +68,7 @@ export class Web3Client {
 
   /**
    * POSTs are state-changing: they are retried only when rejected before processing (429 / 42900),
-   * never on network errors or 5xx — unless the caller marks the request `idempotent`.
+   * never on network errors or 5xx, unless the caller marks the request `idempotent`.
    */
   post<T>(path: string, body: unknown, opts: { idempotent?: boolean } = {}): Promise<T> {
     return this.request<T>("POST", path, "", JSON.stringify(body ?? {}), opts.idempotent === true);
@@ -81,10 +81,12 @@ export class Web3Client {
     }
     const maxRetries = this.o.maxRetries ?? 3;
     const timeoutMs = this.o.timeoutMs ?? 15000;
-    const limiterKey = path.replace(/\/order\/(?!submit$)[^/]+$/, "/order/:id");
+    const limiterKey = path.startsWith("/api/v1/defi/") ? "/api/v1/defi/*" : path.replace(/\/order\/(?!submit$)[^/]+$/, "/order/:id");
     for (let attempt = 1; ; attempt++) {
       await this.limiter.take(limiterKey, this.sleep);
-      const requestPath = `${this.basePath}${path}${search}`;
+      // Sign exactly what fetch will send: URL normalisation (e.g. ' -> %27) must not drift from the signature.
+      const url = new URL(`${this.baseUrl}${path}${search}`);
+      const requestPath = url.pathname + url.search;
       const headers: Record<string, string> = {
         ...buildAuthHeaders({
           apiKey: this.o.apiKey,
@@ -103,7 +105,7 @@ export class Web3Client {
       let res: Response;
       let text: string;
       try {
-        res = await this.f(`${this.baseUrl}${path}${search}`, {
+        res = await this.f(url.toString(), {
           method,
           headers,
           body: method === "POST" ? body : undefined,
@@ -121,7 +123,7 @@ export class Web3Client {
         if (timedOut && !idempotent) {
           throw new Web3ApiError(path, status, "TIMEOUT_OUTCOME_UNKNOWN", `no response within ${timeoutMs}ms; the request may still have been processed`, false);
         }
-        throw new Web3ApiError(path, status, timedOut ? "TIMEOUT" : "NETWORK", String(e), true);
+        throw new Web3ApiError(path, status, timedOut ? "TIMEOUT" : "NETWORK", String(e), idempotent);
       }
       let env: Envelope<T> | undefined;
       try {

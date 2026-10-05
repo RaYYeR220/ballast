@@ -65,3 +65,10 @@ describe("PublicRwaClient hardening", () => {
     expect(probe).toHaveBeenCalledWith(expect.objectContaining({ surface: "public", ok: false, status: 502 }));
   });
 });
+
+describe("PublicRwaClient 429", () => {
+  it("is retryable", async () => {
+    const c = new PublicRwaClient({ fetch: vi.fn(async () => new Response("{}", { status: 429 })) as unknown as typeof fetch, probe: () => {} });
+    await expect(c.marketStatus()).rejects.toMatchObject({ httpStatus: 429, retryable: true });
+  });
+});

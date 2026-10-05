@@ -9,7 +9,7 @@ export interface SimulationResult {
 }
 
 export const simulate = (c: Web3Client, body: { binanceChainId: string; evmTx: EvmTx }) =>
-  c.post<SimulationResult>("/api/v1/dex/pre-transaction/simulate", body);
+  c.post<SimulationResult>("/api/v1/dex/pre-transaction/simulate", body, { idempotent: true });
 export const broadcast = (c: Web3Client, body: { binanceChainId: string; signedTransaction: string; address: string; enableMevProtection?: boolean }) =>
   c.post<{ orderId: string; txHash: string }>("/api/v1/dex/pre-transaction/broadcast-transaction", body);
 export const gasPrice = (c: Web3Client, binanceChainId: string) => c.get<unknown>("/api/v1/dex/pre-transaction/gas-price", { binanceChainId });

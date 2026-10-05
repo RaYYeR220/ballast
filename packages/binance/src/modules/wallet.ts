@@ -2,7 +2,7 @@ import type { Web3Client } from "../client";
 
 export interface AllTokenBalancesQuery {
   address: string;
-  /** Single chain only — the API rejects comma-separated lists. */
+  /** Single chain only: the API rejects comma-separated lists. */
   chains?: string;
   excludeRiskToken?: boolean;
   page?: number;

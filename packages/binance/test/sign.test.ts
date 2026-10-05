@@ -5,7 +5,7 @@ import { buildAuthHeaders, signWeb3 } from "../src/sign";
 const TS = "2026-05-11T10:08:57.715Z";
 
 describe("signWeb3", () => {
-  it("matches the official connector's reference prehash (no /build)", () => {
+  it("checks the prehash order (timestamp, method, path, body) by recomputing the HMAC", () => {
     // Same inputs as binance-web3-connector-js common/tests/UtilsTest.test.ts
     const sig = signWeb3("test-secret", TS, "GET", "/api/v1/dex/market/price?chainId=1&symbol=ETH%20USDT", "");
     const expected = createHmac("sha256", "test-secret")

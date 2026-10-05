@@ -83,7 +83,7 @@ export class PublicRwaClient {
     let status = 0;
     let text: string;
     try {
-      const res = await this.f(`${BASE}${endpoint}${search ? `?${search}` : ""}`, {
+      const res = await this.f(new URL(`${BASE}${endpoint}${search ? `?${search}` : ""}`).toString(), {
         headers: { "Accept-Encoding": "identity", "User-Agent": this.ua, Accept: "application/json" },
         signal: AbortSignal.timeout(this.timeoutMs),
       });
@@ -105,7 +105,7 @@ export class PublicRwaClient {
     const code = env?.code === undefined || env?.code === null ? String(status) : String(env.code);
     const ok = !!env && status < 400 && isSuccessCode(env.code);
     record(status, code, ok);
-    if (!ok) throw new Web3ApiError(endpoint, status, code, env?.message ?? env?.msg ?? text.slice(0, 200), status >= 500);
+    if (!ok) throw new Web3ApiError(endpoint, status, code, env?.message ?? env?.msg ?? text.slice(0, 200), status >= 500 || status === 429);
     return env!.data as T;
   }
 }
