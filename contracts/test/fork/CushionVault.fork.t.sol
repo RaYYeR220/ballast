@@ -109,6 +109,20 @@ contract CushionVaultForkTest is ForkBase {
         vault.shieldFor(user, key, 995e18);
     }
 
+    function test_listaFullCloseRepaysByShares() public {
+        vm.startPrank(user);
+        vault.openListaCover(mp, "NVDA", keeper, 2000e18, 0);
+        vault.topUp(key, 900e18); // balance 1300 > debt ~1000
+        vm.stopPrank();
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vault.shieldFor(user, key, 1300e18);
+        assertEq(_debtOf(user), 0);
+        uint256 left = vault.cover(user, key).balance;
+        assertGt(left, 250e18); // only the real debt was pulled
+        assertEq(IERC20(usd1).balanceOf(address(vault)), left);
+    }
+
     function test_horizonBounded() public {
         vm.expectRevert(CushionVault.HorizonTooLong.selector);
         new CushionVault(sOracle, moolah, 1 days + 1);

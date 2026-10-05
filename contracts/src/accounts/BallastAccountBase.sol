@@ -28,9 +28,12 @@ abstract contract BallastAccountBase is Initializable {
     Mandate public mandate;
     uint256 public trackedCollateral; // venue-native units
     uint256 private _locked;
+    /// @notice Sticky: once a seizure is seen it stays recorded even if someone later donates collateral back.
+    bool public liquidationRecorded;
 
     event KeeperSet(address indexed keeper);
     event MandateSet(uint16 maxLtvBps, uint16 shieldLtvBps, uint16 maxSlippageBps, bool autoRestore);
+    event LiquidationRecorded(uint256 venueCollateral, uint256 trackedCollateral);
     event Rescued(address indexed token, address indexed to, uint256 amount);
     event CollateralDeposited(uint256 amount);
     event CollateralWithdrawn(uint256 amount, address indexed to);
@@ -54,6 +57,7 @@ abstract contract BallastAccountBase is Initializable {
     error BadPath();
     error Unsupported();
     error Locked();
+    error NotLiquidated();
     error Unauthorized();
 
     modifier onlyOwner() {
@@ -112,8 +116,10 @@ abstract contract BallastAccountBase is Initializable {
     }
 
     function repay(uint256 assets) external onlyOwner lock {
+        IERC20 loan = IERC20(loanToken());
+        uint256 b0 = loan.balanceOf(address(this));
         _repay(assets);
-        emit Repaid(assets);
+        emit Repaid(b0 - loan.balanceOf(address(this))); // the amount actually paid, which can be below `assets`
     }
 
     function repayAll() external onlyOwner lock {
@@ -171,7 +177,15 @@ abstract contract BallastAccountBase is Initializable {
     }
 
     function liquidated() external view returns (bool) {
-        return _venueCollateral() < trackedCollateral;
+        return liquidationRecorded || _venueCollateral() < trackedCollateral;
+    }
+
+    /// @notice Anyone can latch a seizure before donated collateral hides it.
+    function recordLiquidation() external {
+        uint256 v = _venueCollateral();
+        if (v >= trackedCollateral) revert NotLiquidated();
+        liquidationRecorded = true;
+        emit LiquidationRecorded(v, trackedCollateral);
     }
 
     function ltvBps() external view returns (uint256) {

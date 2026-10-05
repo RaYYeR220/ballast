@@ -144,26 +144,45 @@ contract CushionVault {
         if (amount > c.balance) revert InsufficientCover(c.balance, amount);
         c.usedToday += amount;
         c.balance -= amount;
+        uint256 pulled = amount;
         if (c.venue == VENUE_LISTA) {
-            _checkListaMinLoan(c.mp, user, amount);
-            IERC20(c.token).forceApprove(address(moolah), amount);
-            moolah.repay(c.mp, amount, 0, user, "");
+            IERC20 t = IERC20(c.token);
+            uint256 b0 = t.balanceOf(address(this));
+            (uint256 debt, uint128 shares) = _listaDebt(c.mp, user);
+            if (amount >= debt && shares != 0) {
+                // Full close: repay by shares and approve exactly what Moolah will pull.
+                t.forceApprove(address(moolah), debt);
+                moolah.repay(c.mp, 0, shares, user, "");
+            } else {
+                _checkListaMinLoan(c.mp, debt, amount);
+                t.forceApprove(address(moolah), amount);
+                moolah.repay(c.mp, amount, 0, user, "");
+            }
+            t.forceApprove(address(moolah), 0);
+            pulled = b0 - t.balanceOf(address(this));
+            uint256 refund = amount - pulled;
+            if (refund != 0) {
+                c.balance += uint128(refund);
+                c.usedToday -= uint128(refund);
+            }
         } else {
             IERC20(c.token).forceApprove(c.vDebt, amount);
             uint256 code = IVToken(c.vDebt).repayBorrowBehalf(user, amount);
             if (code != 0) revert VenusError(code);
         }
-        emit ShieldedFor(user, key, amount);
+        emit ShieldedFor(user, key, uint128(pulled));
     }
 
     /// @dev Moolah rejects a repay that leaves a dust loan; surface that as a clear error up front.
-    function _checkListaMinLoan(MarketParams memory mp, address user, uint128 amount) internal {
+    function _listaDebt(MarketParams memory mp, address user) internal returns (uint256 debt, uint128 shares) {
         moolah.accrueInterest(mp);
         bytes32 id = keccak256(abi.encode(mp));
-        (, uint128 shares,) = moolah.position(id, user);
+        (, shares,) = moolah.position(id, user);
         (,, uint128 tba, uint128 tbs,,) = moolah.market(id);
-        uint256 debt = (uint256(shares) * (uint256(tba) + 1) + uint256(tbs) + 1e6 - 1) / (uint256(tbs) + 1e6);
-        if (amount >= debt) return;
+        debt = (uint256(shares) * (uint256(tba) + 1) + uint256(tbs) + 1e6 - 1) / (uint256(tbs) + 1e6);
+    }
+
+    function _checkListaMinLoan(MarketParams memory mp, uint256 debt, uint256 amount) internal view {
         uint256 remaining = debt - amount;
         uint256 minLoan = moolah.minLoan(mp);
         if (remaining < minLoan) revert BelowMinLoan(remaining, minLoan);

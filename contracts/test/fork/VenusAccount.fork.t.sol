@@ -147,7 +147,7 @@ contract VenusAccountForkTest is ForkBase {
         assertFalse(healthy);
         assertFalse(acct.liquidated());
 
-        address liquidator = 0x0870793286aaDA55D39CE7f82fb2766e8004cF43;
+        address liquidator = cfg.readAddress(".venus.liquidator");
         address liq = address(0x11);
         _fund(usdt, liq, 100e18);
         vm.startPrank(liq);

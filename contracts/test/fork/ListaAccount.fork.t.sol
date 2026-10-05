@@ -217,15 +217,48 @@ contract ListaAccountForkTest is ForkBase {
         acct.shieldDeleverage(200e18, 1e18, _path(), 0);
     }
 
-    function test_deleverage_allowedOutsideWindowAtMaxLtv() public {
+    function test_deleverage_notAvailableAfterRestoreToMaxLtv() public {
+        _freeze();
+        vm.warp(_nextRestoreMoment());
+        _mockCanAddRisk("NVDA", true, SessionOracle.Reason.OK);
+        uint256 l0 = acct.ltvBps();
+        uint256 cap = l0 + 200;
+        vm.prank(user);
+        acct.setMandate(BallastAccountBase.Mandate(uint16(cap), uint16(l0 / 2), 150, true));
+        (, uint256 d) = acct.position();
+        uint256 x = d * (cap - l0) / l0 * 99 / 100; // restore as close under the cap as the sizing allows
+        vm.prank(keeper);
+        acct.restore(x);
+        assertLe(acct.ltvBps(), cap);
+        vm.prank(keeper);
+        vm.expectRevert(ListaAccount.NotInShieldWindow.selector); // a restore can never open the out-of-window escape
+        acct.shieldDeleverage(30e18, 0.15e18, _path(), 0);
+    }
+
+    function test_deleverage_escapeOnMarketPush_trimsBackUnderCap() public {
+        uint256 l0 = _pushAboveCap();
+        vm.prank(keeper);
+        acct.shieldDeleverage(30e18, 0.15e18, _path(), 0); // lands about 1.5 points lower, still within cap - 1%
+        assertLt(acct.ltvBps(), l0);
+    }
+
+    function test_deleverage_escapeCannotOvershootBelowCap() public {
+        _pushAboveCap();
+        vm.prank(keeper);
+        vm.expectPartialRevert(ListaAccount.OverDeleverage.selector); // would land ~5 points down, below cap - 1%
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+    }
+
+    /// @dev Outside the window, set the cap just above the current LTV, then push the market 5% against the loan.
+    function _pushAboveCap() internal returns (uint256 l) {
         _freeze();
         vm.warp(_nextRestoreMoment());
         uint256 l0 = acct.ltvBps();
         vm.prank(user);
-        acct.setMandate(BallastAccountBase.Mandate(uint16(l0 - 10), uint16(l0 * 8 / 9 + 50), 150, true));
-        vm.prank(keeper);
-        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
-        assertLt(acct.ltvBps(), l0);
+        acct.setMandate(BallastAccountBase.Mandate(uint16(l0 + 100), uint16(l0 / 2), 150, true));
+        _setPrice(nvdab, IPriceSourceLike(stockOracle).peek(nvdab) * 95 / 100);
+        l = acct.ltvBps();
+        assertGt(l, l0 + 100);
     }
 
     function test_deleverage_refusedBelowShieldLtv() public {
@@ -370,6 +403,28 @@ contract ListaAccountForkTest is ForkBase {
         moolah.liquidate(mp, address(acct), 2e18, 0, "");
         vm.stopPrank();
         assertTrue(acct.liquidated());
+
+        // Masking attempt: anyone records it, then a donor tops venue collateral back up to the tracked amount.
+        vm.prank(address(0xCAFE));
+        acct.recordLiquidation();
+        assertTrue(acct.liquidationRecorded());
+        (uint256 c,) = acct.position();
+        uint256 gap = acct.trackedCollateral() - c;
+        address donor = address(0xD0);
+        _fund(nvdab, donor, gap);
+        vm.startPrank(donor);
+        IERC20(nvdab).approve(address(moolah), gap);
+        moolah.supplyCollateral(mp, gap, address(acct), "");
+        vm.stopPrank();
+        (c,) = acct.position();
+        assertGe(c, acct.trackedCollateral());
+        assertTrue(acct.liquidated()); // still true: the flag is sticky
+    }
+
+    function test_recordLiquidation_revertsWhenHealthy() public {
+        vm.expectRevert(BallastAccountBase.NotLiquidated.selector);
+        acct.recordLiquidation();
+        assertFalse(acct.liquidated());
     }
 }
 

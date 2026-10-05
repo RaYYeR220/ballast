@@ -114,7 +114,13 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
         uint256 l0 = _ltvBps();
         Mandate memory m = mandate;
         if (l0 <= m.shieldLtvBps) revert BelowShieldLtv(l0, m.shieldLtvBps);
-        if (l0 < m.maxLtvBps && !_windowNear()) revert NotInShieldWindow();
+        // In the window the landing floor is the shield LTV. Outside it, the only escape is a loan strictly above
+        // the owner's cap (restore can never produce that), and then it may only be trimmed back under the cap.
+        uint256 floorLtv = m.shieldLtvBps;
+        if (!_windowNear()) {
+            if (l0 <= m.maxLtvBps) revert NotInShieldWindow();
+            floorLtv = m.maxLtvBps;
+        }
         uint256 d0 = _debt();
         _checkMinLoan(d0, repayAssets);
         _inFlash = true;
@@ -123,7 +129,7 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
         _reduceTracked(collateralToSell);
         uint256 l1 = _ltvBps();
         if (l1 >= l0) revert RiskNotReduced();
-        if (l1 + 100 < m.shieldLtvBps) revert OverDeleverage(l1, m.shieldLtvBps);
+        if (l1 + 100 < floorLtv) revert OverDeleverage(l1, floorLtv);
         emit Shielded(1, d0, _debt(), collateralToSell);
     }
 
