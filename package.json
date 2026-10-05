@@ -2,6 +2,8 @@
   "name": "ballast",
   "private": true,
   "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=22" },
+  "pnpm": { "overrides": { "rollup": "<4.62.4" } },
   "scripts": {
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",

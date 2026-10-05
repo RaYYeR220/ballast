@@ -15,6 +15,7 @@ describe("calendar parity with SessionCalendar.sol", () => {
     expect(nextOpen(1790434800)).toBe(1790602200);
     expect(nextClose(1795791600)).toBe(1795802400);
     expect(nextOpen(1795806000)).toBe(1796049000);
+    expect(prevClose(1767182400)).toBe(0);
     expect(prevClose(1790434800)).toBe(1790366400);
     expect(prevClose(1788868800)).toBe(1788552000);
     expect(nextOpen(1830524400)).toBe(0);

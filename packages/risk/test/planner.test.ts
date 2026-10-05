@@ -127,3 +127,14 @@ describe("planRestore", () => {
     expect(planRestore({ position: base, cushionUsd: 0, targetDebtUsd: 1500, maxLtv: 0.8 }).kind).toBe("noop");
   });
 });
+
+describe("planShield min-loan fallthrough", () => {
+  it("sells collateral to clear the loan when the min-loan clamp blocks a cushion-only repay", () => {
+    const p: Position = { collateralTokens: 0.1, collateralPriceUsd: 225, debtUsd: 20, lltv: 0.75, minLoanUsd: 15 };
+    const plan = planShield({ position: p, gapBps: 737, targetHfAfterGap: 1.05, cushionUsd: 10, maxSlippageBps: 150, canSellCollateral: true });
+    expect(plan.kind).toBe("repay+deleverage");
+    if (plan.kind !== "repay+deleverage") return;
+    expect(plan.repayUsd + plan.flashRepayUsd).toBeCloseTo(20, 2);
+    expect(plan.hfAfterGap).toBe(Infinity);
+  });
+});

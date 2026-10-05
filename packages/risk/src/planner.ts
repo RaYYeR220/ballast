@@ -43,10 +43,15 @@ export function planShield(i: ShieldInput): ShieldPlan {
   if (needed <= i.cushionUsd) {
     const repayUsd = clampRepay(needed);
     const hf = healthAfterGap({ ...p, debtUsd: p.debtUsd - repayUsd }, i.gapBps);
-    if (repayUsd < needed && hf < i.targetHfAfterGap) {
+    const stuckOnMinLoan = repayUsd < needed && hf < i.targetHfAfterGap;
+    if (!stuckOnMinLoan) {
+      return { kind: "repay", repayUsd, hfAfterGap: hf, reason: `repay ${repayUsd} from the cushion before the close` };
+    }
+    // The minimum-loan clamp stops the cushion short: if selling is allowed, fall through to the
+    // cushion + sale path, which can repay everything. Otherwise report it.
+    if (!i.canSellCollateral) {
       return { kind: "insufficient", repayUsd, hfAfterGap: hf, reason: "minimum loan prevents reaching the target" };
     }
-    return { kind: "repay", repayUsd, hfAfterGap: hf, reason: `repay ${repayUsd} from the cushion before the close` };
   }
 
   const fromCushion = clampRepay(Math.min(i.cushionUsd, needed));
@@ -55,8 +60,8 @@ export function planShield(i: ShieldInput): ShieldPlan {
     return { kind: "insufficient", repayUsd: fromCushion, hfAfterGap: hf, reason: "cushion too small and selling is not allowed now" };
   }
 
-  // Sell x tokens at price·(1−slippage) into debt: debt' = D − c − x·px·(1−s);
-  // require debt' ≤ (C − x)·px·(1−g)·lltv / T  → solve linearly for x.
+  // Sell x tokens at price*(1-slippage) into debt: debt' = D - c - x*px*(1-s);
+  // require debt' ≤ (C - x)*px*(1-g)*lltv / T: solve linearly for x.
   const px = p.collateralPriceUsd;
   const s = i.maxSlippageBps / 10_000;
   const net = px * (1 - s); // proceeds per token sold

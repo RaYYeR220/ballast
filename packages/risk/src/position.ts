@@ -1,5 +1,16 @@
 export interface ListaMarketState { totalBorrowAssets: bigint; totalBorrowShares: bigint; lltv: bigint }
-export interface Position { collateralTokens: number; collateralPriceUsd: number; debtUsd: number; lltv: number; minLoanUsd: number }
+export interface Position {
+  /** Collateral amount in token units (not USD). */
+  collateralTokens: number;
+  /** USD price of ONE raw collateral token (not of the underlying share when a shares multiplier applies). */
+  collateralPriceUsd: number;
+  /** Outstanding debt in USD. */
+  debtUsd: number;
+  /** Liquidation LTV as a fraction in 0..1 (0.75 = 75%). */
+  lltv: number;
+  /** Venue minimum loan in USD; a remaining debt in (0, minLoanUsd) is not allowed. */
+  minLoanUsd: number;
+}
 
 const VIRTUAL_SHARES = 1_000_000n;
 const VIRTUAL_ASSETS = 1n;
