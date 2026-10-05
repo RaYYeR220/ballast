@@ -53,3 +53,15 @@ describe("PublicRwaClient", () => {
     await expect(c.marketStatus()).rejects.toThrow(/000002/);
   });
 });
+
+describe("PublicRwaClient hardening", () => {
+  it("wraps fetch rejection and non-JSON bodies in typed errors and records them", async () => {
+    const probe = vi.fn();
+    const down = new PublicRwaClient({ fetch: vi.fn(async () => Promise.reject(new TypeError("boom"))) as unknown as typeof fetch, probe });
+    await expect(down.marketStatus()).rejects.toMatchObject({ code: "NETWORK", retryable: true });
+    const html = new PublicRwaClient({ fetch: vi.fn(async () => new Response("<html/>", { status: 502 })) as unknown as typeof fetch, probe });
+    await expect(html.marketStatus()).rejects.toMatchObject({ httpStatus: 502, code: "502" });
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ surface: "public", ok: false, status: 502 }));
+  });
+});

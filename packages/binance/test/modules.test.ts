@@ -63,3 +63,16 @@ describe("module request shapes", () => {
     expect(calls[1]).toEqual({ method: "POST", path: "/build/api/v2/b402/supported", body: { body: {} } });
   });
 });
+
+describe("trading.order id validation", () => {
+  it("rejects path-injection ids without calling fetch", () => {
+    const { c, calls } = capture();
+    expect(() => trading.order(c, "../x")).toThrow(/invalid orderId/);
+    expect(calls).toHaveLength(0);
+  });
+  it("accepts a normal id", async () => {
+    const { c, calls } = capture();
+    await trading.order(c, "abc-123_X");
+    expect(calls[0]!.path).toBe("/build/api/v1/dex/aggregator/order/abc-123_X");
+  });
+});

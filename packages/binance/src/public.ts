@@ -22,8 +22,10 @@ export class PublicRwaClient {
   private readonly f: typeof fetch;
   private readonly probe: (r: ProbeRecord) => void;
   private readonly ua: string;
+  private readonly timeoutMs: number;
 
-  constructor(o: { fetch?: typeof fetch; probe?: (r: ProbeRecord) => void; userAgent?: string } = {}) {
+  constructor(o: { fetch?: typeof fetch; probe?: (r: ProbeRecord) => void; userAgent?: string; timeoutMs?: number } = {}) {
+    this.timeoutMs = o.timeoutMs ?? 15000;
     this.f = o.fetch ?? fetch;
     this.probe = o.probe ?? createProbe();
     this.ua = o.userAgent ?? "ballast/0.1";
@@ -46,7 +48,7 @@ export class PublicRwaClient {
   }
   async klines(chainId: string, contractAddress: string, interval: "1m" | "5m" | "15m" | "1h" | "4h" | "12h" | "1d", limit = 300): Promise<Kline[]> {
     const data = await this.call<{ klineInfos: (string | number)[][]; decimals?: number }>("v1", "/dex/market/token/kline/ai", { chainId, contractAddress, interval, limit });
-    const rows = data.klineInfos ?? [];
+    const rows = data?.klineInfos ?? [];
     return rows.map((r) => ({
       openTime: Number(r[0]),
       open: Number(r[1]),
@@ -61,28 +63,49 @@ export class PublicRwaClient {
   private async call<T>(version: "v1" | "v2", path: string, q: Record<string, string | number | undefined>): Promise<T> {
     const search = Object.entries(q)
       .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
       .join("&");
     const endpoint = `/${version}${W}${path}`;
     const started = performance.now();
-    const res = await this.f(`${BASE}${endpoint}${search ? `?${search}` : ""}`, {
-      headers: { "Accept-Encoding": "identity", "User-Agent": this.ua, Accept: "application/json" },
-    });
-    const text = await res.text();
-    const env = (text ? JSON.parse(text) : {}) as { code?: string; message?: string; msg?: string; data?: T };
-    const ok = res.status < 400 && isSuccessCode(env.code);
-    this.probe({
-      ts: new Date().toISOString(),
-      surface: "public",
-      method: "GET",
-      endpoint,
-      status: res.status,
-      code: String(env.code ?? ""),
-      ok,
-      latencyMs: Math.round(performance.now() - started),
-      attempt: 1,
-    });
-    if (!ok) throw new Web3ApiError(endpoint, res.status, String(env.code ?? res.status), env.message ?? env.msg ?? text.slice(0, 200), res.status >= 500);
-    return env.data as T;
+    const record = (status: number, code: string, ok: boolean, error?: string) =>
+      this.probe({
+        ts: new Date().toISOString(),
+        surface: "public",
+        method: "GET",
+        endpoint,
+        status,
+        code,
+        ok,
+        latencyMs: Math.round(performance.now() - started),
+        attempt: 1,
+        error,
+      });
+    let status = 0;
+    let text: string;
+    try {
+      const res = await this.f(`${BASE}${endpoint}${search ? `?${search}` : ""}`, {
+        headers: { "Accept-Encoding": "identity", "User-Agent": this.ua, Accept: "application/json" },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      status = res.status;
+      text = await res.text();
+    } catch (e) {
+      const timedOut = e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+      const code = timedOut ? "TIMEOUT" : "NETWORK";
+      record(status, code, false, String(e));
+      throw new Web3ApiError(endpoint, status, code, String(e), true);
+    }
+    let env: { code?: string; message?: string; msg?: string; data?: T } | undefined;
+    try {
+      const parsed: unknown = text ? JSON.parse(text) : {};
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) env = parsed as typeof env;
+    } catch {
+      env = undefined;
+    }
+    const code = env?.code === undefined || env?.code === null ? String(status) : String(env.code);
+    const ok = !!env && status < 400 && isSuccessCode(env.code);
+    record(status, code, ok);
+    if (!ok) throw new Web3ApiError(endpoint, status, code, env?.message ?? env?.msg ?? text.slice(0, 200), status >= 500);
+    return env!.data as T;
   }
 }

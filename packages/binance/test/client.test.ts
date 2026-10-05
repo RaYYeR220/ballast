@@ -125,3 +125,67 @@ describe("retry policy for state-changing requests", () => {
     expect(fNet).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("hardening", () => {
+  const html = (status: number, headers: Record<string, string> = {}) => new Response("<html>blocked</html>", { status, headers });
+  const timeout = () => Promise.reject(new DOMException("timed out", "TimeoutError"));
+
+  it("business error is not retried (one fetch)", async () => {
+    const f = vi.fn(async () => res(200, { code: 40367, msg: "ONDO_MARKET_STATE_NOT_TRADABLE" }));
+    const { c } = client(f as unknown as typeof fetch);
+    await expect(c.get("/api/v1/x")).rejects.toBeInstanceOf(Web3ApiError);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("GET 403 HTML gives a typed error with the real status and no retry", async () => {
+    const f = vi.fn(async () => html(403));
+    const { c, probe } = client(f as unknown as typeof fetch);
+    const err = (await c.get("/api/v1/x").catch((e) => e)) as Web3ApiError;
+    expect(err).toBeInstanceOf(Web3ApiError);
+    expect(err.httpStatus).toBe(403);
+    expect(err.code).toBe("403");
+    expect(err.serverMessage).toContain("blocked");
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith(expect.objectContaining({ status: 403, ok: false }));
+  });
+
+  it("GET 503 HTML is retried", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? html(503) : res(200, { code: 0, data: 5 })));
+    const { c } = client(f as unknown as typeof fetch);
+    expect(await c.get<number>("/api/v1/x")).toBe(5);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("POST timeout is an unknown-outcome error after one call", async () => {
+    const f = vi.fn(timeout);
+    const { c } = client(f as unknown as typeof fetch);
+    const err = (await c.post("/api/v1/x", {}).catch((e) => e)) as Web3ApiError;
+    expect(err.code).toBe("TIMEOUT_OUTCOME_UNKNOWN");
+    expect(err.retryable).toBe(false);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("GET timeout is retried", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? timeout() : res(200, { code: 0, data: 9 })));
+    const { c } = client(f as unknown as typeof fetch);
+    expect(await c.get<number>("/api/v1/x")).toBe(9);
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps Retry-After at 30s", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? res(429, { code: 42900 }, { "retry-after": "3600" }) : res(200, { code: 0, data: 1 })));
+    const sleep = vi.fn(async () => {});
+    const c = new Web3Client({ apiKey: "k", apiSecret: "s", fetch: f as unknown as typeof fetch, probe: () => {}, sleep });
+    await c.get("/api/v1/x");
+    expect(sleep).toHaveBeenCalledWith(30000);
+  });
+
+  it("does not leak the secret through serialization", () => {
+    const c = new Web3Client({ apiKey: "k", apiSecret: "super-secret-value" });
+    expect(JSON.stringify(c)).not.toContain("super-secret-value");
+    expect(Object.values(c as unknown as Record<string, unknown>).map(String).join()).not.toContain("super-secret-value");
+  });
+});
