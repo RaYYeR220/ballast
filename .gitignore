@@ -23,3 +23,4 @@ variants/
 .worktrees/
 *-backup*
 *.bundle
+contracts/deployments/31337.json
