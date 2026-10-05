@@ -6,7 +6,8 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {SessionOracle} from "../SessionOracle.sol";
 import {BallastAccountBase} from "./BallastAccountBase.sol";
 import {ListaAccount} from "./ListaAccount.sol";
-import {MarketParams, IMoolah, IPcsV3SwapRouter, IComptroller, IVenusOracle} from "../interfaces/External.sol";
+import {VenusAccount} from "./VenusAccount.sol";
+import {MarketParams, IMoolah, IPcsV3SwapRouter, IComptroller, IVenusOracle, IVToken} from "../interfaces/External.sol";
 
 /// @title BallastFactory
 /// @notice Creates per-user Ballast accounts (EIP-1167 clones) and keeps the registry the guardian checks.
@@ -15,6 +16,7 @@ contract BallastFactory is Ownable2Step {
     uint8 public constant VENUE_VENUS = 2;
 
     address public immutable listaImpl;
+    address public immutable venusImpl;
     SessionOracle public immutable sessionOracle;
     IMoolah public immutable moolah;
     IPcsV3SwapRouter public immutable router;
@@ -40,6 +42,7 @@ contract BallastFactory is Ownable2Step {
         comptroller = comptroller_;
         venusOracle = venusOracle_;
         listaImpl = address(new ListaAccount());
+        venusImpl = address(new VenusAccount());
     }
 
     function accountsOf(address owner_) external view returns (address[] memory) {
@@ -53,6 +56,17 @@ contract BallastFactory is Ownable2Step {
         account = Clones.cloneDeterministic(listaImpl, _salt(msg.sender));
         ListaAccount(account).initialize(msg.sender, keeper, sym, sessionOracle, m, moolah, mp, router);
         _register(account, VENUE_LISTA, sym);
+    }
+
+    function createVenusAccount(address vCollateral, address vDebt, bytes32 sym, address keeper, BallastAccountBase.Mandate calldata m)
+        external
+        returns (address account)
+    {
+        account = Clones.cloneDeterministic(venusImpl, _salt(msg.sender));
+        VenusAccount(account).initialize(
+            msg.sender, keeper, sym, sessionOracle, m, comptroller, IVToken(vCollateral), IVToken(vDebt), venusOracle
+        );
+        _register(account, VENUE_VENUS, sym);
     }
 
     function _salt(address owner_) internal view returns (bytes32) {
