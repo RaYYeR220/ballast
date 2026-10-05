@@ -11,16 +11,7 @@ contracts/cache/
 contracts/broadcast/*/31337/
 contracts/broadcast/*/dry-run/
 *.log
+*.jsonl
 .DS_Store
-# working material never published
-ALTERNATIVES.md
 _internal/
 *-internal/
-ui-prototypes/
-mockups/
-design-ref/
-variants/
-.worktrees/
-*-backup*
-*.bundle
-*.jsonl
