@@ -2,9 +2,20 @@
   "name": "ballast",
   "private": true,
   "packageManager": "pnpm@9.15.0",
+  "engines": { "node": ">=22" },
+  "pnpm": { "overrides": { "rollup": "<4.62.4" } },
   "scripts": {
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
-    "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv"
+    "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv",
+    "test": "vitest run",
+    "backtest": "tsx packages/risk/scripts/backtest.ts",
+    "typecheck": "pnpm -r exec tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4",
+    "tsx": "^4.19.2",
+    "@types/node": "^22.9.0"
   }
 }

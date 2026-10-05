@@ -1,0 +1,106 @@
+{
+  "lltv": 0.75,
+  "targetHfAfterGap": 1.05,
+  "results": [
+    {
+      "startLtv": 0.6,
+      "windows": 697,
+      "unprotectedLiquidations": 0,
+      "protectedLiquidations": 0,
+      "shieldsTriggered": 0,
+      "avgRepayShareOfDebt": 0,
+      "byType": {
+        "overnight": {
+          "windows": 554,
+          "unprotected": 0,
+          "protected": 0
+        },
+        "weekend": {
+          "windows": 121,
+          "unprotected": 0,
+          "protected": 0
+        },
+        "long_weekend_holiday": {
+          "windows": 22,
+          "unprotected": 0,
+          "protected": 0
+        }
+      }
+    },
+    {
+      "startLtv": 0.65,
+      "windows": 697,
+      "unprotectedLiquidations": 0,
+      "protectedLiquidations": 0,
+      "shieldsTriggered": 24,
+      "avgRepayShareOfDebt": 0.019794871794871802,
+      "byType": {
+        "overnight": {
+          "windows": 554,
+          "unprotected": 0,
+          "protected": 0
+        },
+        "weekend": {
+          "windows": 121,
+          "unprotected": 0,
+          "protected": 0
+        },
+        "long_weekend_holiday": {
+          "windows": 22,
+          "unprotected": 0,
+          "protected": 0
+        }
+      }
+    },
+    {
+      "startLtv": 0.7,
+      "windows": 697,
+      "unprotectedLiquidations": 5,
+      "protectedLiquidations": 2,
+      "shieldsTriggered": 652,
+      "avgRepayShareOfDebt": 0.025876424189307835,
+      "byType": {
+        "overnight": {
+          "windows": 554,
+          "unprotected": 5,
+          "protected": 2
+        },
+        "weekend": {
+          "windows": 121,
+          "unprotected": 0,
+          "protected": 0
+        },
+        "long_weekend_holiday": {
+          "windows": 22,
+          "unprotected": 0,
+          "protected": 0
+        }
+      }
+    },
+    {
+      "startLtv": 0.72,
+      "windows": 697,
+      "unprotectedLiquidations": 27,
+      "protectedLiquidations": 2,
+      "shieldsTriggered": 697,
+      "avgRepayShareOfDebt": 0.051024828630639084,
+      "byType": {
+        "overnight": {
+          "windows": 554,
+          "unprotected": 24,
+          "protected": 2
+        },
+        "weekend": {
+          "windows": 121,
+          "unprotected": 2,
+          "protected": 0
+        },
+        "long_weekend_holiday": {
+          "windows": 22,
+          "unprotected": 1,
+          "protected": 0
+        }
+      }
+    }
+  ]
+}
