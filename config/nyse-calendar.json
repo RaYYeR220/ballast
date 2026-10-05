@@ -1,0 +1,11 @@
+{
+  "timezone": "America/New_York",
+  "validFrom": 1767243600,
+  "validThrough": 1830315600,
+  "dst": [[1772953200, 1793512800], [1805007600, 1825567200]],
+  "holidayDays": [20454, 20472, 20500, 20546, 20598, 20623, 20637, 20703, 20783, 20812,
+                  20819, 20836, 20864, 20903, 20969, 20987, 21004, 21067, 21147, 21176],
+  "earlyCloseDays": [20784, 20811, 21148],
+  "secondsOfDay": { "preOpen": 14400, "regularOpen": 34200, "regularClose": 57600, "earlyClose": 46800, "postClose": 72000 },
+  "notes": "Days are days since 1970-01-01 in New York local time. Holidays 2026: Jan 1, Jan 19, Feb 16, Apr 3, May 25, Jun 19, Jul 3, Sep 7, Nov 26, Dec 25. Holidays 2027: Jan 1, Jan 18, Feb 15, Mar 26, May 31, Jun 18, Jul 5, Sep 6, Nov 25, Dec 24. Early closes 13:00 ET: 2026-11-27, 2026-12-24, 2027-11-26."
+}

@@ -1,0 +1,10 @@
+{
+  "name": "ballast",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "contracts:build": "cd contracts && forge build",
+    "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
+    "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "chainId": 56,
+  "tokens": {
+    "USD1": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "U": "0xce24439f2d9c6a2289f741120fe202248b666666",
+    "USDT": "0x55d398326f99059ff775485246999027b3197955",
+    "USDC": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d"
+  },
+  "lista": {
+    "moolah": "0x8f73b65b4caaf64fba2af91cc5d4a2a1318e5d8c",
+    "stockOracle": "0x526d09c604a17d98cb1f260a7774a239990dbdfb",
+    "resilientOracle": "0xf3afd82a4071f272f403dc176916141f44e6c750",
+    "stockSwitch": "0xb4678c3e8b49d2b95da48458f98805da193a8498",
+    "irm": "0xfe7dae87ebb11a7beb9f534bb23267992d9cde7c",
+    "liquidatorEoa": "0x08e83a96f4da5decc0e6e9084dde049a3e84ca04",
+    "markets": {
+      "SPYB_USD1": { "id": "0x2f2dcbb5ad16f1a99a894108f7d1851b1f9f40bf386c1d3dbd152ae18187f509", "collateralToken": "0x7138b48df7d98d7e3cc221bfe7192d0a178182d8", "lltv": "850000000000000000" },
+      "NVDAB_USD1": { "id": "0xaa1b8576712e33031668c93baa6ca53818a687d43e216d91ca09eeaff674d8b1", "collateralToken": "0x02fca66c1d1afb4e2a7884261eb00f63598a7436", "lltv": "750000000000000000" },
+      "QQQB_USD1": { "id": "0x78f0f036e0549defcb4c6b9039a72ce14f952326ce4bba229d761c00a2749dc4", "collateralToken": "0x205812cdbed920aff76c6580abd681a46d11efc7", "lltv": "750000000000000000" }
+    }
+  },
+  "venus": {
+    "comptroller": "0xfd36e2c2a6789db23113685031d7f16329158384",
+    "oracle": "0x6592b5de802159f3e74b2486b091d11a8256ab8a",
+    "vUSDT": "0xfd5840cd36d94d7229439859c0112a4185bc0255",
+    "vTSLAB": "0x97421799419eb782628e73e7220d8e0a207469a3",
+    "vNVDAB": "0xeb8ca841cbe1bc4832a10b15c7dab1081edad371"
+  },
+  "pancake": {
+    "v3SwapRouter": "0x1b81d678ffb9c0263b24a97847620c99d213eb14",
+    "smartRouter": "0x13f4ea83d0bd40e75c8222255bc855a974568dd4",
+    "quoterV2": "0xb048bbc1ee6b733fffcfb9e9cef7375518e25997",
+    "pools": {
+      "NVDAB_USDT_2500": "0x8fb4243b553ac29ba088acf00b9b7da24bd6690c",
+      "TSLAB_USDT_2500": "0xb0f5e5400e8f0f7c242f2b7740c004f020579c41",
+      "SPYB_USDT_100": "0x7aa6d92fc369a8c1edc631a3aac44efb0808ddbf",
+      "USDT_USD1_100": "0x9c4ee895e4f6ce07ada631c508d1306db7502cce"
+    }
+  },
+  "ondo": { "sharesOracle": "0xf4fd8a1b412633e10527454137a29db7aa35f15e" },
+  "erc8183": { "kernel": "0xea4daa3100a767e86fded867729ae7446476eba6" },
+  "erc8004": { "identity": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432", "reputation": "0x8004baa17c55a88189ae136b182e5fda19de9b63" },
+  "forkWhales": { "binanceHot": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3" },
+  "tickers": [
+    { "symbol": "NVDA", "bStock": "0x02fca66c1d1afb4e2a7884261eb00f63598a7436", "ondo": "0xa9ee28c80f960b889dfbd1902055218cba016f75", "xStock": "0xc845b2894dbddd03858fd2d643b4ef725fe0849d", "chainlink": "0xea5c2cbb5cd57dac24e26180b19a929f3e9699b8", "atlas": "0x2bd759006b423bff444181a13c96a6b134e557bb", "gapBps": { "overnight": 417, "weekend": 737, "holiday": 450, "earnings": 502 } },
+    { "symbol": "SPY",  "bStock": "0x7138b48df7d98d7e3cc221bfe7192d0a178182d8", "ondo": "0x6a708ead771238919d85930b5a0f10454e1c331a", "xStock": "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48", "chainlink": "0xb24d1dee5f9a3f761d286b56d2bc44ce1d02df7e", "atlas": "0x464b16fdc9d677cfdc6680fdf687d59ba52b1631", "gapBps": { "overnight": 155, "weekend": 223, "holiday": 159, "earnings": 0 } },
+    { "symbol": "QQQ",  "bStock": "0x205812cdbed920aff76c6580abd681a46d11efc7", "ondo": "0x0cde6936d305d5b34667fc46425e852efd73559a", "xStock": "0xa753a7395cae905cd615da0b82a53e0560f250af", "chainlink": "0x9a41b56b2c24683e2f23bde15c14bc7c4a58c3c4", "atlas": "0xa94918f11c9e7703426ccd494a4a999924942ddd", "gapBps": { "overnight": 202, "weekend": 318, "holiday": 264, "earnings": 0 } },
+    { "symbol": "TSLA", "bStock": "0x5b1910eaad6450e50f816082aa078c41f10c292f", "ondo": "0x2494b603319d4d9f9715c9f4496d9e0364b59d93", "xStock": "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0", "chainlink": "0xeea2ae9c074e87596a85abe698b2afebc9b57893", "atlas": "0xf569c3e52e797219ecfdc1659c3250b0bbdc693c", "gapBps": { "overnight": 585, "weekend": 551, "holiday": 1052, "earnings": 880 } },
+    { "symbol": "AAPL", "bStock": "0x431a3bee82e2ca41e49895cbece5bb0f76a89b7a", "ondo": "0x390a684ef9cade28a7ad0dfa61ab1eb3842618c4", "xStock": "0x9d275685dc284c8eb1c79f6aba7a63dc75ec890a", "chainlink": "0xb7ed5be7977d61e83534230f3256c021e0fae0b6", "atlas": "0x5afb6e8b04a63e6075620397520399ca9ffe7c05", "gapBps": { "overnight": 255, "weekend": 276, "holiday": 399, "earnings": 742 } },
+    { "symbol": "GOOGL","bStock": "0x3f53de71c126bdabae20f9cd64848d317f6c3238", "ondo": "0x091fc7778e6932d4009b087b191d1ee3bac5729a", "xStock": "0xe92f673ca36c5e2efd2de7628f815f84807e803f", "chainlink": "0xeda73f8acb669274b15a977cb0cda57a84f18c2a", "atlas": "0x9a47a6560e224a26f663675d5c76888a26cac6c3", "gapBps": { "overnight": 247, "weekend": 387, "holiday": 308, "earnings": 770 } },
+    { "symbol": "META", "bStock": "0x7425889fe94f9d693e8daefe88bcced6acfef4c0", "ondo": "0xd7df5863a3e742f0c767768cdfcb63f09e0422f6", "xStock": "0x96702be57cd9777f835117a809c7124fe4ec989a", "chainlink": "0xfc76e9445952a3c31369dfd26edfdfb9713df5bb", "atlas": "0x1374144bc616f36bd21833367476be6e4a05883b", "gapBps": { "overnight": 318, "weekend": 299, "holiday": 318, "earnings": 2446 } },
+    { "symbol": "MSFT", "bStock": "0x80106cb3ead06659a5ad19df39d9b4733863b9b0", "ondo": "0x6bfe75d1ad432050ea973c3a3dcd88f02e2444c3", "xStock": "0x5621737f42dae558b81269fcb9e9e70c19aa6b35", "chainlink": "0x5d209ce1fbabeaa8e6f9de4514a74ffb4b34560f", "atlas": "0x56e1c317ef6f029a8327686f4b9736877f621122", "gapBps": { "overnight": 241, "weekend": 260, "holiday": 263, "earnings": 844 } },
+    { "symbol": "AMZN", "bStock": "0x1a4b499833a79a09ad7cf1d42d7dacf71e92eb00", "ondo": "0x4553cfe1c09f37f38b12dc509f676964e392f8fc", "xStock": "0x3557ba345b01efa20a1bddc61f573bfd87195081", "chainlink": "0x51d08ca89d3e8c12535ba8aed33cdf2557ab5b2a", "atlas": "0xb5fe0c3fc0954ed63f7ada680b964399e251fede", "gapBps": { "overnight": 300, "weekend": 391, "holiday": 326, "earnings": 1139 } },
+    { "symbol": "COIN", "bStock": "0x585bde7c54abb5ccd7791f923d6c2187635f3952", "ondo": "0xf8589b526fdd65f7f301c605a6e04f0f1b4b3620", "xStock": "0x364f210f430ec2448fc68a49203040f6124096f0", "chainlink": "0x2d1ab79d059e21ae519d88f978caf39d74e31aeb", "atlas": "0xda04cb5e91ee844eedfdd35224fa9dc5d1376f4b", "gapBps": { "overnight": 773, "weekend": 946, "holiday": 473, "earnings": 2200 } },
+    { "symbol": "CRCL", "bStock": "0x80f3d493ebce97e343c53d29a137942416b4ffc0", "ondo": "0x992879cd8ce0c312d98648875b5a8d6d042cbf34", "xStock": "0x0000000000000000000000000000000000000000", "chainlink": "0x0000000000000000000000000000000000000000", "atlas": "0x15c493e3c31080784cd2067369c1faea9ea35302", "gapBps": { "overnight": 513, "weekend": 466, "holiday": 357, "earnings": 447 } },
+    { "symbol": "MSTR", "bStock": "0xe87afb3076aeb0f9b14e368de8145ae6a2826a14", "ondo": "0x7313ea16493b2f55054df0131a3a14b043ec8992", "xStock": "0xae2f842ef90c0d5213259ab82639d5bbf649b08e", "chainlink": "0x0000000000000000000000000000000000000000", "atlas": "0xcdc253a6ffa1bc37dcee5a7953add797889fc314", "gapBps": { "overnight": 770, "weekend": 1209, "holiday": 605, "earnings": 661 } }
+  ]
+}
