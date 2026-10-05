@@ -84,3 +84,44 @@ describe("Web3Client", () => {
     await expect(c.get("/api/v1/x")).rejects.toThrow(/BINANCE_WEB3_API_KEY/);
   });
 });
+
+describe("retry policy for state-changing requests", () => {
+  const boom = () => Promise.reject(new TypeError("fetch failed"));
+
+  it("POST + network error throws after one call", async () => {
+    const f = vi.fn(boom);
+    const { c } = client(f as unknown as typeof fetch);
+    const err = (await c.post("/api/v1/x", {}).catch((e) => e)) as Web3ApiError;
+    expect(err).toBeInstanceOf(Web3ApiError);
+    expect(err.code).toBe("NETWORK");
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("POST + 503 makes one call and surfaces a retryable typed error", async () => {
+    const f = vi.fn(async () => res(503, { code: 50300, msg: "unavailable" }));
+    const { c } = client(f as unknown as typeof fetch);
+    const err = (await c.post("/api/v1/x", {}).catch((e) => e)) as Web3ApiError;
+    expect(err).toBeInstanceOf(Web3ApiError);
+    expect(err.retryable).toBe(true);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it("idempotent POST retries network errors", async () => {
+    let n = 0;
+    const f = vi.fn(async () => (++n === 1 ? boom() : res(200, { code: 0, data: "ok" })));
+    const { c } = client(f as unknown as typeof fetch);
+    expect(await c.post("/api/v1/x", {}, { idempotent: true })).toBe("ok");
+    expect(f).toHaveBeenCalledTimes(2);
+  });
+
+  it("POST retries 429, GET retries network errors", async () => {
+    let n = 0;
+    const f429 = vi.fn(async () => (++n === 1 ? res(429, { code: 42900, msg: "rate" }) : res(200, { code: 0, data: 1 })));
+    expect(await client(f429 as unknown as typeof fetch).c.post<number>("/api/v1/x", {})).toBe(1);
+    expect(f429).toHaveBeenCalledTimes(2);
+    let m = 0;
+    const fNet = vi.fn(async () => (++m === 1 ? boom() : res(200, { code: 0, data: 2 })));
+    expect(await client(fNet as unknown as typeof fetch).c.get<number>("/api/v1/x")).toBe(2);
+    expect(fNet).toHaveBeenCalledTimes(2);
+  });
+});

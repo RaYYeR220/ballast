@@ -57,11 +57,15 @@ export class Web3Client {
     return this.request<T>("GET", path, encodeQuery(query), "");
   }
 
-  post<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>("POST", path, "", JSON.stringify(body ?? {}));
+  /**
+   * POSTs are state-changing: they are retried only when rejected before processing (429 / 42900),
+   * never on network errors or 5xx — unless the caller marks the request `idempotent`.
+   */
+  post<T>(path: string, body: unknown, opts: { idempotent?: boolean } = {}): Promise<T> {
+    return this.request<T>("POST", path, "", JSON.stringify(body ?? {}), opts.idempotent === true);
   }
 
-  private async request<T>(method: "GET" | "POST", path: string, search: string, body: string): Promise<T> {
+  private async request<T>(method: "GET" | "POST", path: string, search: string, body: string, idempotent = method === "GET"): Promise<T> {
     if (!this.o.apiKey || !this.o.apiSecret) {
       throw new Error("Binance Web3 API credentials missing: set BINANCE_WEB3_API_KEY and BINANCE_WEB3_API_SECRET");
     }
@@ -96,8 +100,9 @@ export class Web3Client {
         const ok = status < 400 && isSuccessCode(env.code);
         this.record(method, path, status, code, ok, started, attempt);
         if (ok) return env.data as T;
-        const retryable = (status === 429 || status >= 500 || code === "42900") && code !== GEO_BLOCK_CODE;
-        if (retryable && attempt <= maxRetries) {
+        const rateLimited = status === 429 || code === "42900";
+        const retryable = (rateLimited || status >= 500) && code !== GEO_BLOCK_CODE;
+        if (retryable && (rateLimited || idempotent) && attempt <= maxRetries) {
           const ra = Number(res.headers.get("retry-after"));
           await this.sleep(Number.isFinite(ra) && ra > 0 ? ra * 1000 : 250 * 2 ** attempt);
           continue;
@@ -106,7 +111,7 @@ export class Web3Client {
       } catch (e) {
         if (e instanceof Web3ApiError) throw e;
         this.record(method, path, status, code, false, started, attempt, String(e));
-        if (attempt <= maxRetries) {
+        if (idempotent && attempt <= maxRetries) {
           await this.sleep(250 * 2 ** attempt);
           continue;
         }
