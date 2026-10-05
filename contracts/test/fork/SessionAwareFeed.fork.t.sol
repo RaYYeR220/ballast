@@ -8,7 +8,7 @@ import {SessionAwareFeed} from "../../src/SessionAwareFeed.sol";
 import {MarketParams, IPriceSource, IAggregatorV3} from "../../src/interfaces/External.sol";
 
 /// @notice Two identical SPYB/USD1 LLTV-85% markets, one priced by Lista's StockOracle and one by the
-///         SessionAwareFeed. A −5% thin-book print on Saturday liquidates the first and not the second;
+///         SessionAwareFeed. A -5% thin-book print on Saturday liquidates the first and not the second;
 ///         a move that is still there in Monday's regular session liquidates both.
 contract SessionAwareFeedForkTest is ForkBase {
     using stdJson for string;
@@ -31,6 +31,7 @@ contract SessionAwareFeedForkTest is ForkBase {
         address cl = cfg.readAddress(".tickers[1].chainlink");
         friClose = _nextWeekendClose();
         vm.warp(friClose + 60);
+        // Needed: the Friday-close Chainlink print is the band's anchor (without it band() has no reference).
         vm.mockCall(cl, abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
             abi.encode(uint80(1), int256(friPrice * 1e18 / mult), friClose - 30, friClose - 30, uint80(1)));
         _setPrice(spyb, friPrice);
@@ -65,6 +66,10 @@ contract SessionAwareFeedForkTest is ForkBase {
     function test_saturdayWick_liquidatesListaMarketOnly() public {
         vm.warp(friClose + 12 hours);
         _setPrice(spyb, friPrice * 95 / 100);
+        (uint256 lo,, uint256 bandBps, bool ok) = feed.band("SPY");
+        assertTrue(ok);
+        assertEq(bandBps, 334, "SPY weekend base 223 bps widened at +12h");
+        assertEq(feed.peek(spyb), lo, "the -5% print is clamped to the band floor");
         assertFalse(_healthy(listaMp), "status quo liquidates on a thin-book -5%");
         assertTrue(_healthy(feedMp), "session-aware feed holds the band");
     }
@@ -72,10 +77,7 @@ contract SessionAwareFeedForkTest is ForkBase {
     function test_persistentMove_liquidatesBothAtTheOpen() public {
         vm.warp(cal.nextOpen(friClose) + 90 minutes);
         _setPrice(spyb, friPrice * 95 / 100);
-        address cl = cfg.readAddress(".tickers[1].chainlink");
-        uint256 mult = IEIP8056Like(spyb).uiMultiplier();
-        vm.mockCall(cl, abi.encodeWithSelector(IAggregatorV3.latestRoundData.selector),
-            abi.encode(uint80(2), int256(friPrice * 95 / 100 * 1e18 / mult), block.timestamp - 60, block.timestamp - 60, uint80(2)));
+        assertEq(feed.peek(spyb), friPrice * 95 / 100, "regular session: the feed passes the upstream price through");
         assertFalse(_healthy(listaMp));
         assertFalse(_healthy(feedMp));
     }

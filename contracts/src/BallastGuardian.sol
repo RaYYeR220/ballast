@@ -5,6 +5,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IACP} from "./interfaces/IACP.sol";
 import {IACPHook} from "./interfaces/IACPHook.sol";
 import {BallastFactory} from "./accounts/BallastFactory.sol";
+import {SessionCalendar} from "./SessionCalendar.sol";
 import {BallastAccountBase} from "./accounts/BallastAccountBase.sol";
 import {IIdentityRegistry, IReputationRegistry} from "./interfaces/External.sol";
 
@@ -34,7 +35,7 @@ contract BallastGuardian is IACPHook {
     mapping(uint256 => Terms) public terms;
 
     event JobBound(uint256 indexed jobId, address indexed account, uint64 start, uint64 end, uint256 agentId);
-    event Settled(uint256 indexed jobId, address indexed account, bool survived);
+    event Settled(uint256 indexed jobId, address indexed account, bool survived, bool paid);
     event FeedbackFailed(uint256 indexed jobId, uint256 agentId);
 
     error OnlyKernel();
@@ -45,6 +46,7 @@ contract BallastGuardian is IACPHook {
     error WindowNotOver();
     error CannotEvaluateNow();
     error NotSettleable();
+    error InsufficientGasForFeedback();
 
     constructor(
         IACP kernel_,
@@ -88,12 +90,14 @@ contract BallastGuardian is IACPHook {
 
     // ------------------------------------------------------------- evaluator
 
+    /// @notice Settles a Submitted job once the window is over. Jobs that were never submitted are not
+    ///         settled here: the client recovers them through the kernel's claimRefund at expiry.
     function settle(uint256 jobId) external {
         Terms storage t = terms[jobId];
         if (!t.bound || t.settled) revert NotSettleable();
         if (block.timestamp < t.end) revert WindowNotOver();
         IACP.Job memory job = kernel.getJob(jobId);
-        if (job.status != IACP.JobStatus.Funded && job.status != IACP.JobStatus.Submitted) revert NotSettleable();
+        if (job.status != IACP.JobStatus.Submitted) revert NotSettleable();
 
         BallastAccountBase account = BallastAccountBase(t.account);
         bool wasLiquidated = account.liquidated();
@@ -105,35 +109,61 @@ contract BallastGuardian is IACPHook {
         }
         t.settled = true;
         bytes32 reason = keccak256(abi.encode(jobId, t.account, survived, wasLiquidated, block.number));
-        if (survived && job.status == IACP.JobStatus.Submitted) {
+        if (survived) {
             kernel.complete(jobId, reason, "");
         } else {
             kernel.reject(jobId, reason, "");
         }
-        _feedback(jobId, t.agentId, survived && job.status == IACP.JobStatus.Submitted, reason);
-        emit Settled(jobId, t.account, survived);
+        _feedback(jobId, t.agentId, survived, reason);
+        emit Settled(jobId, t.account, survived, survived);
     }
 
     // --------------------------------------------------------------- internal
+
+    uint256 internal constant MIN_WINDOW = 1 hours;
+    uint256 internal constant START_SLACK = 5 minutes;
+    uint256 internal constant FEEDBACK_GAS_FLOOR = 260_000;
 
     bytes4 internal constant _FUND = bytes4(keccak256("fund(uint256,uint256,bytes)"));
     bytes4 internal constant _SUBMIT = bytes4(keccak256("submit(uint256,bytes32,bytes)"));
 
     function _bind(uint256 jobId, bytes calldata data) internal {
+        if (terms[jobId].bound) revert BadTerms();
         (address account, uint64 start, uint64 end, uint256 agentId) = abi.decode(data, (address, uint64, uint64, uint256));
         IACP.Job memory job = kernel.getJob(jobId);
         if (job.evaluator != address(this) || job.hook != address(this)) revert BadTerms();
         if (!factory.isAccount(account)) revert BadTerms();
-        if (BallastAccountBase(account).owner() != job.client) revert NotAccountOwner();
-        if (end <= start || end <= block.timestamp || uint256(end) + minGrace > job.expiredAt) revert BadTerms();
+        BallastAccountBase acct = BallastAccountBase(account);
+        if (acct.owner() != job.client) revert NotAccountOwner();
+        if (end <= block.timestamp || uint256(end) < uint256(start) + MIN_WINDOW || uint256(start) + START_SLACK < block.timestamp) {
+            revert BadTerms();
+        }
+        uint256 reopen = factory.sessionOracle().calendar().nextOpen(end);
+        if (reopen == 0 || job.expiredAt < reopen + minGrace) revert BadTerms();
+        if (acct.liquidated()) revert BadTerms();
+        (, uint256 debt) = acct.position();
+        if (debt == 0) revert BadTerms();
         if (job.budget < minBudget) revert BudgetTooLow();
-        address wallet = identity.getAgentWallet(agentId);
-        if (job.provider != identity.ownerOf(agentId) && job.provider != wallet) revert ProviderNotAgent();
+        _checkProvider(job, agentId);
         terms[jobId] = Terms({account: account, start: start, end: end, agentId: agentId, bound: true, settled: false});
         emit JobBound(jobId, account, start, end, agentId);
     }
 
+    function _checkProvider(IACP.Job memory job, uint256 agentId) internal view {
+        if (job.provider == address(0)) revert ProviderNotAgent();
+        address agentOwner = identity.ownerOf(agentId);
+        address wallet;
+        try identity.getAgentWallet(agentId) returns (address w) {
+            wallet = w;
+        } catch {}
+        if (job.provider != agentOwner && job.provider != wallet) revert ProviderNotAgent();
+        if (job.client == job.provider || job.client == agentOwner || (wallet != address(0) && job.client == wallet)) {
+            revert BadTerms();
+        }
+    }
+
     function _feedback(uint256 jobId, uint256 agentId, bool success, bytes32 reason) internal {
+        if (gasleft() < FEEDBACK_GAS_FLOOR) revert InsufficientGasForFeedback();
         try reputation.giveFeedback(agentId, success ? int128(100) : int128(0), 0, "ballast-guard", "window", "", "", reason) {}
         catch {
             emit FeedbackFailed(jobId, agentId);

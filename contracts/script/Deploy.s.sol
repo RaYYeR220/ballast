@@ -20,7 +20,14 @@ contract Deploy is Script {
     function run() external {
         string memory cfg = vm.readFile(string.concat(vm.projectRoot(), "/../config/bsc-mainnet.json"));
         address publisher = vm.envAddress("PUBLISHER_ADDRESS");
-        uint256 agentId = vm.envOr("PUBLISHER_AGENT_ID", uint256(0));
+        uint256 agentId;
+        if (block.chainid == 31337) {
+            agentId = vm.envOr("PUBLISHER_AGENT_ID", uint256(0));
+        } else {
+            require(cfg.readUint(".chainId") == block.chainid, "config chainId mismatch");
+            agentId = vm.envUint("PUBLISHER_AGENT_ID"); // must be a registered ERC-8004 id off the dry-run chain
+            require(agentId != 0, "PUBLISHER_AGENT_ID is zero");
+        }
         vm.startBroadcast();
         address owner = msg.sender;
 
@@ -67,6 +74,7 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         string memory o = "deploy";
+        o.serialize("owner", owner);
         o.serialize("calendar", address(cal));
         o.serialize("sessionOracle", address(oracle));
         o.serialize("sessionAwareFeed", address(feed));
