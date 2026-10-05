@@ -49,11 +49,79 @@ describe("planShield", () => {
   });
 });
 
+describe("planShield bounds", () => {
+  const input = { gapBps: 737, targetHfAfterGap: 1.05, maxSlippageBps: 150, canSellCollateral: true };
+
+  it("never sells more than held or repays more than the debt (unreachable target)", () => {
+    const plan = planShield({ ...input, position: { ...base, debtUsd: 2300 }, cushionUsd: 0 });
+    expect(plan.kind).toBe("insufficient");
+    if (plan.kind !== "insufficient") return;
+    expect(plan.reason).toMatch(/selling all collateral/);
+    expect(plan.hfAfterGap).toBeLessThan(1.05);
+  });
+
+  it("best-effort insufficient plan stays within held collateral and debt", () => {
+    const plan = planShield({ ...input, position: { ...base, debtUsd: 2300 }, cushionUsd: 0 });
+    expect(plan.kind).toBe("insufficient");
+    if (plan.kind !== "insufficient") return;
+    expect(plan.sellTokens).toBeLessThanOrEqual(10);
+    expect(plan.flashRepayUsd).toBeLessThanOrEqual(2300);
+  });
+
+  it("insufficient when slippage leaves no headroom (denominator <= 0)", () => {
+    const plan = planShield({ ...input, maxSlippageBps: 6000, position: { ...base, debtUsd: 1600 }, cushionUsd: 50 });
+    expect(plan.kind).toBe("insufficient");
+    if (plan.kind === "insufficient") expect(plan.reason).toMatch(/no headroom/);
+  });
+
+  it("rejects out-of-range gap and slippage", () => {
+    expect(() => planShield({ ...input, gapBps: 10_000, position: base, cushionUsd: 0 })).toThrow(RangeError);
+    expect(() => planShield({ ...input, maxSlippageBps: 10_000, position: base, cushionUsd: 0 })).toThrow(RangeError);
+    expect(() => planShield({ ...input, gapBps: -1, position: base, cushionUsd: 0 })).toThrow(RangeError);
+  });
+
+  it("a large-debt deleverage still succeeds within bounds", () => {
+    const plan = planShield({ ...input, position: { ...base, debtUsd: 1750 }, cushionUsd: 0 });
+    expect(plan.kind).toBe("repay+deleverage");
+    if (plan.kind !== "repay+deleverage") return;
+    expect(plan.sellTokens).toBeGreaterThan(0);
+    expect(plan.sellTokens).toBeLessThanOrEqual(10);
+    expect(plan.flashRepayUsd).toBeLessThanOrEqual(1750);
+    expect(plan.hfAfterGap).toBeGreaterThanOrEqual(1.05 - 1e-6);
+  });
+
+  it("never leaves 0 < debt < minLoan after the flash repay", () => {
+    for (let debt = 1560; debt <= 1760; debt += 7) {
+      const plan = planShield({ ...input, position: { ...base, debtUsd: debt, minLoanUsd: 400 }, cushionUsd: 0 });
+      if (plan.kind !== "repay+deleverage") continue;
+      const left = debt - plan.repayUsd - plan.flashRepayUsd;
+      expect(left <= 1e-9 || left >= 400 - 1e-9).toBe(true);
+    }
+  });
+
+  it("repays everything via sale when the remainder would be dust and collateral allows", () => {
+    // needs ~ $1600-... remainder just under minLoan: huge minLoan forces full repay
+    const plan = planShield({ ...input, position: { ...base, debtUsd: 1600, minLoanUsd: 1500 }, cushionUsd: 0 });
+    expect(plan.kind).toBe("repay+deleverage");
+    if (plan.kind === "repay+deleverage") expect(plan.flashRepayUsd).toBe(1600);
+  });
+
+  it("leaves exactly minLoan and reports insufficient when collateral cannot repay all", () => {
+    const plan = planShield({ ...input, position: { collateralTokens: 1, collateralPriceUsd: 225, debtUsd: 300, lltv: 0.75, minLoanUsd: 200 }, cushionUsd: 0 });
+    expect(plan.kind).toBe("insufficient");
+    if (plan.kind === "insufficient") expect(300 - (plan.flashRepayUsd ?? 0)).toBeGreaterThanOrEqual(200 - 1e-9);
+  });
+});
+
 describe("planRestore", () => {
   it("borrows back up to the target debt within the LTV cap", () => {
     const p = { ...base, debtUsd: 1000 };
     const r = planRestore({ position: p, cushionUsd: 0, targetDebtUsd: 1500, maxLtv: 0.6 });
     expect(r).toEqual({ kind: "borrow", borrowUsd: 350, ltvAfter: 1350 / 2250 });
+  });
+  it("never borrows into a debt below the minimum loan", () => {
+    const r = planRestore({ position: { ...base, debtUsd: 0 }, cushionUsd: 0, targetDebtUsd: 10, maxLtv: 0.6 });
+    expect(r.kind).toBe("noop");
   });
   it("noop when already at target", () => {
     expect(planRestore({ position: base, cushionUsd: 0, targetDebtUsd: 1500, maxLtv: 0.8 }).kind).toBe("noop");
