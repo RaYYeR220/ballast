@@ -7,6 +7,7 @@
     "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
     "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv",
     "test": "vitest run",
+    "backtest": "tsx packages/risk/scripts/backtest.ts",
     "typecheck": "pnpm -r exec tsc --noEmit"
   },
   "devDependencies": {
