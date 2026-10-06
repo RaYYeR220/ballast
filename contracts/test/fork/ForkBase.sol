@@ -70,8 +70,12 @@ abstract contract ForkBase is Test {
         assertEq(keccak256(abi.encode(mp)), cfg.readBytes32(string.concat(base, ".id")), "market id mismatch");
     }
 
+    function _tickerCount() internal view returns (uint256 n) {
+        while (cfg.keyExists(string.concat(".tickers[", vm.toString(n), "]"))) ++n;
+    }
+
     function _listAll() internal {
-        uint256 n = 12;
+        uint256 n = _tickerCount();
         for (uint256 i; i < n; ++i) {
             string memory p = string.concat(".tickers[", vm.toString(i), "]");
             SessionOracle.Ticker memory t = SessionOracle.Ticker({

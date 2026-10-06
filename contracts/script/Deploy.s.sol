@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {SessionCalendar} from "../src/SessionCalendar.sol";
 import {SessionOracle} from "../src/SessionOracle.sol";
@@ -30,6 +31,10 @@ contract Deploy is Script {
         }
         vm.startBroadcast();
         address owner = msg.sender;
+        // The publisher key lives on the always-on agent host; the owner key must never be that key.
+        if (block.chainid != 31337) require(publisher != owner, "PUBLISHER_ADDRESS is the owner");
+        uint256 n = _tickerCount(cfg);
+        require(n != 0, "no tickers in config");
 
         SessionCalendar cal = new SessionCalendar();
         SessionOracle oracle = new SessionOracle(
@@ -37,7 +42,7 @@ contract Deploy is Script {
             IOndoSharesOracle(cfg.readAddress(".ondo.sharesOracle")),
             SessionOracle.Params(5400, 10800, 60, 93600, 21600, 100, 300)
         );
-        for (uint256 i; i < 12; ++i) {
+        for (uint256 i; i < n; ++i) {
             string memory p = string.concat(".tickers[", vm.toString(i), "]");
             oracle.listTicker(
                 bytes32(bytes(cfg.readString(string.concat(p, ".symbol")))),
@@ -57,7 +62,7 @@ contract Deploy is Script {
         oracle.setPublisher(publisher, agentId);
 
         SessionAwareFeed feed = new SessionAwareFeed(owner, oracle, IPriceSource(cfg.readAddress(".lista.resilientOracle")));
-        for (uint256 i; i < 12; ++i) {
+        for (uint256 i; i < n; ++i) {
             string memory p = string.concat(".tickers[", vm.toString(i), "]");
             feed.mapAsset(cfg.readAddress(string.concat(p, ".bStock")), bytes32(bytes(cfg.readString(string.concat(p, ".symbol")))));
         }
@@ -84,7 +89,16 @@ contract Deploy is Script {
         o.serialize("cushionVault", address(vault));
         o.serialize("guardian", address(guardian));
         string memory json = o.serialize("block", block.number);
-        json.write(string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), ".json"));
+        // Only a real broadcast records addresses; a simulation must not leave a deployments file behind.
+        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
+            json.write(string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), ".json"));
+        } else {
+            console2.log("simulation only: deployments file not written");
+        }
         console2.log("sessionOracle", address(oracle));
+    }
+
+    function _tickerCount(string memory cfg) internal view returns (uint256 n) {
+        while (cfg.keyExists(string.concat(".tickers[", vm.toString(n), "]"))) ++n;
     }
 }

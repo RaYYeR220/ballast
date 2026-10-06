@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {SessionOracle} from "../../src/SessionOracle.sol";
@@ -51,11 +52,19 @@ contract ListaAccountForkTest is ForkBase {
         _freezePrices(t);
     }
 
-    /// @dev Freeze prices, move to one hour before the next close, and set the shield LTV so that selling 1 of 10
-    ///      collateral into a 200 repay lands within 1% of it. Returns the LTV before.
+    /// @dev A keeper deleverage spends the cushion first; tests of the sale itself start with none.
+    function _drainCushion() internal {
+        vm.startPrank(user);
+        acct.withdrawCushion(acct.cushion(), user);
+        vm.stopPrank();
+    }
+
+    /// @dev Freeze prices, move to one hour before the next close, empty the cushion, and set the shield LTV so
+    ///      that selling 1 of 10 collateral into a 200 repay lands within 1% of it. Returns the LTV before.
     function _armWindow(bool exact) internal returns (uint256 l0) {
         _freeze();
         vm.warp(_hourBeforeNextClose());
+        _drainCushion();
         l0 = acct.ltvBps();
         uint256 shield = exact ? l0 * 8 / 9 + 50 : l0 / 2;
         vm.prank(user);
@@ -209,6 +218,7 @@ contract ListaAccountForkTest is ForkBase {
     function test_deleverage_refusedOutsideWindow() public {
         _freeze();
         vm.warp(_nextRestoreMoment()); // more than the horizon before the close
+        _drainCushion();
         uint256 l0 = acct.ltvBps();
         vm.prank(user);
         acct.setMandate(BallastAccountBase.Mandate(6000, uint16(l0 * 8 / 9 + 50), 150, true));
@@ -253,6 +263,7 @@ contract ListaAccountForkTest is ForkBase {
     function _pushAboveCap() internal returns (uint256 l) {
         _freeze();
         vm.warp(_nextRestoreMoment());
+        _drainCushion();
         uint256 l0 = acct.ltvBps();
         vm.prank(user);
         acct.setMandate(BallastAccountBase.Mandate(uint16(l0 + 100), uint16(l0 / 2), 150, true));
@@ -264,6 +275,7 @@ contract ListaAccountForkTest is ForkBase {
     function test_deleverage_refusedBelowShieldLtv() public {
         _freeze();
         vm.warp(_hourBeforeNextClose()); // in window, but the default shield LTV (50%) is above the ~44% LTV
+        _drainCushion(); // with no cushion to spend there is nothing to do
         vm.prank(keeper);
         vm.expectPartialRevert(ListaAccount.BelowShieldLtv.selector);
         acct.shieldDeleverage(200e18, 1e18, _path(), 0);
@@ -272,6 +284,7 @@ contract ListaAccountForkTest is ForkBase {
     function test_deleverage_refusedWhenItOvershootsShield() public {
         _freeze();
         vm.warp(_hourBeforeNextClose());
+        _drainCushion();
         uint256 l0 = acct.ltvBps();
         vm.prank(user);
         acct.setMandate(BallastAccountBase.Mandate(6000, uint16(l0 - 100), 150, true)); // the sale drops ~5 points
@@ -303,6 +316,226 @@ contract ListaAccountForkTest is ForkBase {
         vm.prank(address(moolah));
         vm.expectRevert(BallastAccountBase.Unauthorized.selector); // right caller, but no flash in progress
         acct.onMoolahFlashLoan(1e18, abi.encode(uint256(1), bytes(""), uint256(0)));
+    }
+
+    // ---------------------------------- keeper spends the cushion inside the shield
+
+    /// @dev A regular-session keeper restore of `x` into the cushion, then one hour before that day's close.
+    function _restoreThenWindow(uint256 x) internal {
+        _freeze();
+        vm.warp(_nextRestoreMoment());
+        _mockCanAddRisk("NVDA", true, SessionOracle.Reason.OK);
+        vm.prank(keeper);
+        acct.restore(x);
+        vm.warp(_hourBeforeNextClose());
+        moolah.accrueInterest(mp);
+    }
+
+    /// @dev Shield LTV half a point under where a 200 repay against a 1-collateral sale lands once the whole
+    ///      cushion has gone on the debt.
+    function _shieldAfterCushion() internal view returns (uint16) {
+        (uint256 c, uint256 d) = acct.position();
+        uint256 rest = d - acct.cushion();
+        return uint16(acct.ltvBps() * (rest - 200e18) * c / (d * (c - 1e18)) + 50);
+    }
+
+    function _mandate(uint16 shield, bool autoRestore) internal pure returns (BallastAccountBase.Mandate memory) {
+        return BallastAccountBase.Mandate(6000, shield, 150, autoRestore);
+    }
+
+    function _autoRestore() internal view returns (bool on) {
+        (,,, on) = acct.mandate();
+    }
+
+    function test_keeperDeleverage_cushionEnough_repaysWithoutSale() public {
+        _restoreThenWindow(100e18); // cushion 500, LTV ~49%
+        uint16 shield = uint16(acct.ltvBps() * 8 / 10); // above the shield before, below it once the cushion is spent
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+        (, uint256 d0) = acct.position();
+        uint256 cu = acct.cushion();
+
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        (uint256 c1, uint256 d1) = acct.position();
+        assertApproxEqAbs(d1, d0 - cu, 1);
+        assertEq(acct.cushion(), 0);
+        assertEq(c1, 10e18); // nothing sold
+        assertEq(acct.trackedCollateral(), 10e18);
+        assertLe(acct.ltvBps(), shield);
+        assertTrue(_autoRestore());
+    }
+
+    function test_keeperDeleverage_cushionShort_sellsAndHandsBackRestore() public {
+        _restoreThenWindow(100e18); // cushion 500
+        uint16 shield = _shieldAfterCushion(); // still above the shield after the cushion: a sale is needed
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+        (, uint256 d0) = acct.position();
+        uint256 l0 = acct.ltvBps();
+
+        vm.expectEmit(address(acct));
+        emit BallastAccountBase.MandateSet(6000, shield, 150, false);
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        (, uint256 d1) = acct.position();
+        assertApproxEqAbs(d1, d0 - 500e18 - 200e18, 1);
+        assertEq(acct.trackedCollateral(), 9e18);
+        assertLt(acct.ltvBps(), l0);
+        assertFalse(_autoRestore());
+
+        // Next session the keeper cannot borrow back until the owner turns auto-restore on again.
+        vm.warp(_nextRestoreMoment());
+        vm.prank(keeper);
+        vm.expectRevert(BallastAccountBase.KeeperRestoreDisabled.selector);
+        acct.restore(10e18);
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+        vm.prank(keeper);
+        acct.restore(10e18);
+    }
+
+    /// @dev Anyone can send loan token to the account. It is just more cushion: the keeper spends it in the same
+    ///      call and the shield goes ahead.
+    function test_keeperDeleverage_donationIsSpentNotBlocking() public {
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        moolah.accrueInterest(mp);
+        address griefer = address(0x6A1EF);
+        _fund(usd1, griefer, 50e18);
+        vm.prank(griefer);
+        IERC20(usd1).transfer(address(acct), 50e18);
+        assertEq(acct.cushion(), 450e18);
+        uint16 shield = _shieldAfterCushion();
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+        (, uint256 d0) = acct.position();
+
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        (, uint256 d1) = acct.position();
+        assertApproxEqAbs(d1, d0 - 450e18 - 200e18, 1);
+        assertEq(acct.trackedCollateral(), 9e18);
+        assertGe(acct.ltvBps() + 100, shield);
+    }
+
+    /// @dev The reported loop: every session the keeper restores up to the cap and shields before the close. With
+    ///      the position under the owner's shield LTV once the cushion is back on the debt, every shield is a
+    ///      pure repay: collateral never leaves the account and auto-restore stays on.
+    function test_crossSessionRestoreLoop_onlyRepaysNeverSells() public {
+        _freeze();
+        _mockCanAddRisk("NVDA", true, SessionOracle.Reason.OK);
+        (uint256 vc0,) = acct.position(); // default mandate: cap 60%, shield 50%, LTV ~44%
+        for (uint256 i; i < 3; ++i) {
+            vm.warp(_nextRestoreMoment());
+            (, uint256 d) = acct.position();
+            uint256 l = acct.ltvBps();
+            uint256 x = d * (5900 - l) / l; // up to about 59% against a 60% cap
+            vm.prank(keeper);
+            acct.restore(x);
+            assertGt(acct.ltvBps(), 5000);
+
+            vm.warp(_hourBeforeNextClose());
+            vm.prank(keeper);
+            acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+            (uint256 vc,) = acct.position();
+            assertEq(vc, vc0);
+            assertEq(acct.trackedCollateral(), vc0);
+            assertEq(acct.cushion(), 0);
+            assertLe(acct.ltvBps(), 5000);
+            assertTrue(_autoRestore());
+        }
+    }
+
+    /// @dev Cushion = debt - 5 would leave 5 (< the ~15 minimum loan): repay down to one wei above the minimum
+    ///      and keep the rest as cushion.
+    function test_keeperDeleverage_minLoanEdge_repaysDownToMinimum() public {
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        moolah.accrueInterest(mp);
+        (, uint256 d) = acct.position();
+        uint256 ml = moolah.minLoan(mp);
+        uint256 top = d - 5e18 - acct.cushion();
+        vm.prank(user);
+        acct.depositCushion(top);
+        uint256 cu = acct.cushion();
+        assertEq(cu, d - 5e18);
+        uint16 shield = uint16(acct.ltvBps() * 9 / 10);
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        (uint256 c1, uint256 d1) = acct.position();
+        assertGe(d1, ml + 1);
+        assertLe(d1, ml + 2);
+        assertEq(acct.cushion(), cu - (d - ml - 1));
+        assertEq(c1, 10e18);
+        assertTrue(_autoRestore());
+    }
+
+    function test_keeperDeleverage_cushionCoversDebt_closesByShares() public {
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(user);
+        acct.depositCushion(700e18); // cushion 1100 > debt ~1000
+        uint16 shield = uint16(acct.ltvBps() * 9 / 10);
+        vm.prank(user);
+        acct.setMandate(_mandate(shield, true));
+
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        (uint256 c1, uint256 d1) = acct.position();
+        assertEq(d1, 0);
+        assertEq(c1, 10e18);
+        assertGt(acct.cushion(), 90e18); // only the real debt was pulled
+        assertTrue(_autoRestore());
+    }
+
+    /// @dev A flash that covers the whole debt closes it by shares. Repaying by assets above the debt would revert.
+    function test_flashFullClose_repaysByShares() public {
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        vm.startPrank(user);
+        acct.depositCushion(450e18);
+        acct.repay(850e18); // debt ~150, cushion 0
+        acct.setMandate(_mandate(50, true)); // a 0.5% shield LTV lets a full close pass the landing bound
+        vm.stopPrank();
+        moolah.accrueInterest(mp);
+        (, uint256 d0) = acct.position();
+        assertEq(acct.cushion(), 0);
+        assertGt(d0, 140e18);
+        assertLt(d0, 200e18);
+
+        vm.prank(keeper);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0); // flash 200 > debt
+        (uint256 c1, uint256 d1) = acct.position();
+        assertEq(d1, 0);
+        assertEq(c1, 9e18);
+        assertEq(acct.trackedCollateral(), 9e18);
+        assertGt(acct.cushion(), 0); // the flash surplus and swap proceeds stay as cushion
+        assertFalse(_autoRestore());
+    }
+
+    function test_ownerDeleverage_keepsCushionAndAutoRestore() public {
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        uint256 l0 = acct.ltvBps();
+        vm.prank(user);
+        acct.setMandate(_mandate(uint16(l0 * 8 / 9 + 50), true));
+        uint256 cushion0 = acct.cushion();
+        assertEq(cushion0, 400e18);
+
+        vm.recordLogs();
+        vm.prank(user);
+        acct.shieldDeleverage(200e18, 1e18, _path(), 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter == address(acct)) assertTrue(logs[i].topics[0] != BallastAccountBase.MandateSet.selector);
+        }
+        assertLt(acct.ltvBps(), l0);
+        assertGt(acct.cushion(), cushion0); // the owner's call does not spend the cushion
+        assertTrue(_autoRestore());
     }
 
     // -------------------------------------------------------------- restore
@@ -421,6 +654,37 @@ contract ListaAccountForkTest is ForkBase {
         assertTrue(acct.liquidated()); // still true: the flag is sticky
     }
 
+    /// @dev Mid-flash the venue briefly holds less collateral than tracked; recording that as a seizure from inside
+    ///      the swap must be refused. A pass-through router makes the reentrant call during a real deleverage.
+    function test_recordLiquidation_refusedDuringFlash() public {
+        ReentrantRouter rr = new ReentrantRouter(IPcsV3SwapRouter(router));
+        BallastFactory f2 = new BallastFactory(
+            sOracle, moolah, IPcsV3SwapRouter(address(rr)),
+            IComptroller(cfg.readAddress(".venus.comptroller")), IVenusOracle(cfg.readAddress(".venus.oracle"))
+        );
+        _fund(nvdab, user, 10e18);
+        vm.startPrank(user);
+        ListaAccount a = ListaAccount(f2.createListaAccount(mp, "NVDA", keeper, _mandate(5000, true)));
+        IERC20(nvdab).approve(address(a), type(uint256).max);
+        a.depositCollateral(10e18);
+        a.borrow(1000e18, user);
+        a.setDeleveragePath(_path());
+        vm.stopPrank();
+        _freeze();
+        vm.warp(_hourBeforeNextClose());
+        uint16 shield = uint16(a.ltvBps() * 8 / 9 + 50);
+        vm.prank(user);
+        a.setMandate(_mandate(shield, true));
+
+        vm.prank(keeper);
+        a.shieldDeleverage(200e18, 1e18, _path(), 0);
+        assertTrue(rr.called());
+        assertEq(rr.reentryError(), abi.encodeWithSelector(BallastAccountBase.Locked.selector));
+        assertFalse(a.liquidationRecorded());
+        assertFalse(a.liquidated());
+        assertEq(a.trackedCollateral(), 9e18);
+    }
+
     function test_recordLiquidation_revertsWhenHealthy() public {
         vm.expectRevert(BallastAccountBase.NotLiquidated.selector);
         acct.recordLiquidation();
@@ -430,4 +694,28 @@ contract ListaAccountForkTest is ForkBase {
 
 interface IPriceSourceLike {
     function peek(address) external view returns (uint256);
+}
+
+/// @dev Forwards a swap to the real router, but first tries to latch a liquidation on the calling account.
+contract ReentrantRouter {
+    IPcsV3SwapRouter public immutable real;
+    bool public called;
+    bytes public reentryError;
+
+    constructor(IPcsV3SwapRouter real_) {
+        real = real_;
+    }
+
+    function exactInput(IPcsV3SwapRouter.ExactInputParams calldata p) external payable returns (uint256) {
+        called = true;
+        try BallastAccountBase(msg.sender).recordLiquidation() {
+            reentryError = "";
+        } catch (bytes memory err) {
+            reentryError = err;
+        }
+        IERC20 tokenIn = IERC20(address(bytes20(p.path[0:20])));
+        tokenIn.transferFrom(msg.sender, address(this), p.amountIn);
+        tokenIn.approve(address(real), p.amountIn);
+        return real.exactInput(p);
+    }
 }

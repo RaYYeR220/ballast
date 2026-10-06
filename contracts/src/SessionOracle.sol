@@ -370,7 +370,8 @@ contract SessionOracle is Ownable2Step {
 
     function _setParams(Params memory p) internal {
         if (
-            p.restoreDelay > 6 hours || p.horizon > 24 hours || p.convergenceBps == 0 || p.convergenceBps > 500
+            p.restoreDelay < 30 minutes || p.restoreDelay > 6 hours || p.horizon < 1 hours || p.horizon > 24 hours
+                || p.convergenceBps == 0 || p.convergenceBps > 500
                 || p.maxRefAge < 1 hours || p.maxRefAge > 7 days || p.maxOverlayTtl == 0 || p.maxOverlayTtl > 24 hours
                 || p.maxOndoDriftBps > 500 || p.maxRefDeviationBps > 2000
         ) revert BadParams();

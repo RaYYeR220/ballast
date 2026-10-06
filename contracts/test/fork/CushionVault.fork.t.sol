@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {ForkBase} from "./ForkBase.sol";
 import {CushionVault} from "../../src/CushionVault.sol";
+import {SessionCalendar} from "../../src/SessionCalendar.sol";
 import {MarketParams, IVToken, IComptroller} from "../../src/interfaces/External.sol";
 
 contract CushionVaultForkTest is ForkBase {
@@ -138,22 +139,27 @@ contract CushionVaultForkTest is ForkBase {
         assertEq(vault.coverCount(), 1);
     }
 
-    function test_venusCover_repaysOnBehalf() public {
+    /// @dev `userV` supplies 1 TSLAB on Venus, borrows `borrowAmt` USDT, and opens a USDT cover of `amount`.
+    function _venusUser(address userV, uint256 borrowAmt, uint128 cap, uint128 amount) internal returns (address vU, bytes32 k) {
         address vT = cfg.readAddress(".venus.vTSLAB");
-        address vU = cfg.readAddress(".venus.vUSDT");
-        address userV = address(0xB0B);
+        vU = cfg.readAddress(".venus.vUSDT");
         _fund(tslab, userV, 1e18);
+        _fund(usdt, userV, amount);
         vm.startPrank(userV);
         IERC20(tslab).approve(vT, type(uint256).max);
         assertEq(IVToken(vT).mint(1e18), 0);
         address[] memory ms = new address[](1);
         ms[0] = vT;
         IComptroller(cfg.readAddress(".venus.comptroller")).enterMarkets(ms);
-        assertEq(IVToken(vU).borrow(100e18), 0);
+        if (borrowAmt != 0) assertEq(IVToken(vU).borrow(borrowAmt), 0);
         IERC20(usdt).approve(address(vault), type(uint256).max);
-        bytes32 k = vault.openVenusCover(vU, "TSLA", keeper, 80e18, 60e18);
+        k = vault.openVenusCover(vU, "TSLA", keeper, cap, amount);
         vm.stopPrank();
+    }
 
+    function test_venusCover_repaysOnBehalf() public {
+        address userV = address(0xB0B);
+        (address vU, bytes32 k) = _venusUser(userV, 100e18, 80e18, 60e18);
         vm.warp(_hourBeforeNextClose());
         uint256 d0 = IVToken(vU).borrowBalanceStored(userV);
         vm.prank(keeper);
@@ -161,5 +167,72 @@ contract CushionVaultForkTest is ForkBase {
         assertLt(IVToken(vU).borrowBalanceStored(userV), d0);
         assertEq(vault.cover(userV, k).balance, 10e18);
         assertEq(vault.coverCount(), 2);
+    }
+
+    function test_venusFullClose_repaysExactBalance_refundsRest() public {
+        address userV = address(0xB0B);
+        (address vU, bytes32 k) = _venusUser(userV, 100e18, 200e18, 150e18);
+        vm.warp(_hourBeforeNextClose());
+        vm.roll(block.number + 1000); // Venus accrues per block: let some interest build
+        uint256 d = IVToken(vU).borrowBalanceCurrent(userV);
+        assertGt(d, 100e18);
+        vm.expectEmit(address(vault));
+        emit CushionVault.ShieldedFor(userV, k, uint128(d)); // the amount actually pulled, not the 150 asked for
+        vm.prank(keeper);
+        vault.shieldFor(userV, k, 150e18);
+        assertEq(IVToken(vU).borrowBalanceStored(userV), 0);
+        CushionVault.Cover memory c = vault.cover(userV, k);
+        assertEq(c.balance, 150e18 - d);
+        assertEq(c.usedToday, d);
+        assertEq(IERC20(usdt).balanceOf(address(vault)), c.balance);
+        assertEq(IERC20(usdt).allowance(address(vault), vU), 0);
+    }
+
+    function test_noDebt_venus() public {
+        address userV = address(0xB0B);
+        (, bytes32 k) = _venusUser(userV, 0, 100e18, 50e18);
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vm.expectRevert(CushionVault.NoDebt.selector);
+        vault.shieldFor(userV, k, 10e18);
+    }
+
+    function test_noDebt_lista() public {
+        address userN = address(0xC0FFEE); // a cover with no Lista loan behind it
+        _fund(usd1, userN, 50e18);
+        vm.startPrank(userN);
+        IERC20(usd1).approve(address(vault), type(uint256).max);
+        bytes32 k = vault.openListaCover(mp, "NVDA", keeper, 100e18, 50e18);
+        vm.stopPrank();
+        vm.warp(_hourBeforeNextClose());
+        vm.prank(keeper);
+        vm.expectRevert(CushionVault.NoDebt.selector);
+        vault.shieldFor(userN, k, 10e18);
+        assertEq(vault.cover(userN, k).balance, 50e18);
+    }
+
+    // Spec section 7: shields stay allowed when the calendar cannot tell; a shield only spends the user's own
+    // cushion on the user's own debt.
+
+    function test_shieldAllowedWhenCalendarUnknown() public {
+        vm.warp(cal.VALID_THROUGH() + 2 days); // past the calendar table
+        assertEq(uint8(cal.session(block.timestamp)), uint8(SessionCalendar.Session.UNKNOWN));
+        assertTrue(vault.canShieldNow("NVDA"));
+        uint128 s0 = _debtOf(user);
+        vm.prank(keeper);
+        vault.shieldFor(user, key, 100e18);
+        assertLt(_debtOf(user), s0);
+    }
+
+    function test_shieldAllowedInRegularWhenNextClosureUnknown() public {
+        vm.warp(1830279600); // Fri 2027-12-31 14:00 EST: regular session, the next open is past the table
+        assertEq(uint8(cal.session(block.timestamp)), uint8(SessionCalendar.Session.REGULAR));
+        (, uint64 startsAt,,) = sOracle.windowAhead("NVDA");
+        assertEq(startsAt, 0);
+        assertTrue(vault.canShieldNow("NVDA"));
+        uint128 s0 = _debtOf(user);
+        vm.prank(keeper);
+        vault.shieldFor(user, key, 100e18);
+        assertLt(_debtOf(user), s0);
     }
 }

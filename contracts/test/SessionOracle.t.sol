@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {SessionCalendar} from "../src/SessionCalendar.sol";
 import {SessionOracle} from "../src/SessionOracle.sol";
 import {IPriceSource, IOndoSharesOracle} from "../src/interfaces/External.sol";
@@ -294,6 +295,42 @@ contract SessionOracleTest is Test {
         (uint256 m, bool stale) = oracle.sharesPerToken(NVDA, SessionOracle.Issuer.ONDO);
         assertEq(m, 1.001715e18);
         assertTrue(stale);
+    }
+
+    function test_setParams_bounds() public {
+        SessionOracle.Params memory p = _params();
+        p.restoreDelay = 30 minutes - 1;
+        vm.expectRevert(SessionOracle.BadParams.selector);
+        oracle.setParams(p);
+        p.restoreDelay = 6 hours + 1;
+        vm.expectRevert(SessionOracle.BadParams.selector);
+        oracle.setParams(p);
+
+        p = _params();
+        p.horizon = 1 hours - 1;
+        vm.expectRevert(SessionOracle.BadParams.selector);
+        oracle.setParams(p);
+        p.horizon = 24 hours + 1;
+        vm.expectRevert(SessionOracle.BadParams.selector);
+        oracle.setParams(p);
+
+        p = _params();
+        p.restoreDelay = 30 minutes;
+        p.horizon = 1 hours;
+        oracle.setParams(p); // both lower bounds are inclusive
+        (uint32 rd, uint32 hz,,,,,) = oracle.params();
+        assertEq(rd, 30 minutes);
+        assertEq(hz, 1 hours);
+
+        p.restoreDelay = 0;
+        vm.expectRevert(SessionOracle.BadParams.selector); // the constructor applies the same bounds
+        new SessionOracle(address(this), cal, IPriceSource(address(src)), IOndoSharesOracle(address(ondoShares)), p);
+    }
+
+    function test_setParams_onlyOwner() public {
+        vm.prank(publisher);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, publisher));
+        oracle.setParams(_params());
     }
 
     function postExternal(bytes32 sym, uint64 e, uint8 f, uint128 om, uint128 ref) external {
