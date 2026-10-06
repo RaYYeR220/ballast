@@ -1,11 +1,11 @@
 /**
- * Seller core — the a2a-free seller logic + background delivery machinery.
+ * Seller core - the a2a-free seller logic + background delivery machinery.
  *
  * This is the protocol-neutral heart of the ERC-8183 seller: the two fixed-code
  * operations (`negotiate` → signed quote; `notifyFunded` → verify → ACK →
  * deliver in the background) plus the background-delivery bookkeeping
  * (`isBusy`, the spawn/run/sweep helpers). It imports NOTHING from
- * `@a2a-js/sdk` so it can back any transport — the A2A executor
+ * `@a2a-js/sdk` so it can back any transport - the A2A executor
  * (`executor.ts`) inherits it and wraps it with the a2a wire, and a non-A2A
  * HTTP entrypoint can call it directly without dragging in the a2a sdk.
  *
@@ -13,27 +13,27 @@
  *     notifyFunded → `signing.verifySignedJob` (fast on-chain gate) → ACK at
  *                    once, then in the BACKGROUND: LLM work → `signing.submitResult`
  *
- * `notifyFunded` is the buyer's "I funded job X — please deliver" notification.
+ * `notifyFunded` is the buyer's "I funded job X - please deliver" notification.
  * Because the work takes time, it does NOT block the caller: it verifies the
  * funded job synchronously (a couple of eth_calls) to ACK accepted/rejected,
  * then runs the slow LLM work + on-chain `submit` in a background task and
  * returns immediately. The buyer reads the deliverable back from the CHAIN
- * (SUBMITTED / `getDeliverableUrl`) — the chain is the source of truth. While
+ * (SUBMITTED / `getDeliverableUrl`) - the chain is the source of truth. While
  * any background delivery is in flight {@link SellerCore.isBusy} reports busy,
  * which the transport feeds to AgentCore's `/ping` as `HEALTHY_BUSY` so the
  * scale-to-zero runtime stays warm until the work lands (within the session
  * max-lifetime).
  *
- * ALL signing is FIXED code in `signing.ts` — NEVER an LLM-callable tool
+ * ALL signing is FIXED code in `signing.ts` - NEVER an LLM-callable tool
  * (money is never in the LLM; the LLM only produces the work text, via the
  * `runWork` hook). On each notification the core also opportunistically sweeps
- * OTHER funded jobs assigned to this provider — the buyer-push fallback for
+ * OTHER funded jobs assigned to this provider - the buyer-push fallback for
  * jobs whose buyer funded on-chain but never sent `notify_funded` (deduped
  * against in-flight jobs). Negotiate stays sweep-free so quotes are fast. A
- * periodic Lambda poller — which also covers the scale-to-zero cold window
- * when no one is invoking — is the v2 robust path.
+ * periodic Lambda poller - which also covers the scale-to-zero cold window
+ * when no one is invoking - is the v2 robust path.
  *
- * You own this file — specialise the work hook / dispatch, but keep signing
+ * You own this file - specialise the work hook / dispatch, but keep signing
  * OUT of the LLM tool list.
  */
 
@@ -74,7 +74,7 @@ const log = {
 // BACKGROUND task; AgentCore keeps the scale-to-zero microVM warm
 // (HEALTHY_BUSY) while isBusy() is true. A delivery (LLM text + on-chain
 // submit + IPFS pin) normally finishes in ~1-2 min, so these caps sit far
-// above real work and only fire on a HANG (e.g. an unresponsive RPC) —
+// above real work and only fire on a HANG (e.g. an unresponsive RPC) -
 // without them a hung task keeps the VM pinned to its 8h max-lifetime,
 // billing memory the whole time. A timed-out job is treated as TRANSIENT
 // (not dropped): the funded job stays on-chain and a later sweep re-delivers
@@ -150,7 +150,7 @@ export interface SellerCoreOpts {
  * from the AI SDK); it is called inside the background delivery
  * (`notifyFunded` → `doWorkAndSubmit`) to produce the deliverable text.
  *
- * The core exposes ONLY the two paid, structured operations — there is no
+ * The core exposes ONLY the two paid, structured operations - there is no
  * free-form chat operation. The transport is responsible for routing a
  * request to {@link negotiate} / {@link notifyFunded}; a request that names
  * no structured operation must never trigger an LLM call or a paid action.
@@ -163,8 +163,8 @@ export class SellerCore {
   private readonly commerceSkills: boolean;
   private readonly pendingJobs: PendingJobsFetcher;
   // Background delivery bookkeeping (see notifyFunded / isBusy):
-  //  tasks    — live background promises (busy-status source).
-  //  inflight — job ids in flight OR already terminally handled this
+  //  tasks    - live background promises (busy-status source).
+  //  inflight - job ids in flight OR already terminally handled this
   //             process (notify/sweep dedup; retained on success so a
   //             slower sweep never re-delivers a just-submitted job).
   private readonly tasks = new Set<Promise<void>>();
@@ -189,7 +189,7 @@ export class SellerCore {
     return this.tasks.size > 0;
   }
 
-  /** Await every in-flight background task (test helper — not on the wire). */
+  /** Await every in-flight background task (test helper - not on the wire). */
   async drain(): Promise<void> {
     while (this.tasks.size > 0) {
       await Promise.allSettled([...this.tasks]);
@@ -231,12 +231,12 @@ export class SellerCore {
   }
 
   /**
-   * Buyer notification: "I funded job X — please deliver."
+   * Buyer notification: "I funded job X - please deliver."
    *
    * Verify the funded job synchronously (a couple of eth_calls) to ACK
    * accepted/rejected at once, then run the slow LLM work + on-chain
    * `submit` in a BACKGROUND task and return IMMEDIATELY. The buyer reads
-   * the deliverable back from the CHAIN (SUBMITTED / `getDeliverableUrl`) —
+   * the deliverable back from the CHAIN (SUBMITTED / `getDeliverableUrl`) -
    * the chain is the source of truth (see erc8183-buyer-push.md).
    *
    * An accepted notification also kicks a background sweep (deduped against
@@ -254,7 +254,7 @@ export class SellerCore {
       this.spawn(() => this.sweep()); // bare notify → just scan stragglers
       return {
         status: "accepted",
-        note: "no job_id — scanning funded jobs in the background; poll the chain for results",
+        note: "no job_id - scanning funded jobs in the background; poll the chain for results",
       };
     }
     let jobId: number;
@@ -328,7 +328,7 @@ export class SellerCore {
     const controller = new AbortController();
     try {
       // Hard ceiling so a hung delivery (e.g. unresponsive RPC) cannot keep
-      // isBusy() true — which would pin the microVM to its 8h max-lifetime.
+      // isBusy() true - which would pin the microVM to its 8h max-lifetime.
       // A timeout is TRANSIENT: terminal stays false, the slot is freed, and
       // the funded job is re-delivered idempotently by a later sweep.
       const result = await withTimeout(
@@ -343,13 +343,13 @@ export class SellerCore {
       // `inflight`: keeping it lets the dedup gate in spawnJob reject a
       // slower concurrent sweep that still sees this job as FUNDED, so the
       // just-submitted job is never re-delivered. Clearing on success
-      // reopened that race — the sweep re-ran the work and then failed the
+      // reopened that race - the sweep re-ran the work and then failed the
       // on-chain FUNDED gate (Job status is SUBMITTED). Only transient
       // failures fall through to delete so a later sweep can retry them.
       terminal = Boolean(result.ok || result.skip);
     } catch (e) {
       if (e instanceof DeliveryTimeoutError) {
-        // Transient by design — leave terminal false so a later sweep retries.
+        // Transient by design - leave terminal false so a later sweep retries.
         log.warn(
           `background delivery of job ${jobId} timed out after ${deliveryTimeoutSeconds()}s; will retry`,
         );
@@ -396,7 +396,7 @@ export class SellerCore {
   /**
    * LLM work → sign + submit. Assumes `jobId` is already verified.
    *
-   * DEVELOPER HOOK: the LLM block produces the deliverable text — specialise
+   * DEVELOPER HOOK: the LLM block produces the deliverable text - specialise
    * it for your seller. `signing.submitResult` re-runs the SDK `verifyJob`
    * (defense in depth) and THROWS on a failed submit, so an `ok: true`
    * result always carries a landed tx hash.
@@ -479,7 +479,7 @@ export class SellerCore {
       try {
         this.spawnJob(parseJobId(jid), { verified: false });
       } catch {
-        // unparseable id — skip
+        // unparseable id - skip
       }
     }
   }

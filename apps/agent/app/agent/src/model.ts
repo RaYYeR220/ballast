@@ -1,9 +1,9 @@
 /**
- * Model factory — emitted user code shared by every runtime entrypoint.
+ * Model factory - emitted user code shared by every runtime entrypoint.
  *
  * This file is **your project's code**, scaffolded by `bag` and emitted at
  * `src/model.ts` for every project, whatever `[llm].provider` you chose.
- * It is yours to edit, fork, or replace — studio will not silently rewrite
+ * It is yours to edit, fork, or replace - studio will not silently rewrite
  * it.
  *
  * What it does:
@@ -14,16 +14,16 @@
  *   `@bnbagent/studio-runtime/llm` `resolveModel`; for `pieverse-llm` (with
  *   auto-renew on) it additionally wraps it with a credit-ensure middleware.
  * - The middleware awaits a Pieverse credit-ensure hook before every
- *   generate/stream call — inert unless the provider is `pieverse-llm`.
+ *   generate/stream call - inert unless the provider is `pieverse-llm`.
  *
  * The credit-refresh / auto-allocate / auto-topup logic itself lives in the
- * library at `@bnbagent/studio-runtime/pieverse` `PieverseCreditEnsurer` —
+ * library at `@bnbagent/studio-runtime/pieverse` `PieverseCreditEnsurer` -
  * this shell just wires it into the AI SDK's generate-call path (via
  * `wrapLanguageModel`, the AI SDK's sanctioned middleware seam). That keeps
  * the adapter tiny: you can fork *this file* (e.g. to swap the AI SDK for
  * another stack) without forking studio itself.
  *
- * That top-up is the ONLY automatic signing path outside signing.ts — it is
+ * That top-up is the ONLY automatic signing path outside signing.ts - it is
  * budget-gated and is NOT an LLM tool. It rides transparently into the
  * `notify_funded` work step.
  */
@@ -51,7 +51,7 @@ import {
  * `pieverse-llm` and auto-renew is enabled) wraps it with the credit-ensure
  * middleware.
  *
- * For non-Pieverse providers — or when `[llm.auto_renew].enabled = false` —
+ * For non-Pieverse providers - or when `[llm.auto_renew].enabled = false` -
  * returns the raw inner model unwrapped.
  */
 export function buildModel(): LanguageModel {
@@ -70,7 +70,7 @@ export function buildModel(): LanguageModel {
     return inner;
   }
 
-  // Pieverse path — wrap with the credit-ensure middleware unless auto-renew
+  // Pieverse path - wrap with the credit-ensure middleware unless auto-renew
   // opted out.
   const autoRenewCfg = (llmCfg.auto_renew ?? {}) as TomlTable;
   const pieverseCfg = (llmCfg.pieverse ?? {}) as TomlTable;

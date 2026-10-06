@@ -1,4 +1,4 @@
-# ballastdesk — A2A + MCP seller agent
+# ballastdesk - A2A + MCP seller agent
 
 The valuable Agent and the **SOLE key-holder/signer** for the ballastdesk seller.
 Serves A2A + MCP directly on AgentCore. Canonical quotes use the one
@@ -6,20 +6,20 @@ Serves A2A + MCP directly on AgentCore. Canonical quotes use the one
 fixed entrypoint code converts it with the selected asset's catalog decimals,
 rejects non-representable values instead of rounding, and signs the selected
 token and exact atomic amount. Submit and settle are likewise fixed in
-`src/signing.ts` — never an LLM-callable tool.
+`src/signing.ts` - never an LLM-callable tool.
 
 ## What's here
 
-- `src/dualMain.ts` — A2A-native dual-face entrypoint on port 9000.
-- `src/mcpMain.ts` — imported MCP server library mounted at `/mcp`.
-- `src/executor.ts` — async A2A negotiate + notify_funded execution.
-- `src/agentCard.ts` — the discoverable AgentCard (+ OAuth2/Cognito scheme).
-- `src/signing.ts` — protocol-neutral signing entrypoints. ALL on-chain writes
-  go through these functions — never an LLM-callable tool.
-- `src/model.ts` — provider adapter (e.g. the Pieverse managed model with
+- `src/dualMain.ts` - A2A-native dual-face entrypoint on port 9000.
+- `src/mcpMain.ts` - imported MCP server library mounted at `/mcp`.
+- `src/executor.ts` - async A2A negotiate + notify_funded execution.
+- `src/agentCard.ts` - the discoverable AgentCard (+ OAuth2/Cognito scheme).
+- `src/signing.ts` - protocol-neutral signing entrypoints. ALL on-chain writes
+  go through these functions - never an LLM-callable tool.
+- `src/model.ts` - provider adapter (e.g. the Pieverse managed model with
   budget-gated LLM-credit auto-renew).
-- `src/tools.ts` — read-only chain tools.
-- `studio.toml` — Agent's own config (wallet, LLM, canonical seller USD price,
+- `src/tools.ts` - read-only chain tools.
+- `studio.toml` - Agent's own config (wallet, LLM, canonical seller USD price,
   assets, and budget).
 - the wallet key material lives OUTSIDE this sub-project so deploy packaging can
   never bundle it: an evm-local keystore at the WORKSPACE root `.studio/wallets/`,
@@ -28,13 +28,13 @@ token and exact atomic amount. Submit and settle are likewise fixed in
 ## Set up
 
 ```bash
-# from the workspace root — installs the agent package too (pnpm workspace):
+# from the workspace root - installs the agent package too (pnpm workspace):
 pnpm install
 ```
 
 ## Run locally
 
-Run the Agent with `bag dev` from the workspace root — it auto-loads
+Run the Agent with `bag dev` from the workspace root - it auto-loads
 `.studio/.env.local` and runs the agent in-process (`tsx src/dualMain.ts`, no
 Docker). Use `bag dev --container` to run it via `agentcore dev` in Docker
 for image parity.

@@ -1,12 +1,12 @@
 /**
- * A2A AgentCard — the seller agent's outward, discoverable identity.
+ * A2A AgentCard - the seller agent's outward, discoverable identity.
  *
  * Built by `main.ts` and served at `/.well-known/agent-card.json`. When
  * deployed, `main.ts` overwrites `card.url` at boot with the deployed
  * AgentCore runtime URL (`$AGENTCORE_RUNTIME_URL`), so the `url` here is only
  * a local-dev placeholder.
  *
- * The card advertises exactly two skills — `negotiate` and `notify_funded` —
+ * The card advertises exactly two skills - `negotiate` and `notify_funded` -
  * and the OAuth2 (Cognito) security scheme buyers must satisfy: AgentCore A2A
  * endpoints require an inbound OAuth2 bearer (there is no anonymous mode).
  * The token URL + scope come from the Cognito user pool
@@ -15,7 +15,7 @@
  * validates the same pool. Locally (no Cognito env) the card omits the scheme
  * so `bag dev` is reachable without a token.
  *
- * You own this file — edit the skill descriptions / card metadata for your
+ * You own this file - edit the skill descriptions / card metadata for your
  * seller.
  */
 
@@ -42,11 +42,11 @@ const NOTIFY_FUNDED: AgentSkill = {
   name: "Notify the seller a job is funded (request delivery)",
   description:
     'After you fund the job on-chain, send {"skill": "notify_funded", ' +
-    '"job_id": <int>} to tell the seller "I funded job X — please deliver". ' +
+    '"job_id": <int>} to tell the seller "I funded job X - please deliver". ' +
     "The seller verifies the funded job carries its signed quote and replies " +
     'AT ONCE with {"status": "accepted"|"rejected", "job_id"}; delivery then ' +
     "runs in the background (work takes time). Do NOT wait on this call for " +
-    "the result — read the deliverable back from the CHAIN once the job " +
+    "the result - read the deliverable back from the CHAIN once the job " +
     "reaches SUBMITTED (the `submit` tx carries the deliverable_url; " +
     "ERC-8183 `get_deliverable_url`). The agent serves no job-query endpoint.",
   tags: ["erc8183", "delivery", "bnb-chain"],
@@ -107,7 +107,7 @@ export function buildAgentCard(
   }
   return {
     name,
-    description: `ERC-8183 seller agent (${name}) — negotiate + notify_funded over A2A.`,
+    description: `ERC-8183 seller agent (${name}) - negotiate + notify_funded over A2A.`,
     // main.ts overwrites this with $AGENTCORE_RUNTIME_URL at boot.
     // Local-dev fallback: a client-routable localhost URL (not the 0.0.0.0
     // bind address). Host via AGENT_HOST (default localhost); port via the
@@ -121,7 +121,7 @@ export function buildAgentCard(
     preferredTransport: "JSONRPC",
     // Non-streaming: negotiate / notify_funded are request/response
     // (message/send). Do NOT flip this on to satisfy the AgentCore
-    // inspector's chat box — that box can't drive a seller agent (it can
+    // inspector's chat box - that box can't drive a seller agent (it can
     // only send plain text, never the {"skill": ...} DataPart these skills
     // require, and its streaming view expects Task events). Test locally
     // with curl / an A2A client sending a DataPart (see the operating skill).

@@ -27,19 +27,19 @@
  *                     `/ping` handler reports HEALTHY_BUSY so AgentCore keeps the
  *                     scale-to-zero runtime warm until it lands.
  *
- * Buyers reach this endpoint with an OAuth2 (Cognito) bearer — AgentCore A2A
+ * Buyers reach this endpoint with an OAuth2 (Cognito) bearer - AgentCore A2A
  * mandates inbound auth (see agentCard.ts + `bag deploy provision-cognito`).
  *
- * ## Boundaries (do NOT cross — they are the whole point)
+ * ## Boundaries (do NOT cross - they are the whole point)
  *
  * - The agent does ALL deterministic SIGNING (quote-sign + submit + settle +
  *   automatic Pieverse LLM-credit auto-renew). ALL signing is FIXED code in
- *   `signing.ts` — NEVER an LLM-callable tool (money never in the LLM).
+ *   `signing.ts` - NEVER an LLM-callable tool (money never in the LLM).
  * - The price is a FIXED list price from studio.toml (clamped before
- *   signing) — the LLM never prices; it only PRODUCES the work text in the
+ *   signing) - the LLM never prices; it only PRODUCES the work text in the
  *   delivery step.
  * - Chain access for the LLM is READ-ONLY tools only (`tools.ts`).
- * - `settle` (claim payment after the dispute window) is operator-driven —
+ * - `settle` (claim payment after the dispute window) is operator-driven -
  *   run `bag erc8183 settle <job_id>`; it is deliberately NOT an A2A skill.
  */
 
@@ -94,7 +94,7 @@ const APP_NAME = "agent";
 /**
  * Deliverable `generator` label: this seller's own name, read from
  * studio.toml `[project].name` (minus the `-agent` suffix) so each delivered
- * manifest is self-identifying. Best-effort — falls back to `APP_NAME` if
+ * manifest is self-identifying. Best-effort - falls back to `APP_NAME` if
  * the config can't be read.
  */
 function generatorTag(): string {
@@ -162,23 +162,23 @@ function defaultNetwork(): string {
 // LLM credit auto-renew (Pieverse path): `buildModel()` (in model.ts) returns
 // a model wrapped with a middleware that auto-tops up the active Pieverse key
 // before each generate call when [llm.auto_renew] is enabled. That top-up is
-// the ONLY automatic signing path outside signing.ts — it is budget-gated and
+// the ONLY automatic signing path outside signing.ts - it is budget-gated and
 // is NOT an LLM tool. It rides transparently into the delivery step.
 //
 // The LLM runs only in an authorized value step: verified ERC-8183 delivery
 // or x402 work after its payment/free gate. `negotiate` is rule-based and
 // never touches the LLM. The read-only chain tools are
-// attached so the work can read on-chain context if it needs to — drop them
+// attached so the work can read on-chain context if it needs to - drop them
 // from `tools.ts` if your work doesn't read chain. Signing / settle are NEVER
-// tools — they are fixed code in signing.ts, triggered by the A2A skills,
+// tools - they are fixed code in signing.ts, triggered by the A2A skills,
 // never callable by the LLM. (The one deliberate exception: the x402-buyer
-// recipe's PAID fetch tools — see the `tools:` note below — the LLM picks the
+// recipe's PAID fetch tools - see the `tools:` note below - the LLM picks the
 // URL, but who gets paid and the per-call/daily caps stay locked in
 // studio.toml.)
 export function buildRunWork(): RunWork {
   // The model is resolved LAZILY on first delivery, not at boot: a seller
   // with no provider key yet must still serve negotiate (which never calls
-  // the LLM) — missing-key errors surface at notify_funded delivery time.
+  // the LLM) - missing-key errors surface at notify_funded delivery time.
   let model: ReturnType<typeof buildModel> | undefined;
   return async (prompt, { abortSignal }) => {
     model ??= buildModel(); // managed model with the auto-renew hook (delivery only)
@@ -190,17 +190,17 @@ export function buildRunWork(): RunWork {
         "do not ask for a job ID or additional payment. " +
         "Be concrete and concise. Use the read-only chain tools when on-chain " +
         "context helps. If a paid-data tool such as `buy_with_x402` is available " +
-        "to you, USE IT to fetch the data a task needs — those merchants (e.g. " +
+        "to you, USE IT to fetch the data a task needs - those merchants (e.g. " +
         "CoinMarketCap) charge via on-chain wallet payment, NOT an API key; never " +
         "reply that you cannot complete the task for lack of an API key.",
       prompt,
       // LLM_READ_TOOLS = read-only chain tools (wallet, balances,
       // ERC-8004/8183 queries). Edit `tools.ts` to add/remove. These are
-      // READ-ONLY — the agent never signs via a tool; all signing is in
+      // READ-ONLY - the agent never signs via a tool; all signing is in
       // signing.ts (fixed code).
       // To let the agent BUY paid data at work time (e.g. CMC market data
       // after `bag x402 trust cmc` + `bag recipe code x402-buyer`), spread
-      // the emitted tool set — payee + per-call/daily caps stay locked in
+      // the emitted tool set - payee + per-call/daily caps stay locked in
       // studio.toml:
       //   import { X402_BUYER_TOOLS } from "./x402Buyer.js";
       //   tools: { ...LLM_READ_TOOLS, ...X402_BUYER_TOOLS },
@@ -398,7 +398,10 @@ export async function buildDualApp(): Promise<{
 }
 
 async function main(): Promise<void> {
-  const host = process.env.AGENT_BIND_HOST || "0.0.0.0";
+  // Ballast: self-hosted, the faces have no inbound auth, so an unset bind
+  // host means loopback (the AgentCore contract was 0.0.0.0). The desk config
+  // sets AGENT_BIND_HOST/AGENT_PORT and refuses a public bind on mainnet.
+  const host = process.env.AGENT_BIND_HOST || "127.0.0.1";
   const port = Number(process.env.AGENT_PORT || "9000");
   const { app } = await buildDualApp();
 
@@ -413,7 +416,7 @@ async function main(): Promise<void> {
 }
 
 // Run only as an entrypoint (`node dualMain.js` / the AgentCore runtime), never
-// on import — tests import the builders above without starting a server.
+// on import - tests import the builders above without starting a server.
 const isMain =
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href;

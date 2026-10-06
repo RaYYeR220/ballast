@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "engines": { "node": ">=22" },
   "scripts": {
     "register": "tsx src/desk/register.ts"
   },
@@ -13,5 +14,8 @@
     "@bnbagent/sdk": "0.6.0",
     "viem": "^2.57.0",
     "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
   }
 }

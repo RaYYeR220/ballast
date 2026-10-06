@@ -6,15 +6,15 @@
  * Bedrock AgentCore hosts MCP natively: it expects a streamable-HTTP MCP
  * server on `0.0.0.0:8000/mcp` and wraps the protocol (session isolation,
  * inbound OAuth/Cognito auth, scale-to-zero) exactly as it does for A2A.
- * There is no separate forwarding service — the agent IS the seller.
+ * There is no separate forwarding service - the agent IS the seller.
  *
- * MCP tools (all backed by signing.ts fixed code — NEVER LLM-callable):
+ * MCP tools (all backed by signing.ts fixed code - NEVER LLM-callable):
  *
  *     negotiate      → read the FIXED list price → CLAMP to [min,max] → EIP-191 SIGN
  *                      the offer (no LLM). A message signature; no on-chain tx, no nonce.
  *     notify_funded  → verify the funded job carries THIS agent's signed quote →
  *                      produce the deliverable (LLM) → submitResult (SIGN + broadcast
- *                      on-chain) — all **synchronously within this one tool call**,
+ *                      on-chain) - all **synchronously within this one tool call**,
  *                      then return the on-chain result.
  *     + the read-only chain tools (wallet / balances / ERC-8004 / ERC-8183 /
  *       block / tx / contract-view), so an MCP client can inspect state.
@@ -34,9 +34,9 @@
  * chain/signing calls never block the event loop, so the platform's
  * liveness probe stays responsive during the call.
  *
- * ## Boundaries (do NOT cross — they are the whole point)
+ * ## Boundaries (do NOT cross - they are the whole point)
  *
- * - ALL on-chain SIGNING is FIXED code in `signing.ts` — NEVER an
+ * - ALL on-chain SIGNING is FIXED code in `signing.ts` - NEVER an
  *   MCP/LLM-callable signing tool. There is no raw `sign(...)` tool: only
  *   the bounded `negotiate` (sign a quote) and `notify_funded` (submit a
  *   verified, funded job) sign, and the LLM only produces the deliverable
@@ -44,7 +44,7 @@
  * - The price is a FIXED list price from studio.toml (clamped before signing).
  * - The chain tools exposed here are READ-ONLY.
  *
- * You own this file — specialise the work prompt / dispatch, but keep signing
+ * You own this file - specialise the work prompt / dispatch, but keep signing
  * bounded to these two ops and keep the read tools read-only.
  * In dual-face mode this file is imported as a library by dualMain.ts; main()
  * runs only when mcpMain itself is the selected entrypoint.
@@ -152,7 +152,7 @@ async function loadRuntimeSecrets(): Promise<void> {
 }
 
 /**
- * The project-wide default network (`[network].default`) — tool calls that
+ * The project-wide default network (`[network].default`) - tool calls that
  * omit `network` fall back to it, never to a hardcoded name.
  */
 function defaultNetwork(): string {
@@ -241,7 +241,7 @@ export function buildRunWork(): McpRunWork {
             "do not ask for a job ID or additional payment. " +
             "Be concrete and concise. Use the read-only chain tools when on-chain " +
             "context helps. If a paid-data tool such as `buy_with_x402` is " +
-            "available to you, USE IT to fetch the data a task needs — those " +
+            "available to you, USE IT to fetch the data a task needs - those " +
             "merchants (e.g. CoinMarketCap) charge via on-chain wallet payment, " +
             "NOT an API key; never reply that you cannot complete the task for " +
             "lack of an API key.",
@@ -270,7 +270,7 @@ function parseJobId(raw: unknown): number {
 }
 
 // Commerce tools are NOT read-only (they sign / move on-chain state via fixed
-// signing.ts code). There is no raw signing tool — only these two bounded ops.
+// signing.ts code). There is no raw signing tool - only these two bounded ops.
 const COMMERCE_ANNOTATIONS = { readOnlyHint: false, openWorldHint: true };
 const READONLY_ANNOTATIONS = { readOnlyHint: true, openWorldHint: true };
 
@@ -324,7 +324,7 @@ export function buildMcpServer(
         "Return a wallet-signed ERC-8183 price quote for a task. " +
         "Rule-based: the price is FIXED by studio.toml (canonical per-asset " +
         "price_usd, or a legacy single price CLAMPED to [min,max]) BEFORE " +
-        "EIP-191 signing — a hostile request can never sign out of bounds. " +
+        "EIP-191 signing - a hostile request can never sign out of bounds. " +
         "No LLM. Anchor the returned envelope on-chain (createJob + fund), then " +
         "call `notify_funded` with the job_id. `terms` MUST include both " +
         '"deliverables" and "quality_standards" (the on-chain evaluator requires ' +
@@ -360,14 +360,14 @@ export function buildMcpServer(
     "notify_funded",
     {
       description:
-        "Verify a funded job, produce the deliverable, and submit it on-chain — " +
-        'synchronously. The buyer\'s "I funded job X — deliver it" call. Runs the ' +
+        "Verify a funded job, produce the deliverable, and submit it on-chain - " +
+        'synchronously. The buyer\'s "I funded job X - deliver it" call. Runs the ' +
         "whole flow inside this one tool invocation (AgentCore permits ~15 min; " +
         "progress notifications keep the connection warm). Returns the on-chain " +
         "result; the buyer can also read it back from the chain (SUBMITTED / " +
         'get_deliverable_url). Verify-failure status is split: "rejected" is ' +
-        "TERMINAL — this agent did not sign it, the terms were tampered, it is " +
-        'underfunded or expired — re-calling will not help. "retry" is TRANSIENT ' +
+        "TERMINAL - this agent did not sign it, the terms were tampered, it is " +
+        'underfunded or expired - re-calling will not help. "retry" is TRANSIENT ' +
         "(e.g. a chain read failed); the deal may be fine, so the buyer SHOULD " +
         "re-call.",
       inputSchema: { job_id: z.union([z.number().int(), z.string()]) },
@@ -397,7 +397,7 @@ export function buildMcpServer(
 
       const deadlineMs = Date.now() + deliveryTimeoutSeconds() * 1000;
 
-      // 1/4 — verify the funded job carries THIS agent's signed quote
+      // 1/4 - verify the funded job carries THIS agent's signed quote
       // (eth_calls). Honour the `permanent` flag: a permanent failure is
       // terminal ("rejected"); a transient one (chain read hiccup) is
       // "retry" so the buyer re-calls.
@@ -437,7 +437,7 @@ export function buildMcpServer(
       try {
         const work = await withTimeout(
           (async () => {
-            // 2/4 — produce the deliverable (THE ONLY LLM CALL).
+            // 2/4 - produce the deliverable (THE ONLY LLM CALL).
             await reportProgress(extra, 2, 4);
             const spec = await signing.jobSpec(jid);
             const task =
@@ -456,7 +456,7 @@ export function buildMcpServer(
           controller,
         );
 
-        // 3/4 — sign + broadcast submit (re-verifies FUNDED inside). Await
+        // 3/4 - sign + broadcast submit (re-verifies FUNDED inside). Await
         // the definitive result within the remaining request window. The
         // opaque SDK operation cannot be cancelled after broadcast.
         await reportProgress(extra, 3, 4);
@@ -493,7 +493,7 @@ export function buildMcpServer(
           e instanceof Error &&
           e.name === "SubmitPermanentlyUnsupportedError"
         ) {
-          // Deterministic for this wallet kind — submit can never succeed.
+          // Deterministic for this wallet kind - submit can never succeed.
           return toolResult({
             status: "rejected",
             job_id: jid,
@@ -504,7 +504,7 @@ export function buildMcpServer(
         return protocolFailure(`delivery of job ${jid} failed`, e);
       }
 
-      // 4/4 — done
+      // 4/4 - done
       await reportProgress(extra, 4, 4);
       return toolResult({
         status: "submitted",
@@ -644,7 +644,7 @@ export function buildMcpServer(
 /**
  * Serve the MCP server as **stateful** streamable-HTTP on `/mcp` (the
  * AgentCore MCP contract: 0.0.0.0:8000/mcp; `AGENT_PORT` is the local
- * override). Stateful — one transport per `Mcp-Session-Id` — so progress
+ * override). Stateful - one transport per `Mcp-Session-Id` - so progress
  * notifications during the multi-step `notify_funded` delivery reach the
  * caller; AgentCore routes the session to one microVM via the same header.
  */
@@ -663,7 +663,10 @@ async function main(): Promise<void> {
   const rails = { erc8183: hasErc8183Rail(cfg) };
   if (rails.erc8183) resolveStorageMode(cfg);
   const sellPath = b402SellPath(cfg);
-  const host = process.env.AGENT_BIND_HOST || "0.0.0.0";
+  // Ballast: self-hosted, the faces have no inbound auth, so an unset bind
+  // host means loopback (the AgentCore contract was 0.0.0.0). The desk config
+  // sets AGENT_BIND_HOST/AGENT_PORT and refuses a public bind on mainnet.
+  const host = process.env.AGENT_BIND_HOST || "127.0.0.1";
   const port = Number(process.env.AGENT_PORT || "8000");
   const runWork = buildRunWork();
   const seller = await B402Seller.create({

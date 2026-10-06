@@ -1,5 +1,5 @@
 /**
- * A2A executor — the seller agent's outward A2A surface (two fixed-code
+ * A2A executor - the seller agent's outward A2A surface (two fixed-code
  * skills).
  *
  * The agent serves A2A directly (an `@a2a-js/sdk` express app on the
@@ -15,23 +15,23 @@
  *     notify_funded → `SellerCore.notifyFunded` (fast on-chain gate) → ACK at
  *                     once, then in the BACKGROUND: LLM work → `signing.submitResult`
  *
- * `notify_funded` is the buyer's "I funded job X — please deliver"
+ * `notify_funded` is the buyer's "I funded job X - please deliver"
  * notification. Because the work takes time, the executor does NOT block the
  * caller: the core verifies the funded job synchronously (a couple of
  * eth_calls) to ACK accepted/rejected, then runs the slow LLM work + on-chain
  * `submit` in a background task and replies immediately. The buyer reads the
- * deliverable back from the CHAIN (SUBMITTED / `getDeliverableUrl`) — the
+ * deliverable back from the CHAIN (SUBMITTED / `getDeliverableUrl`) - the
  * chain is the source of truth. While any background delivery is in flight
  * `isBusy` (from `SellerCore`) reports busy, which `main.ts` feeds to
  * AgentCore's `/ping` as `HEALTHY_BUSY` so the scale-to-zero runtime stays
  * warm until the work lands (within the session max-lifetime).
  *
- * ALL signing is FIXED code in `signing.ts` — NEVER an LLM-callable tool
+ * ALL signing is FIXED code in `signing.ts` - NEVER an LLM-callable tool
  * (money is never in the LLM; the LLM only produces the work text, via the
  * `runWork` hook). See `sellerCore.ts` for the negotiate / notifyFunded /
  * sweep logic.
  *
- * You own this file — specialise the work hook / dispatch in `sellerCore.ts`,
+ * You own this file - specialise the work hook / dispatch in `sellerCore.ts`,
  * but keep signing OUT of the LLM tool list.
  */
 
@@ -59,7 +59,7 @@ const log = {
  * `sellerCore.ts` `SellerCore`; this class adds only the A2A entrypoints and
  * request/response wire helpers.
  *
- * The agent exposes ONLY the two paid, structured skills — there is no
+ * The agent exposes ONLY the two paid, structured skills - there is no
  * free-form chat skill. A plain text message (no `{"skill": ...}` DataPart)
  * is rejected: negotiate / notify_funded always need a structured DataPart,
  * so prose never triggers an LLM call or a paid action.
@@ -155,9 +155,9 @@ export class SellerAgentExecutor extends SellerCore implements AgentExecutor {
     _eventBus: ExecutionEventBus,
   ): Promise<void> => {
     // negotiate is synchronous; notify_funded acks then delivers on-chain in
-    // the background — once submitted it is anchored on-chain and cannot be
+    // the background - once submitted it is anchored on-chain and cannot be
     // cancelled via A2A. Nothing to cancel here. (@a2a-js/sdk hands cancel
-    // only a taskId — no message to reply to — so this surfaces as the
+    // only a taskId - no message to reply to - so this surfaces as the
     // standard JSON-RPC unsupported-operation error.)
     throw A2AError.unsupportedOperation("cancel");
   };
@@ -184,7 +184,7 @@ function reply(
     contextId: context.contextId,
     taskId: context.taskId,
   };
-  // publish + finished() — without finished() the event stream never closes
+  // publish + finished() - without finished() the event stream never closes
   // and the caller hangs.
   eventBus.publish(message);
   eventBus.finished();

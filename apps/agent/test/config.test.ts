@@ -1,7 +1,7 @@
 import path from "node:path";
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, redactUrl } from "../src/desk/config";
+import { ConfigError, isLoopbackHost, loadConfig, redactUrl, studioEnv } from "../src/desk/config";
 
 const PK = `0x${"4f".repeat(32)}`;
 const RPC = "https://bsc-mainnet.example.org/v1/rpc-key-0123456789abcdef";
@@ -25,6 +25,9 @@ describe("loadConfig", () => {
     expect(c.signer.kind).toBe("private-key");
     expect(c.signer.kind === "private-key" && c.signer.privateKey.reveal()).toBe(PK);
     expect(c.binance).toBeNull();
+    expect(c.agentBindHost).toBe("127.0.0.1");
+    expect(c.agentPort).toBe(9000);
+    expect(c.httpHost).toBe("127.0.0.1");
     expect(c.httpPort).toBe(8787);
     expect(c.x402DailyCapUsd).toBe(0.5);
     expect(c.dryRun).toBe(true);
@@ -123,6 +126,33 @@ describe("loadConfig", () => {
     expect(issuesOf({ ...base, DRY_RUN: "maybe" })).toEqual(["DRY_RUN: must be true or false"]);
   });
 
+  it("keeps the Studio faces on loopback on mainnet", () => {
+    expect(issuesOf({ ...base, AGENT_BIND_HOST: "0.0.0.0" })).toEqual([
+      "AGENT_BIND_HOST: must be a loopback address on BSC mainnet (the A2A/MCP faces have no auth)",
+    ]);
+    expect(issuesOf({ ...base, AGENT_BIND_HOST: "203.0.113.7" })).toHaveLength(1);
+    expect(issuesOf({ ...base, AGENT_BIND_HOST: "::" })).toHaveLength(1);
+    expect(loadConfig({ ...base, AGENT_BIND_HOST: "localhost" }).agentBindHost).toBe("localhost");
+    expect(loadConfig({ ...base, AGENT_BIND_HOST: "::1" }).agentBindHost).toBe("::1");
+    // Off mainnet (fork, testnet trial) a public bind is the operator's call.
+    expect(loadConfig({ ...base, CHAIN_ID: "31337", AGENT_BIND_HOST: "0.0.0.0" }).agentBindHost).toBe("0.0.0.0");
+    expect(loadConfig({ ...base, CHAIN_ID: "97", AGENT_BIND_HOST: "0.0.0.0" }).agentBindHost).toBe("0.0.0.0");
+  });
+
+  it("takes bind addresses and ports for both listeners", () => {
+    const c = loadConfig({ ...base, AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100", HTTP_HOST: "0.0.0.0", HTTP_PORT: "8080" });
+    expect([c.agentBindHost, c.agentPort, c.httpHost, c.httpPort]).toEqual(["127.0.0.2", 9100, "0.0.0.0", 8080]);
+    expect(studioEnv(c)).toEqual({ AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100" });
+  });
+
+  it("rejects malformed hosts and a port clash", () => {
+    expect(issuesOf({ ...base, HTTP_HOST: "http://127.0.0.1" })).toEqual([
+      "HTTP_HOST: must be a host name or IP address, without scheme or port",
+    ]);
+    expect(issuesOf({ ...base, AGENT_BIND_HOST: "127.0.0.1:9000" })).toHaveLength(1);
+    expect(issuesOf({ ...base, AGENT_PORT: "8787" })).toEqual(["AGENT_PORT: must differ from HTTP_PORT"]);
+  });
+
   it("needs both Binance credentials or neither", () => {
     expect(issuesOf({ ...base, BINANCE_WEB3_API_KEY: "only-key" })).toEqual([
       "binance: BINANCE_WEB3_API_KEY and BINANCE_WEB3_API_SECRET must be set together",
@@ -157,10 +187,15 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} http=:8787 x402Cap=$0.5/day dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");
+  });
+
+  it("recognises loopback hosts", () => {
+    for (const h of ["127.0.0.1", "127.8.9.10", "localhost", "LOCALHOST", "::1", "::ffff:127.0.0.1"]) expect(isLoopbackHost(h)).toBe(true);
+    for (const h of ["0.0.0.0", "::", "10.0.0.1", "128.0.0.1", "desk.example", "::ffff:10.0.0.1"]) expect(isLoopbackHost(h)).toBe(false);
   });
 
   it("redacts credentials, paths and queries from URLs", () => {

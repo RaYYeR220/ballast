@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Hex } from "viem";
@@ -43,6 +44,11 @@ export interface DeskConfig {
   /** Null means keyless: only the public Binance endpoints are used. */
   readonly binance: { apiKey: Secret; apiSecret: Secret } | null;
   readonly deploymentFile: string;
+  /** Bind address and port of the Studio A2A/MCP faces (read by the Studio entrypoints). */
+  readonly agentBindHost: string;
+  readonly agentPort: number;
+  /** Bind address and port of the desk read API; a reverse proxy fronts it. */
+  readonly httpHost: string;
   readonly httpPort: number;
   readonly x402DailyCapUsd: number;
   readonly dryRun: boolean;
@@ -68,6 +74,27 @@ function numberVar(fallback?: number) {
     },
     z.number({ required_error: "is required", invalid_type_error: "must be a number" }),
   );
+}
+
+function portVar(fallback: number) {
+  return numberVar(fallback).refine((n) => Number.isInteger(n) && n >= 1 && n <= 65535, "must be a port number");
+}
+
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+function hostVar(fallback: string) {
+  return z.preprocess(
+    (v) => blank(v) ?? fallback,
+    z.string().refine((h) => isIP(h) !== 0 || HOSTNAME.test(h), "must be a host name or IP address, without scheme or port"),
+  );
+}
+
+/** True for localhost, 127.0.0.0/8 and ::1 (also IPv4-mapped). */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  if (h === "localhost" || h === "::1") return true;
+  const v4 = h.startsWith("::ffff:") ? h.slice(7) : h;
+  return isIP(v4) === 4 && v4.split(".")[0] === "127";
 }
 
 function flagVar(fallback: boolean) {
@@ -110,7 +137,10 @@ const envSchema = z.object({
   BINANCE_WEB3_API_KEY: optionalText,
   BINANCE_WEB3_API_SECRET: optionalText,
   DEPLOYMENT_FILE: optionalText,
-  HTTP_PORT: numberVar(8787).refine((n) => Number.isInteger(n) && n >= 1 && n <= 65535, "must be a port number"),
+  AGENT_BIND_HOST: hostVar("127.0.0.1"),
+  AGENT_PORT: portVar(9000),
+  HTTP_HOST: hostVar("127.0.0.1"),
+  HTTP_PORT: portVar(8787),
   X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   DRY_RUN: flagVar(true),
 });
@@ -181,6 +211,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const issues: string[] = [];
   const signer = resolveSigner(e, cwd, issues);
   const binance = resolveBinance(e, issues);
+  // The Studio faces carry no inbound auth when self-hosted: on mainnet they stay on loopback.
+  if (e.CHAIN_ID === 56 && !isLoopbackHost(e.AGENT_BIND_HOST)) {
+    issues.push("AGENT_BIND_HOST: must be a loopback address on BSC mainnet (the A2A/MCP faces have no auth)");
+  }
+  if (e.AGENT_PORT === e.HTTP_PORT) issues.push("AGENT_PORT: must differ from HTTP_PORT");
   if (issues.length > 0 || signer === null) throw new ConfigError(issues);
 
   const chainId = e.CHAIN_ID;
@@ -194,7 +229,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `signer=${signer.kind === "keystore" ? `keystore ${signer.path}` : "private key"}`,
     `binance=${binance ? "keyed" : "keyless"}`,
     `deployment=${deploymentFile}`,
-    `http=:${e.HTTP_PORT}`,
+    `agent=${e.AGENT_BIND_HOST}:${e.AGENT_PORT}`,
+    `http=${e.HTTP_HOST}:${e.HTTP_PORT}`,
     `x402Cap=$${e.X402_DAILY_CAP_USD}/day`,
     `dryRun=${e.DRY_RUN}`,
   ].join(" ");
@@ -205,10 +241,21 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     signer: Object.freeze(signer),
     binance: binance && Object.freeze(binance),
     deploymentFile,
+    agentBindHost: e.AGENT_BIND_HOST,
+    agentPort: e.AGENT_PORT,
+    httpHost: e.HTTP_HOST,
     httpPort: e.HTTP_PORT,
     x402DailyCapUsd: e.X402_DAILY_CAP_USD,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
   });
+}
+
+/**
+ * Environment the Studio entrypoints (app/agent/src/dualMain.ts, mcpMain.ts) read for their
+ * listener. The desk process assigns it to process.env before it builds the Studio app.
+ */
+export function studioEnv(config: Pick<DeskConfig, "agentBindHost" | "agentPort">): { AGENT_BIND_HOST: string; AGENT_PORT: string } {
+  return { AGENT_BIND_HOST: config.agentBindHost, AGENT_PORT: String(config.agentPort) };
 }
