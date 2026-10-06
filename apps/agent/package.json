@@ -12,7 +12,7 @@
     "@ballast/binance": "workspace:*",
     "@ballast/risk": "workspace:*",
     "@bnbagent/sdk": "0.6.0",
-    "viem": "^2.57.0",
+    "viem": "^2.57.3",
     "zod": "^3.25.0"
   },
   "devDependencies": {

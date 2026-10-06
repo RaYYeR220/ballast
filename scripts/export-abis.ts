@@ -80,7 +80,7 @@ const KERNEL_EXTRAS: Fragment[] = [
  * ballastErrorsAbi only while no compiled error of the same name exists, so a rebuild after the
  * merge replaces it with the compiled one. Empty this list once the build has them.
  */
-const PENDING_ERRORS: Fragment[] = [{ type: "error", name: "NoDebt", inputs: [] }]; // CushionVault.shieldFor
+const PENDING_ERRORS: Fragment[] = [];
 
 function strip<T>(x: T): T {
   if (Array.isArray(x)) return x.map(strip) as T;

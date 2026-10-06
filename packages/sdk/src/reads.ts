@@ -544,38 +544,26 @@ export interface GuardianJobsPage {
 /** Calldata bytes per Multicall3 chunk: about 100 getJob calls per eth_call. */
 const MULTICALL_BATCH_BYTES = 4096;
 
-/** IACP.Job and BallastGuardian.terms() as decoded. Spelled out so multicall results stay typed in any program. */
-interface KernelJob {
-  id: bigint;
-  client: Address;
-  provider: Address;
-  evaluator: Address;
-  description: string;
-  budget: bigint;
-  expiredAt: bigint;
-  status: number;
-  hook: Address;
-  submittedAt: bigint;
-  deliverable: Hex;
-}
-type TermsResult = readonly [Address, bigint, bigint, bigint, boolean, boolean];
+const missing = (what: string, id: bigint): never => {
+  throw new Error(`multicall returned no ${what} for job ${id}`);
+};
 
 async function jobsWithTerms(c: ReadClient, d: Deployment, ids: readonly bigint[], blockNumber: bigint, provider?: Address) {
   const mc = { multicallAddress: d.external.multicall3, allowFailure: false, batchSize: MULTICALL_BATCH_BYTES, blockNumber } as const;
-  const jobs = (await c.multicall({
+  const jobs = await c.multicall({
     ...mc,
     contracts: ids.map((id) => ({ address: d.external.kernel, abi: kernelAbi, functionName: "getJob", args: [id] }) as const),
-  })) as readonly KernelJob[];
+  });
   const ours = ids
-    .map((id, i) => ({ id, job: jobs[i] as KernelJob }))
+    .map((id, i) => ({ id, job: jobs[i] ?? missing("job", id) }))
     .filter(({ job }) => sameAddress(job.evaluator, d.guardian) && (!provider || sameAddress(job.provider, provider)));
   if (ours.length === 0) return [];
-  const terms = (await c.multicall({
+  const terms = await c.multicall({
     ...mc,
     contracts: ours.map(({ id }) => ({ address: d.guardian, abi: ballastGuardianAbi, functionName: "terms", args: [id] }) as const),
-  })) as readonly TermsResult[];
+  });
   return ours.map(({ id, job }, i): GuardianJob => {
-    const t = terms[i] as TermsResult;
+    const t = terms[i] ?? missing("terms", id);
     return {
       jobId: id,
       client: job.client,

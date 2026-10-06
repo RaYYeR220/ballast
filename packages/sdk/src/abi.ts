@@ -5066,6 +5066,11 @@ export const cushionVaultAbi = [
   },
   {
     "type": "error",
+    "name": "NoDebt",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotCoverKeeper",
     "inputs": []
   },

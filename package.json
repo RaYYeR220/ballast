@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "engines": { "node": ">=22" },
-  "pnpm": { "overrides": { "rollup": "<4.62.4" } },
+  "pnpm": { "overrides": { "rollup": "<4.62.4", "abitype>zod": "^3.25.76" } },
   "scripts": {
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
