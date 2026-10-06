@@ -1,0 +1,12 @@
+{
+  "name": "@ballast/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./abi": "./src/abi.ts" },
+  "license": "MIT",
+  "dependencies": {
+    "@ballast/risk": "workspace:*",
+    "viem": "^2.57.3"
+  }
+}
