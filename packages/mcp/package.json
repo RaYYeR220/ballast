@@ -1,0 +1,17 @@
+{
+  "name": "@ballast/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "bin": { "ballast-mcp": "./bin/ballast-mcp.ts" },
+  "license": "MIT",
+  "dependencies": {
+    "@ballast/binance": "workspace:*",
+    "@ballast/risk": "workspace:*",
+    "@ballast/sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "viem": "^2.57.3",
+    "zod": "^3.25.0"
+  }
+}
