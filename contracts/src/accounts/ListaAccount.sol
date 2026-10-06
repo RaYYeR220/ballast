@@ -17,6 +17,8 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     uint256 internal constant VIRTUAL_SHARES = 1e6;
     uint256 internal constant VIRTUAL_ASSETS = 1;
     uint256 internal constant ORACLE_SCALE = 1e36;
+    /// @notice Cushion (loan-token wei) the keeper may leave unspent before it is allowed to sell collateral.
+    uint256 public constant CUSHION_DUST = 1e16;
 
     IMoolah public moolah;
     IPcsV3SwapRouter public router;
@@ -31,6 +33,7 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     error NotInShieldWindow();
     error BelowShieldLtv(uint256 ltvBps, uint256 shieldLtvBps);
     error OverDeleverage(uint256 ltvAfterBps, uint256 shieldLtvBps);
+    error CushionFirst(uint256 cushion);
 
     constructor() {
         _disableInitializers();
@@ -101,7 +104,9 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
     /// @notice Sell `collateralToSell` into debt through a Moolah flash loan of `repayAssets`.
     /// @dev Bounded: owner-fixed route, only inside the pre-closure window (or at/above the owner's max LTV),
     ///      only while LTV is above the owner's shield LTV, never lands more than 1% below it, and the swap
-    ///      must beat both the oracle floor and the caller's `minOut`.
+    ///      must beat both the oracle floor and the caller's `minOut`. The keeper must spend the cushion first
+    ///      (shieldRepay) and a keeper deleverage switches autoRestore off, so restore and deleverage cannot
+    ///      be chained across sessions to turn collateral into cushion; the owner turns it back on.
     function shieldDeleverage(uint256 repayAssets, uint256 collateralToSell, bytes calldata path, uint256 minOut)
         external
         onlyKeeperOrOwner
@@ -121,6 +126,11 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
             if (l0 <= m.maxLtvBps) revert NotInShieldWindow();
             floorLtv = m.maxLtvBps;
         }
+        bool byKeeper = msg.sender != owner;
+        if (byKeeper) {
+            uint256 c = IERC20(_mp.loanToken).balanceOf(address(this));
+            if (c > CUSHION_DUST) revert CushionFirst(c);
+        }
         uint256 d0 = _debt();
         _checkMinLoan(d0, repayAssets);
         _inFlash = true;
@@ -131,6 +141,10 @@ contract ListaAccount is BallastAccountBase, IMoolahFlashLoanCallback {
         if (l1 >= l0) revert RiskNotReduced();
         if (l1 + 100 < floorLtv) revert OverDeleverage(l1, floorLtv);
         emit Shielded(1, d0, _debt(), collateralToSell);
+        if (byKeeper && m.autoRestore) {
+            mandate.autoRestore = false;
+            emit MandateSet(m.maxLtvBps, m.shieldLtvBps, m.maxSlippageBps, false);
+        }
     }
 
     function onMoolahFlashLoan(uint256 assets, bytes calldata data) external {
