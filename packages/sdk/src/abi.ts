@@ -6820,21 +6820,6 @@ export const ballastErrorsAbi = [
   },
   {
     "type": "error",
-    "name": "CushionFirst",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "CushionFirst",
-    "inputs": [
-      {
-        "name": "cushion",
-        "type": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "DeleverageDisabled",
     "inputs": []
   },

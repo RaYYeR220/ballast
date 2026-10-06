@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Hex } from "viem";
+import { toHex, type Hex } from "viem";
 import {
   accountState,
   ballastFactoryAbi,
@@ -10,11 +10,12 @@ import {
   listAccounts,
   listCovers,
   oracleSnapshot,
+  readGuardianJobs,
   sessionCalendarAbi,
   sessionOracleAbi,
   sessionState,
 } from "../src/index";
-import { addr, FakeChain } from "./fake-chain";
+import { addr, FakeChain, MULTICALL3 } from "./fake-chain";
 import { d, E18, KEEPER, listaAccount, MARKET_ID, mp, NVDA, NVDAB, OWNER, UINT_MAX, USD1, USDT, V_NVDAB, V_USDT, venusAccount } from "./fixtures";
 
 const ACCOUNT = addr(0xd1);
@@ -46,7 +47,28 @@ describe("accountState", () => {
       collateralDecimals: 18,
     });
     expect(s.market).toMatchObject({ venue: "lista", marketId: MARKET_ID, marketParams: mp, deleveragePathSet: true, minLoan: E18 });
-    expect(s.pricing).toEqual({ collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: 1 });
+    expect(s.pricing).toEqual({ collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: 1, minLoanKnown: true });
+  });
+
+  it("pins every read to the head block", async () => {
+    const chain = new FakeChain();
+    listaAccount(chain, ACCOUNT);
+    const s = await accountState(chain.client(), d, ACCOUNT);
+    expect(s.blockNumber).toBe(chain.blockNumber);
+    const reads = chain.requests.filter((r) => r.method === "eth_call" || r.method === "eth_getCode");
+    expect(reads.length).toBeGreaterThan(20);
+    expect(reads.every((r) => r.block === toHex(chain.blockNumber))).toBe(true);
+    const pinned = await accountState(chain.client(), d, ACCOUNT, { blockNumber: 77n });
+    expect(pinned.blockNumber).toBe(77n);
+    expect(chain.requests.at(-1)?.block).toBe(toHex(77n));
+  });
+
+  it("flags an unreadable minimum loan instead of assuming zero", async () => {
+    const chain = new FakeChain();
+    listaAccount(chain, ACCOUNT, { minLoan: "revert" });
+    const s = await accountState(chain.client(), d, ACCOUNT);
+    expect(s.pricing.minLoanKnown).toBe(false);
+    expect(s.market.venue === "lista" && s.market.minLoan).toBeNull();
   });
 
   it("reports a Lista account whose price is unavailable as ltv null and health unknown", async () => {
@@ -88,7 +110,7 @@ describe("accountState", () => {
       collateralPrice: 250n * E18,
       debtPrice: E18,
     });
-    expect(s.pricing).toEqual({ collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.6, minLoanUsd: 0 });
+    expect(s.pricing).toEqual({ collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.6, minLoanUsd: 0, minLoanKnown: true });
   });
 
   it("reports a Venus account whose price is unavailable as ltv null and health unknown", async () => {
@@ -127,6 +149,7 @@ describe("oracleSnapshot", () => {
       .on(o, sessionOracleAbi, "converged", [NVDA], [true, 8n, 0])
       .on(o, sessionOracleAbi, "windowAhead", [NVDA], [1, 1_790_003_600n, 1_790_066_000n, 417])
       .on(o, sessionOracleAbi, "currentWindow", [NVDA], [0, 0, 0n])
+      .on(o, sessionOracleAbi, "params", [], [5400, 10800, 60, 93600, 21600, 100, 300])
       .on(o, sessionOracleAbi, "overlay", [NVDA], {
         validUntil: 1_790_010_000n,
         nextEarnings: 1_791_000_000n,
@@ -158,6 +181,15 @@ describe("oracleSnapshot", () => {
       overlay: { validUntil: 1_790_010_000, nextEarnings: 1_791_000_000, flags: 4, flagNames: ["EARNINGS_WINDOW"], fresh: true },
     });
     expect(s.reasonText).toMatch(/closure/);
+    expect(s.params).toEqual({
+      restoreDelay: 5400,
+      horizon: 10800,
+      convergenceBps: 60,
+      maxRefAge: 93600,
+      maxOverlayTtl: 21600,
+      maxOndoDriftBps: 100,
+      maxRefDeviationBps: 300,
+    });
   });
 
   it("reports unavailable prices as null with PRICE_UNAVAILABLE", async () => {
@@ -293,26 +325,29 @@ describe("guardianJobs", () => {
   const empty = { ...job(0n, addr(0), addr(0), 0), client: addr(0), description: "", budget: 0n, expiredAt: 0n };
   const terms = (bound: boolean, account = ACCT) =>
     [bound ? account : addr(0), bound ? 1_790_000_000n : 0n, bound ? 1_790_200_000n : 0n, bound ? 77n : 0n, bound, false] as const;
+  const k = d.external.kernel;
+  const g = d.guardian;
 
   function chainWithJobs() {
-    const k = d.external.kernel;
-    const g = d.guardian;
     return new FakeChain()
       .on(k, kernelAbi, "jobCounter", [], 105n)
-      .on(k, kernelAbi, "getJob", [105n], job(105n, g, PROVIDER, 1))
-      .on(k, kernelAbi, "getJob", [104n], job(104n, OTHER, PROVIDER, 1))
-      .on(k, kernelAbi, "getJob", [103n], job(103n, g, OTHER, 2))
-      .on(k, kernelAbi, "getJob", [102n], job(102n, g, PROVIDER, 0))
       .on(k, kernelAbi, "getJob", [101n], empty)
-      .on(g, ballastGuardianAbi, "terms", [105n], terms(true))
+      .on(k, kernelAbi, "getJob", [102n], job(102n, g, PROVIDER, 0))
+      .on(k, kernelAbi, "getJob", [103n], job(103n, g, OTHER, 2))
+      .on(k, kernelAbi, "getJob", [104n], job(104n, OTHER, PROVIDER, 1))
+      .on(k, kernelAbi, "getJob", [105n], job(105n, g, PROVIDER, 1))
+      .on(g, ballastGuardianAbi, "terms", [102n], terms(false))
       .on(g, ballastGuardianAbi, "terms", [103n], terms(true, addr(0xf9)))
-      .on(g, ballastGuardianAbi, "terms", [102n], terms(false));
+      .on(g, ballastGuardianAbi, "terms", [105n], terms(true));
   }
 
-  it("returns recent guardian-evaluated jobs for a provider, newest first, with bound terms", async () => {
-    const jobs = await guardianJobs(chainWithJobs().client(), d, { provider: PROVIDER, lookback: 5 });
-    expect(jobs.map((j) => j.jobId)).toEqual([105n, 102n]);
-    expect(jobs[0]).toMatchObject({
+  it("scans the ids above the cursor through Multicall3 and returns the new cursor", async () => {
+    const chain = chainWithJobs();
+    const page = await guardianJobs(chain.client(), d, { fromJobId: 100n, provider: PROVIDER });
+    expect(page.head).toBe(105n);
+    expect(page.nextCursor).toBe(105n);
+    expect(page.jobs.map((j) => j.jobId)).toEqual([102n, 105n]);
+    expect(page.jobs[1]).toMatchObject({
       jobId: 105n,
       client: CLIENT,
       provider: PROVIDER,
@@ -321,25 +356,49 @@ describe("guardianJobs", () => {
       expiredAt: 1_790_500_000,
       terms: { account: ACCT, start: 1_790_000_000, end: 1_790_200_000, agentId: 77n, settled: false },
     });
-    expect(jobs[1]?.status).toBe("Open");
-    expect(jobs[1]?.terms).toBeNull();
+    expect(page.jobs[0]?.status).toBe("Open");
+    expect(page.jobs[0]?.terms).toBeNull();
+    const kernel = k.toLowerCase();
+    const direct = chain.requests.filter((r) => r.to === kernel && r.via === undefined);
+    const batched = chain.requests.filter((r) => r.to === kernel && r.via === "multicall");
+    expect(direct).toHaveLength(1); // jobCounter
+    expect(batched).toHaveLength(5); // getJob 101..105, all through Multicall3
+    expect(chain.requests.filter((r) => r.to === MULTICALL3).length).toBeGreaterThan(0);
   });
 
-  it("filters by account and never scans past the lookback", async () => {
+  it("pages with a limit and resumes from the cursor", async () => {
     const chain = chainWithJobs();
-    const jobs = await guardianJobs(chain.client(), d, { account: addr(0xf9), lookback: 3 });
-    expect(jobs.map((j) => j.jobId)).toEqual([103n]);
-    const scanned = chain.requests.filter((r) => r.to === d.external.kernel.toLowerCase()).length;
-    expect(scanned).toBe(4); // jobCounter + ids 105, 104, 103
+    const first = await guardianJobs(chain.client(), d, { fromJobId: 100n, limit: 2 });
+    expect(first.nextCursor).toBe(102n);
+    expect(first.jobs.map((j) => j.jobId)).toEqual([102n]);
+    const second = await guardianJobs(chain.client(), d, { fromJobId: first.nextCursor, limit: 2 });
+    expect(second.nextCursor).toBe(104n);
+    expect(second.jobs.map((j) => j.jobId)).toEqual([103n]);
   });
 
-  it("handles a kernel with fewer jobs than the lookback", async () => {
-    const k = d.external.kernel;
+  it("stops at toJobId and filters by account", async () => {
+    const page = await guardianJobs(chainWithJobs().client(), d, { fromJobId: 100n, toJobId: 103n, account: addr(0xf9) });
+    expect(page.nextCursor).toBe(103n);
+    expect(page.jobs.map((j) => j.jobId)).toEqual([103n]);
+  });
+
+  it("returns nothing and keeps the cursor when no new job exists", async () => {
+    const chain = new FakeChain().on(k, kernelAbi, "jobCounter", [], 105n);
+    expect(await guardianJobs(chain.client(), d, { fromJobId: 105n })).toEqual({ jobs: [], nextCursor: 105n, head: 105n });
+  });
+
+  it("starts at id 1 on a fresh kernel", async () => {
     const chain = new FakeChain()
       .on(k, kernelAbi, "jobCounter", [], 1n)
-      .on(k, kernelAbi, "getJob", [1n], job(1n, d.guardian, PROVIDER, 2))
-      .on(d.guardian, ballastGuardianAbi, "terms", [1n], terms(true));
-    const jobs = await guardianJobs(chain.client(), d, { lookback: 300 });
-    expect(jobs.map((j) => [j.jobId, j.status])).toEqual([[1n, "Submitted"]]);
+      .on(k, kernelAbi, "getJob", [1n], job(1n, g, PROVIDER, 2))
+      .on(g, ballastGuardianAbi, "terms", [1n], terms(true));
+    const page = await guardianJobs(chain.client(), d, { fromJobId: 0n });
+    expect(page.jobs.map((j) => [j.jobId, j.status])).toEqual([[1n, "Submitted"]]);
+  });
+
+  it("refreshes known jobs by id and drops ids that are not guardian jobs", async () => {
+    const jobs = await readGuardianJobs(chainWithJobs().client(), d, [105n, 104n]);
+    expect(jobs.map((j) => j.jobId)).toEqual([105n]);
+    expect(await readGuardianJobs(new FakeChain().client(), d, [])).toEqual([]);
   });
 });

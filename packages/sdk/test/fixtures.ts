@@ -77,15 +77,20 @@ function common(chain: FakeChain, account: Address, loan: Address, coll: Address
 }
 
 /** A Lista account on NVDAB/USD1 at $250 per token unless the price is "revert". */
-export function listaAccount(chain: FakeChain, account: Address, o: AccountOpts & { price?: bigint | "revert" | "fail"; pathHash?: Hex } = {}) {
+export function listaAccount(
+  chain: FakeChain,
+  account: Address,
+  o: AccountOpts & { price?: bigint | "revert" | "fail"; pathHash?: Hex; minLoan?: bigint | "revert" } = {},
+) {
   chain.code(account, cloneCode(d.listaImpl));
   common(chain, account, USD1, NVDAB, o);
   chain
     .on(account, listaAccountAbi, "moolah", [], MOOLAH)
     .on(account, listaAccountAbi, "marketId", [], MARKET_ID)
     .on(account, listaAccountAbi, "marketParams", [], mp)
-    .on(account, listaAccountAbi, "deleveragePathHash", [], o.pathHash ?? PATH_HASH)
-    .on(MOOLAH, moolahAbi, "minLoan", [mp], E18);
+    .on(account, listaAccountAbi, "deleveragePathHash", [], o.pathHash ?? PATH_HASH);
+  if (o.minLoan === "revert") chain.revert(MOOLAH, moolahAbi, "minLoan", [mp]);
+  else chain.on(MOOLAH, moolahAbi, "minLoan", [mp], o.minLoan ?? E18);
   if (o.price === "revert") chain.revert(MOOLAH, moolahAbi, "getPrice", [mp]);
   else if (o.price === "fail") chain.fail(MOOLAH, moolahAbi, "getPrice", [mp]);
   else chain.on(MOOLAH, moolahAbi, "getPrice", [mp], o.price ?? 250n * 10n ** 36n);

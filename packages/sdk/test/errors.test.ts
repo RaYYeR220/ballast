@@ -20,15 +20,19 @@ describe("decodeBallastError", () => {
     expect(e?.message).toMatch(/closure/);
   });
 
-  it("decodes CushionFirst in both candidate shapes", () => {
-    const fragments = ballastErrorsAbi.filter((f) => f.name === "CushionFirst");
-    expect(fragments.length).toBeGreaterThan(0);
-    for (const f of fragments) {
-      const data = encodeErrorResult({ abi: [f], errorName: "CushionFirst", args: f.inputs.map(() => 5n * 10n ** 18n) } as never);
-      const e = decodeBallastError(data);
-      expect(e?.name).toBe("CushionFirst");
-      expect(e?.message).toMatch(/cushion/i);
-    }
+  it("decodes NoDebt from the vault and knows no CushionFirst any more", () => {
+    expect(decodeBallastError(enc("NoDebt"))).toMatchObject({ name: "NoDebt", message: expect.stringMatching(/no debt/) });
+    expect(ballastErrorsAbi.some((f) => f.name === ("CushionFirst" as string))).toBe(false);
+  });
+
+  it("never throws, even on a reason this SDK does not know or malformed input", () => {
+    const e = decodeBallastError(enc("RestoreRefused", [99]));
+    expect(e).toMatchObject({ name: "RestoreRefused", reason: "UNKNOWN(99)" });
+    expect(e?.message).toMatch(/UNKNOWN\(99\)/);
+    const truncated = enc("ExceedsMandate", [1n, 2n]).slice(0, 20) as Hex;
+    expect(decodeBallastError(truncated)).toMatchObject({ name: "UnknownError", selector: truncated.slice(0, 10) });
+    expect(decodeBallastError({ cause: { cause: { data: "0x12" } } })).toBeNull();
+    expect(decodeBallastError(42)).toBeNull();
   });
 
   it("decodes ExceedsMandate with percentages", () => {

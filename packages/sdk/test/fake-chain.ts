@@ -1,9 +1,11 @@
 import {
   createPublicClient,
   custom,
+  decodeFunctionData,
   encodeFunctionData,
   encodeFunctionResult,
   getAddress,
+  multicall3Abi,
   toHex,
   type Abi,
   type Address,
@@ -12,11 +14,17 @@ import {
 
 type Answer = { ok: Hex } | { revert: Hex } | { fail: string };
 
-/** Minimal JSON-RPC backend: eth_call answers come from a fixture map keyed by (to, calldata). */
+export const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11";
+
+/**
+ * Minimal JSON-RPC backend: eth_call answers come from a fixture map keyed by (to, calldata).
+ * Multicall3 aggregate3 calls are unpacked and answered call by call from the same map.
+ */
 export class FakeChain {
   private readonly calls = new Map<string, Answer>();
   private readonly codes = new Map<string, Hex>();
-  readonly requests: { method: string; to?: string; data?: Hex }[] = [];
+  /** Every eth_call / eth_getCode with its block parameter; calls inside a multicall are listed with via. */
+  readonly requests: { method: string; to?: string; data?: Hex; block?: unknown; via?: "multicall" }[] = [];
   timestamp = 1_790_000_000n;
   blockNumber = 1_000n;
 
@@ -51,6 +59,26 @@ export class FakeChain {
     return this;
   }
 
+  private answer(to: Address, data: Hex): { ok: Hex } | { revert: Hex } {
+    const a = this.calls.get(this.key(to, data));
+    if (!a) throw new Error(`unmocked eth_call ${getAddress(to)} ${data.slice(0, 10)}`);
+    if ("fail" in a) throw new Error(a.fail);
+    return a;
+  }
+
+  private aggregate3(data: Hex, block: unknown): Hex {
+    const { args } = decodeFunctionData({ abi: multicall3Abi, data });
+    const calls = args[0] as readonly { target: Address; allowFailure: boolean; callData: Hex }[];
+    const results = calls.map((c) => {
+      this.requests.push({ method: "eth_call", to: c.target.toLowerCase(), data: c.callData, block, via: "multicall" });
+      const a = this.answer(c.target, c.callData);
+      if ("ok" in a) return { success: true, returnData: a.ok };
+      if (!c.allowFailure) throw Object.assign(new Error("execution reverted"), { code: 3, data: "0x" });
+      return { success: false, returnData: a.revert };
+    });
+    return encodeFunctionResult({ abi: multicall3Abi, functionName: "aggregate3", result: results });
+  }
+
   client() {
     return createPublicClient({
       transport: custom({
@@ -69,15 +97,14 @@ export class FakeChain {
           }
           if (method === "eth_getCode") {
             const addr = String(p[0]).toLowerCase();
-            this.requests.push({ method, to: addr });
+            this.requests.push({ method, to: addr, block: p[1] });
             return this.codes.get(addr) ?? "0x";
           }
           if (method === "eth_call") {
             const { to, data } = p[0] as { to: Address; data: Hex };
-            this.requests.push({ method, to: to.toLowerCase(), data });
-            const a = this.calls.get(this.key(to, data));
-            if (!a) throw new Error(`unmocked eth_call ${getAddress(to)} ${data.slice(0, 10)}`);
-            if ("fail" in a) throw new Error(a.fail);
+            this.requests.push({ method, to: to.toLowerCase(), data, block: p[1] });
+            if (to.toLowerCase() === MULTICALL3) return this.aggregate3(data, p[1]);
+            const a = this.answer(to, data);
             if ("revert" in a) throw Object.assign(new Error("execution reverted"), { code: 3, data: a.revert });
             return a.ok;
           }

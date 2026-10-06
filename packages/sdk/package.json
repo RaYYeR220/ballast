@@ -8,8 +8,5 @@
   "dependencies": {
     "@ballast/risk": "workspace:*",
     "viem": "^2.57.3"
-  },
-  "devDependencies": {
-    "zod": "^3.25.0"
   }
 }

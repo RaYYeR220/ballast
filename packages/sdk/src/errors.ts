@@ -9,8 +9,17 @@ export interface BallastError {
   args: readonly unknown[];
   /** One readable sentence for logs, feeds and UIs. */
   message: string;
-  /** Decoded oracle reason for RestoreRefused. */
-  reason?: ReasonName;
+  /** Decoded oracle reason for RestoreRefused ("UNKNOWN(n)" for a value this SDK does not know). */
+  reason?: ReasonName | `UNKNOWN(${number})`;
+}
+
+/** Reason name that never throws, for decoding reverts from contracts newer than this SDK. */
+function safeReason(v: unknown): ReasonName | `UNKNOWN(${number})` {
+  try {
+    return reasonName(Number(v));
+  } catch {
+    return `UNKNOWN(${Number(v)})`;
+  }
 }
 
 const pct = (bps: unknown) => `${(Number(bps) / 100).toFixed(2)}%`;
@@ -18,12 +27,11 @@ const pct = (bps: unknown) => `${(Number(bps) / 100).toFixed(2)}%`;
 const MESSAGES: Record<string, (a: readonly unknown[]) => string> = {
   // accounts
   RestoreRefused: (a) => {
-    const r = reasonName(Number(a[0]));
-    return `restore refused by the Session Oracle: ${r} (${REASON_TEXT[r]})`;
+    const r = safeReason(a[0]);
+    return `restore refused by the Session Oracle: ${r}${r in REASON_TEXT ? ` (${REASON_TEXT[r as ReasonName]})` : ""}`;
   },
   ExceedsMandate: (a) => `LTV would be ${pct(a[0])}, above the owner's cap of ${pct(a[1])}`,
   NotInShieldWindow: () => "deleverage is only allowed close to a market closure, or while LTV is above the owner's cap",
-  CushionFirst: () => "repay from the cushion before selling collateral",
   KeeperRestoreDisabled: () => "the owner has disabled keeper restores",
   InsufficientCushion: (a) => `the cushion holds ${a[0]} but the action needs ${a[1]}`,
   BelowMinLoan: (a) => `the remaining debt ${a[0]} would be below the venue minimum loan ${a[1]}`,
@@ -35,7 +43,7 @@ const MESSAGES: Record<string, (a: readonly unknown[]) => string> = {
   NotOwner: () => "only the account owner may do this",
   NotKeeper: () => "only the keeper or the owner may do this",
   NotLiquidated: () => "no liquidation to record",
-  NoDebt: () => "the position has no debt",
+  NoDebt: () => "the user has no debt to repay",
   BadMandate: () => "the mandate is out of bounds",
   BadMarket: () => "the market does not match the symbol or venue",
   Locked: () => "the account is busy (reentrancy lock)",
@@ -88,9 +96,17 @@ function revertData(input: unknown): Hex | undefined {
 
 /**
  * Decodes a Ballast revert into a readable error. Accepts raw revert data or a viem error.
- * Returns null when there is no revert data at all.
+ * Returns null when there is no revert data at all. Never throws.
  */
 export function decodeBallastError(input: unknown): BallastError | null {
+  try {
+    return decode(input);
+  } catch {
+    return null; // malformed input: nothing decodable
+  }
+}
+
+function decode(input: unknown): BallastError | null {
   const data = revertData(input);
   if (!data || data.length < 10) return null;
   const selector = slice(data, 0, 4);
@@ -103,10 +119,16 @@ export function decodeBallastError(input: unknown): BallastError | null {
   } catch {
     return { name: "UnknownError", selector, args: [], message: `reverted with unknown error ${selector}` };
   }
-  if (name === "Error") return { name, selector, args, message: String(args[0]) };
-  if (name === "Panic") return { name, selector, args, message: `panic 0x${BigInt(args[0] as bigint).toString(16)}` };
-  const message = MESSAGES[name]?.(args) ?? `${name}(${args.map(String).join(", ")})`;
+  const generic = `${name}(${args.map(String).join(", ")})`;
+  let message: string;
+  try {
+    if (name === "Error") message = String(args[0]);
+    else if (name === "Panic") message = `panic 0x${BigInt(args[0] as bigint).toString(16)}`;
+    else message = MESSAGES[name]?.(args) ?? generic;
+  } catch {
+    message = generic;
+  }
   const out: BallastError = { name, selector, args, message };
-  if (name === "RestoreRefused") out.reason = reasonName(Number(args[0]));
+  if (name === "RestoreRefused") out.reason = safeReason(args[0]);
   return out;
 }

@@ -11,8 +11,12 @@ export interface ExternalAddresses {
   identityRegistry: Address;
   reputationRegistry: Address;
   pancakeV3Router: Address;
+  /** Multicall3 (same address on every EVM chain it is deployed on, BSC included). */
+  multicall3: Address;
   tokens: Record<string, Address>;
 }
+
+export const MULTICALL3: Address = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
 /** One Ballast deployment: contracts/deployments/<chainId>.json plus the external addresses. */
 export interface Deployment {
@@ -64,6 +68,7 @@ export function bscExternal(): ExternalAddresses {
     identityRegistry: getAddress(bscConfig.erc8004.identity),
     reputationRegistry: getAddress(bscConfig.erc8004.reputation),
     pancakeV3Router: getAddress(bscConfig.pancake.v3SwapRouter),
+    multicall3: MULTICALL3,
     tokens,
   };
 }

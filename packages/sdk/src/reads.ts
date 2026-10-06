@@ -34,10 +34,10 @@ import {
 import { bytes32ToSymbol, cloneImplementation, orNullOnRevert, sameAddress, symbolToBytes32 } from "./util";
 
 /** The subset of a viem PublicClient the reads use. Any PublicClient satisfies it. */
-export type ReadClient = Pick<PublicClient, "readContract" | "getBlock" | "getCode">;
+export type ReadClient = Pick<PublicClient, "readContract" | "multicall" | "getBlock" | "getBlockNumber" | "getCode">;
 
 export interface ReadOptions {
-  /** Pin every read to this block. By default reads use `latest`. */
+  /** Block to read at. By default each call reads the head block number once and pins every read to it. */
   blockNumber?: bigint;
 }
 
@@ -52,10 +52,13 @@ async function mapLimit<T, R>(items: readonly T[], fn: (x: T) => Promise<R>): Pr
 
 const range = (n: bigint) => Array.from({ length: Number(n) }, (_, i) => BigInt(i));
 
+/** Head block (or the requested one): its timestamp and the number every following read is pinned to. */
 async function head(c: ReadClient, o: ReadOptions) {
   const b = await c.getBlock(o.blockNumber === undefined ? { blockTag: "latest" } : { blockNumber: o.blockNumber });
   return { ts: b.timestamp, at: Number(b.timestamp), blockNumber: b.number as bigint };
 }
+
+const pin = async (c: ReadClient, o: ReadOptions) => o.blockNumber ?? (await c.getBlockNumber());
 
 // ------------------------------------------------------------------ session
 
@@ -74,7 +77,7 @@ export interface SessionState {
 
 export async function sessionState(c: ReadClient, d: Deployment, o: ReadOptions = {}): Promise<SessionState> {
   const { ts, at, blockNumber } = await head(c, o);
-  const cal = { address: d.calendar, abi: sessionCalendarAbi, blockNumber: o.blockNumber } as const;
+  const cal = { address: d.calendar, abi: sessionCalendarAbi, blockNumber } as const;
   const [session, nextClose, nextOpen, next, current] = await Promise.all([
     c.readContract({ ...cal, functionName: "session", args: [ts] }),
     c.readContract({ ...cal, functionName: "nextClose", args: [ts] }),
@@ -130,14 +133,26 @@ export interface OracleSnapshot {
   windowAhead: { window: RiskWindowName; startsAt: number; endsAt: number; gapBps: number };
   currentWindow: { window: RiskWindowName; gapBps: number; closedAt: number };
   overlay: OverlayState;
+  /** SessionOracle.params(). `horizon` is also the keeper's deleverage window before a closure. */
+  params: OracleParams;
+}
+
+export interface OracleParams {
+  restoreDelay: number;
+  horizon: number;
+  convergenceBps: number;
+  maxRefAge: number;
+  maxOverlayTtl: number;
+  maxOndoDriftBps: number;
+  maxRefDeviationBps: number;
 }
 
 export async function oracleSnapshot(c: ReadClient, d: Deployment, symbol: string, o: ReadOptions = {}): Promise<OracleSnapshot> {
   const sym = symbolToBytes32(symbol);
   const { ts, at, blockNumber } = await head(c, o);
-  const or = { address: d.sessionOracle, abi: sessionOracleAbi, blockNumber: o.blockNumber } as const;
-  const [session, raw, perShare, ref, conv, can, ahead, current, ov] = await Promise.all([
-    c.readContract({ address: d.calendar, abi: sessionCalendarAbi, blockNumber: o.blockNumber, functionName: "session", args: [ts] }),
+  const or = { address: d.sessionOracle, abi: sessionOracleAbi, blockNumber } as const;
+  const [session, raw, perShare, ref, conv, can, ahead, current, ov, params] = await Promise.all([
+    c.readContract({ address: d.calendar, abi: sessionCalendarAbi, blockNumber, functionName: "session", args: [ts] }),
     c.readContract({ ...or, functionName: "rawPrice", args: [sym] }),
     c.readContract({ ...or, functionName: "perSharePrice", args: [sym] }),
     c.readContract({ ...or, functionName: "referenceFor", args: [sym] }),
@@ -146,6 +161,7 @@ export async function oracleSnapshot(c: ReadClient, d: Deployment, symbol: strin
     c.readContract({ ...or, functionName: "windowAhead", args: [sym] }),
     c.readContract({ ...or, functionName: "currentWindow", args: [sym] }),
     c.readContract({ ...or, functionName: "overlay", args: [sym] }),
+    c.readContract({ ...or, functionName: "params" }),
   ]);
   const reason = reasonName(can[1]);
   return {
@@ -175,13 +191,22 @@ export async function oracleSnapshot(c: ReadClient, d: Deployment, symbol: strin
       postedAt: Number(ov.postedAt),
       fresh: Number(ov.validUntil) >= at,
     },
+    params: {
+      restoreDelay: params[0],
+      horizon: params[1],
+      convergenceBps: params[2],
+      maxRefAge: params[3],
+      maxOverlayTtl: params[4],
+      maxOndoDriftBps: params[5],
+      maxRefDeviationBps: params[6],
+    },
   };
 }
 
 // ----------------------------------------------------------------- accounts
 
 export async function listAccounts(c: ReadClient, d: Deployment, o: ReadOptions & { owner?: Address } = {}): Promise<Address[]> {
-  const f = { address: d.factory, abi: ballastFactoryAbi, blockNumber: o.blockNumber } as const;
+  const f = { address: d.factory, abi: ballastFactoryAbi, blockNumber: await pin(c, o) } as const;
   if (o.owner) return [...(await c.readContract({ ...f, functionName: "accountsOf", args: [o.owner] }))];
   const n = await c.readContract({ ...f, functionName: "accountCount" });
   return mapLimit(range(n), (i) => c.readContract({ ...f, functionName: "allAccounts", args: [i] }));
@@ -211,7 +236,7 @@ export interface ListaMarket {
   deleveragePathSet: boolean;
   /** Moolah price: collateral units * price / 1e36 = loan units. Null when the venue cannot price. */
   oraclePrice: bigint | null;
-  /** Venue minimum loan in loan-token units. Null if it could not be read. */
+  /** Venue minimum loan in loan-token units. Null if it could not be read (see pricing.minLoanKnown). */
   minLoan: bigint | null;
 }
 
@@ -239,11 +264,16 @@ export interface Pricing {
   loanPriceUsd: number | null;
   /** Liquidation LTV as a fraction (Lista lltv, Venus liquidation threshold or collateral factor). */
   lltv: number;
+  /** 0 when unknown: check minLoanKnown before trusting it. */
   minLoanUsd: number;
+  /** False when the venue minimum loan could not be read (a partial repay may then be refused). */
+  minLoanKnown: boolean;
 }
 
 export interface AccountState {
   address: Address;
+  /** Block every field was read at. */
+  blockNumber: bigint;
   venue: Venue;
   owner: Address;
   keeper: Address;
@@ -337,6 +367,7 @@ function pricingFor(m: ListaMarket | VenusMarket, loanDecimals: number, collater
       loanPriceUsd: 1,
       lltv: scaled(m.marketParams.lltv, 18),
       minLoanUsd: m.minLoan === null ? 0 : scaled(m.minLoan, loanDecimals),
+      minLoanKnown: m.minLoan !== null,
     };
   }
   const threshold = m.liquidationThreshold > 0n ? m.liquidationThreshold : m.collateralFactor;
@@ -344,7 +375,8 @@ function pricingFor(m: ListaMarket | VenusMarket, loanDecimals: number, collater
     collateralPriceUsd: m.collateralPrice === null ? null : scaled(m.collateralPrice * cd, 36),
     loanPriceUsd: m.debtPrice === null ? null : scaled(m.debtPrice * ld, 36),
     lltv: scaled(threshold, 18),
-    minLoanUsd: 0,
+    minLoanUsd: 0, // Venus has no minimum loan
+    minLoanKnown: true,
   };
 }
 
@@ -357,9 +389,10 @@ export async function accountVenue(c: ReadClient, d: Deployment, account: Addres
 }
 
 export async function accountState(c: ReadClient, d: Deployment, account: Address, o: ReadOptions = {}): Promise<AccountState> {
-  const venue = await accountVenue(c, d, account, o);
+  const blockNumber = await pin(c, o);
+  const venue = await accountVenue(c, d, account, { blockNumber });
   if (!venue) throw new Error(`${account} is not a Ballast account of this deployment`);
-  const a = { address: account, abi: ballastAccountBaseAbi, blockNumber: o.blockNumber } as const;
+  const a = { address: account, abi: ballastAccountBaseAbi, blockNumber } as const;
   const [owner, keeper, symbol, mandate, tracked, recorded, liquidated, health, position, ltv, cushion, loanToken, collateralToken] =
     await Promise.all([
       c.readContract({ ...a, functionName: "owner" }),
@@ -376,14 +409,15 @@ export async function accountState(c: ReadClient, d: Deployment, account: Addres
       c.readContract({ ...a, functionName: "loanToken" }),
       c.readContract({ ...a, functionName: "collateralToken" }),
     ]);
-  const decimals = (token: Address) => c.readContract({ address: token, abi: erc20Abi, blockNumber: o.blockNumber, functionName: "decimals" });
+  const decimals = (token: Address) => c.readContract({ address: token, abi: erc20Abi, blockNumber, functionName: "decimals" });
   const [loanDecimals, collateralDecimals, market] = await Promise.all([
     decimals(loanToken),
     decimals(collateralToken),
-    venue === "lista" ? listaMarket(c, account, o.blockNumber) : venusMarket(c, account, o.blockNumber),
+    venue === "lista" ? listaMarket(c, account, blockNumber) : venusMarket(c, account, blockNumber),
   ]);
   return {
     address: account,
+    blockNumber,
     venue,
     owner,
     keeper,
@@ -433,7 +467,7 @@ export async function listCovers(
   d: Deployment,
   o: ReadOptions & { keeper?: Address; user?: Address } = {},
 ): Promise<CoverEntry[]> {
-  const v = { address: d.cushionVault, abi: cushionVaultAbi, blockNumber: o.blockNumber } as const;
+  const v = { address: d.cushionVault, abi: cushionVaultAbi, blockNumber: await pin(c, o) } as const;
   const n = await c.readContract({ ...v, functionName: "coverCount" });
   let refs = await mapLimit(range(n), (i) => c.readContract({ ...v, functionName: "coverAt", args: [i] }));
   if (o.user) refs = refs.filter(([user]) => sameAddress(user, o.user as Address));
@@ -486,28 +520,62 @@ export interface GuardianJob {
 }
 
 export interface GuardianJobsOptions extends ReadOptions {
+  /** Cursor: scan job ids strictly above this one (the nextCursor of the previous scan). */
+  fromJobId: bigint;
+  /** Scan up to this id (inclusive). Default and cap: the kernel's jobCounter. */
+  toJobId?: bigint;
+  /** At most this many ids per call (default 1000); continue from nextCursor. */
+  limit?: number;
   /** Only jobs whose provider is this address (the agent). */
   provider?: Address;
-  /** Only jobs guarding this account. */
+  /** Only jobs guarding this account (unbound jobs never match). */
   account?: Address;
-  /** How many of the newest kernel jobs to scan (default 300). */
-  lookback?: number;
 }
 
-/** Recent ERC-8183 kernel jobs whose evaluator is the Ballast guardian, newest first, with their bound terms. */
-export async function guardianJobs(c: ReadClient, d: Deployment, o: GuardianJobsOptions = {}): Promise<GuardianJob[]> {
-  const lookback = o.lookback ?? 300;
-  const k = { address: d.external.kernel, abi: kernelAbi, blockNumber: o.blockNumber } as const;
-  const counter = await c.readContract({ ...k, functionName: "jobCounter" });
-  const ids: bigint[] = [];
-  for (let id = counter; id >= 1n && ids.length < lookback; id--) ids.push(id);
-  const jobs = await mapLimit(ids, async (id) => ({ id, job: await c.readContract({ ...k, functionName: "getJob", args: [id] }) }));
-  const ours = jobs.filter(
-    ({ job }) => sameAddress(job.evaluator, d.guardian) && (!o.provider || sameAddress(job.provider, o.provider)),
-  );
-  const out = await mapLimit(ours, async ({ id, job }): Promise<GuardianJob> => {
-    const t = await c.readContract({ address: d.guardian, abi: ballastGuardianAbi, blockNumber: o.blockNumber, functionName: "terms", args: [id] });
-    const bound = t[4];
+export interface GuardianJobsPage {
+  /** Guardian-evaluated jobs in the scanned range, oldest first. */
+  jobs: GuardianJob[];
+  /** Highest id scanned: persist it and pass it as fromJobId next time. */
+  nextCursor: bigint;
+  /** The kernel's jobCounter (newest id; ids start at 1). */
+  head: bigint;
+}
+
+/** Calldata bytes per Multicall3 chunk: about 100 getJob calls per eth_call. */
+const MULTICALL_BATCH_BYTES = 4096;
+
+/** IACP.Job and BallastGuardian.terms() as decoded. Spelled out so multicall results stay typed in any program. */
+interface KernelJob {
+  id: bigint;
+  client: Address;
+  provider: Address;
+  evaluator: Address;
+  description: string;
+  budget: bigint;
+  expiredAt: bigint;
+  status: number;
+  hook: Address;
+  submittedAt: bigint;
+  deliverable: Hex;
+}
+type TermsResult = readonly [Address, bigint, bigint, bigint, boolean, boolean];
+
+async function jobsWithTerms(c: ReadClient, d: Deployment, ids: readonly bigint[], blockNumber: bigint, provider?: Address) {
+  const mc = { multicallAddress: d.external.multicall3, allowFailure: false, batchSize: MULTICALL_BATCH_BYTES, blockNumber } as const;
+  const jobs = (await c.multicall({
+    ...mc,
+    contracts: ids.map((id) => ({ address: d.external.kernel, abi: kernelAbi, functionName: "getJob", args: [id] }) as const),
+  })) as readonly KernelJob[];
+  const ours = ids
+    .map((id, i) => ({ id, job: jobs[i] as KernelJob }))
+    .filter(({ job }) => sameAddress(job.evaluator, d.guardian) && (!provider || sameAddress(job.provider, provider)));
+  if (ours.length === 0) return [];
+  const terms = (await c.multicall({
+    ...mc,
+    contracts: ours.map(({ id }) => ({ address: d.guardian, abi: ballastGuardianAbi, functionName: "terms", args: [id] }) as const),
+  })) as readonly TermsResult[];
+  return ours.map(({ id, job }, i): GuardianJob => {
+    const t = terms[i] as TermsResult;
     return {
       jobId: id,
       client: job.client,
@@ -520,8 +588,35 @@ export async function guardianJobs(c: ReadClient, d: Deployment, o: GuardianJobs
       hook: job.hook,
       submittedAt: Number(job.submittedAt),
       deliverable: job.deliverable,
-      terms: bound ? { account: t[0], start: Number(t[1]), end: Number(t[2]), agentId: t[3], settled: t[5] } : null,
+      terms: t[4] ? { account: t[0], start: Number(t[1]), end: Number(t[2]), agentId: t[3], settled: t[5] } : null,
     };
   });
-  return o.account ? out.filter((j) => j.terms !== null && sameAddress(j.terms.account, o.account as Address)) : out;
+}
+
+/**
+ * New ERC-8183 kernel jobs whose evaluator is the Ballast guardian, scanned incrementally by job id through
+ * Multicall3. Start from the jobCounter at the guardian's deployment (or 0n) and pass nextCursor back each
+ * time. Jobs already seen are refreshed with readGuardianJobs.
+ */
+export async function guardianJobs(c: ReadClient, d: Deployment, o: GuardianJobsOptions): Promise<GuardianJobsPage> {
+  const blockNumber = await pin(c, o);
+  const head = await c.readContract({ address: d.external.kernel, abi: kernelAbi, blockNumber, functionName: "jobCounter" });
+  const limit = BigInt(Math.max(0, Math.floor(o.limit ?? 1000)));
+  let to = o.toJobId !== undefined && o.toJobId < head ? o.toJobId : head;
+  if (to > o.fromJobId + limit) to = o.fromJobId + limit;
+  if (to <= o.fromJobId) return { jobs: [], nextCursor: o.fromJobId, head };
+  const ids: bigint[] = [];
+  for (let id = o.fromJobId + 1n; id <= to; id++) ids.push(id);
+  const jobs = await jobsWithTerms(c, d, ids, blockNumber, o.provider);
+  return {
+    jobs: o.account ? jobs.filter((j) => j.terms !== null && sameAddress(j.terms.account, o.account as Address)) : jobs,
+    nextCursor: to,
+    head,
+  };
+}
+
+/** Current state of known guardian jobs (ids that are not guardian jobs are dropped). */
+export async function readGuardianJobs(c: ReadClient, d: Deployment, jobIds: readonly bigint[], o: ReadOptions = {}): Promise<GuardianJob[]> {
+  if (jobIds.length === 0) return [];
+  return jobsWithTerms(c, d, jobIds, await pin(c, o));
 }

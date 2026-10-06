@@ -76,15 +76,11 @@ const KERNEL_EXTRAS: Fragment[] = [
 ];
 
 /**
- * Errors already ruled into the contracts but not in this build yet. Each is emitted into
+ * Errors already in the contracts branch but not in this build yet. Each is emitted into
  * ballastErrorsAbi only while no compiled error of the same name exists, so a rebuild after the
- * contract change replaces them with the real signature.
+ * merge replaces it with the compiled one. Empty this list once the build has them.
  */
-const PENDING_ERRORS: Fragment[] = [
-  { type: "error", name: "CushionFirst", inputs: [] },
-  { type: "error", name: "CushionFirst", inputs: [u256("cushion")] },
-  { type: "error", name: "NoDebt", inputs: [] },
-];
+const PENDING_ERRORS: Fragment[] = [{ type: "error", name: "NoDebt", inputs: [] }]; // CushionVault.shieldFor
 
 function strip<T>(x: T): T {
   if (Array.isArray(x)) return x.map(strip) as T;

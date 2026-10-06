@@ -11,6 +11,7 @@ function lista(o: Partial<AccountState> & { minLoan?: bigint; price?: number | n
   const { minLoan = E18, price = 250, pathSet = true, ...rest } = o;
   return {
     address: addr(0xd1),
+    blockNumber: 1_000n,
     venue: "lista",
     owner: OWNER,
     keeper: KEEPER,
@@ -39,7 +40,7 @@ function lista(o: Partial<AccountState> & { minLoan?: bigint; price?: number | n
       oraclePrice: price === null ? null : BigInt(price) * 10n ** 36n,
       minLoan,
     },
-    pricing: { collateralPriceUsd: price, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: Number(minLoan / E18) },
+    pricing: { collateralPriceUsd: price, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: Number(minLoan / E18), minLoanKnown: true },
     ...rest,
   };
 }
@@ -60,18 +61,24 @@ function venus(o: Partial<AccountState> = {}): AccountState {
       collateralPrice: 250n * E18,
       debtPrice: E18,
     },
-    pricing: { collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: 0 },
+    pricing: { collateralPriceUsd: 250, loanPriceUsd: 1, lltv: 0.75, minLoanUsd: 0, minLoanKnown: true },
     ...o,
   };
 }
 
+const params = { restoreDelay: 5400, horizon: 10_800, convergenceBps: 60, maxRefAge: 93_600, maxOverlayTtl: 21_600, maxOndoDriftBps: 100, maxRefDeviationBps: 300 };
+/** Regular session, one hour before an overnight closure: inside the 3 h deleverage window. */
 const regular: PlanOracle = {
+  at: 1_790_000_000,
+  params,
   session: "REGULAR",
   canAddRisk: false,
   reason: "WINDOW_AHEAD",
   windowAhead: { window: "OVERNIGHT", startsAt: 1_790_003_600, endsAt: 1_790_066_000, gapBps: 417 },
   currentWindow: { window: "NONE", gapBps: 0, closedAt: 0 },
 };
+/** Regular session, the closure more than the horizon away. */
+const morning: PlanOracle = { ...regular, at: 1_789_980_000 };
 const overnight: PlanOracle = {
   ...regular,
   session: "OVERNIGHT",
@@ -86,7 +93,7 @@ describe("positionForPlanner", () => {
   });
 
   it("prices Venus debt with the loan token oracle price", () => {
-    const s = venus({ debt: 1000n * E18, pricing: { collateralPriceUsd: 250, loanPriceUsd: 0.998, lltv: 0.75, minLoanUsd: 0 } });
+    const s = venus({ debt: 1000n * E18, pricing: { collateralPriceUsd: 250, loanPriceUsd: 0.998, lltv: 0.75, minLoanUsd: 0, minLoanKnown: true } });
     expect(positionForPlanner(s, 250, 0.75, 0).debtUsd).toBeCloseTo(998, 9);
   });
 });
@@ -118,6 +125,7 @@ describe("planForAccount: shield", () => {
     expect(p.amounts.repayAssets).toBe(parseUnits(ref.repayUsd.toFixed(6), 18));
     expect(p.amounts.sellCollateral).toBe(0n);
     expect(p.targetHfAfterGap).toBe(1.05);
+    expect(p.steps).toEqual([{ fn: "shieldRepay", assets: p.amounts.repayAssets }]);
   });
 
   it("repays the whole debt with headroom when the minimum loan forces a full close", () => {
@@ -139,6 +147,59 @@ describe("planForAccount: shield", () => {
     expect(p.amounts.flashRepayAssets).toBeGreaterThan(0n);
     expect(p.amounts.minOut).toBe(p.amounts.flashRepayAssets);
     expect(p.warnings).toEqual([]);
+    expect(p.inDeleverageWindow).toBe(true);
+    // One keeper call: the contract spends the cushion first, then sells only if still above the shield LTV.
+    expect(p.steps).toEqual([
+      { fn: "shieldDeleverage", repayAssets: p.amounts.flashRepayAssets, collateralToSell: p.amounts.sellCollateral, minOut: p.amounts.minOut },
+    ]);
+  });
+
+  it("splits an owner sale into a cushion repay and a deleverage", () => {
+    const p = planForAccount(lista({ cushion: 10n * E18 }), regular, { asOwner: true });
+    expect(p.steps.map((s) => s.fn)).toEqual(["shieldRepay", "shieldDeleverage"]);
+  });
+
+  it("does not sell outside the deleverage window and says why", () => {
+    const p = planForAccount(lista({ cushion: 10n * E18, debt: 1400n * E18, mandate: { maxLtvBps: 7000, shieldLtvBps: 5000, maxSlippageBps: 150, autoRestore: true } }), {
+      ...morning,
+      windowAhead: { ...morning.windowAhead, gapBps: 2446 },
+    });
+    expect(p.inDeleverageWindow).toBe(false);
+    expect(p.canSellCollateral).toBe(false);
+    expect(p.kind).toBe("insufficient");
+    expect(p.warnings.join(" ")).toMatch(/NotInShieldWindow/);
+    expect(p.steps).toEqual([{ fn: "shieldRepay", assets: 10n * E18 }]);
+  });
+
+  it("sells outside the window when LTV after the cushion is above the owner's cap, floored at the cap", () => {
+    const p = planForAccount(lista({ cushion: 10n * E18 }), morning);
+    expect(p.inDeleverageWindow).toBe(false);
+    expect(p.canSellCollateral).toBe(true);
+    expect(p.kind).toBe("repay+deleverage");
+    expect(p.warnings).toEqual([]); // lands near 68% LTV, above the 59% floor
+  });
+
+  it("flags a sale that clears the loan: accrual headroom and the OverDeleverage floor", () => {
+    const s = lista({ cushion: 10n * E18, minLoan: 1700n * E18 });
+    const p = planForAccount(s, regular);
+    expect(p.kind).toBe("repay+deleverage");
+    if (p.kind !== "repay+deleverage") return;
+    const remaining = s.debt - p.amounts.repayAssets;
+    expect(p.amounts.flashRepayAssets).toBe(remaining + remaining / 10_000n + 1n);
+    expect(p.amounts.sellCollateral).toBeGreaterThan(parseUnits(p.sellTokens.toFixed(6), 18));
+    expect(p.warnings.join(" ")).toMatch(/OverDeleverage/);
+  });
+
+  it("warns when the venue minimum loan is unknown", () => {
+    const s = lista();
+    const p = planForAccount({ ...s, pricing: { ...s.pricing, minLoanUsd: 0, minLoanKnown: false } }, regular);
+    expect(p.warnings.join(" ")).toMatch(/minimum loan unknown/);
+  });
+
+  it("is a noop when no closure window is known", () => {
+    const none: PlanOracle = { ...regular, windowAhead: { window: "NONE", startsAt: 0, endsAt: 0, gapBps: 0 } };
+    expect(planForAccount(lista(), none)).toMatchObject({ kind: "noop", reason: "no closure window known" });
+    expect(planForAccount(lista(), none, { gapBps: 417 }).kind).toBe("repay");
   });
 
   it("warns when the mandate would refuse the deleverage", () => {
@@ -153,6 +214,7 @@ describe("planForAccount: shield", () => {
     expect(p.canSellCollateral).toBe(false);
     expect(p.kind).toBe("insufficient");
     expect(p.amounts.repayAssets).toBe(10n * E18);
+    expect(p.steps).toEqual([{ fn: "shieldRepay", assets: 10n * E18 }]);
   });
 
   it("never sells without a deleverage path", () => {
@@ -195,6 +257,7 @@ describe("planForAccount: restore", () => {
     expect(p.mode).toBe("restore");
     expect(p).toMatchObject({ kind: "borrow", borrowUsd: 400 });
     expect(p.amounts.borrowAssets).toBe(400n * E18);
+    expect(p.steps).toEqual([{ fn: "restore", assets: 400n * E18 }]);
   });
 
   it("caps the restore at the owner's max LTV", () => {

@@ -30,6 +30,7 @@ describe("deployments", () => {
     expect(d.external.kernel).toBe(getAddress(bscConfig.erc8183.kernel));
     expect(d.external.moolah).toBe(getAddress(bscConfig.lista.moolah));
     expect(d.external.tokens.USD1).toBe(getAddress(bscConfig.tokens.USD1));
+    expect(d.external.multicall3).toBe("0xcA11bde05977b3631167028862bE2a173976CA11");
   });
 
   it("rejects a deployment with a missing or malformed address", () => {
