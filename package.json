@@ -11,7 +11,7 @@
     "abis": "cd contracts && forge build && cd .. && tsx scripts/export-abis.ts",
     "test": "vitest run",
     "backtest": "tsx packages/risk/scripts/backtest.ts",
-    "typecheck": "pnpm -r exec tsc --noEmit",
+    "typecheck": "pnpm -r exec tsc --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
