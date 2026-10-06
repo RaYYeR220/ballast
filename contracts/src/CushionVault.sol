@@ -10,8 +10,9 @@ import {MarketParams, IMoolah, IVToken} from "./interfaces/External.sol";
 /// @title CushionVault
 /// @notice Protection for a loan that stays on the user's own address. The user parks stablecoins here;
 ///         the user's chosen keeper may only spend them to repay that same user's debt, only in the hours
-///         before a closure (or during one), and at most `capPerDay`. Repay-on-behalf needs no authorization
-///         on Lista or Venus and works while the venue cannot price the collateral.
+///         before a closure (or during one, or when the calendar cannot tell), and at most `capPerDay`.
+///         Repay-on-behalf needs no authorization on Lista or Venus and works while the venue cannot price
+///         the collateral.
 contract CushionVault {
     using SafeERC20 for IERC20;
 
@@ -58,6 +59,7 @@ contract CushionVault {
     error VenusError(uint256 code);
     error HorizonTooLong();
     error BelowMinLoan(uint256 remaining, uint256 minLoan);
+    error NoDebt();
 
     constructor(SessionOracle oracle_, IMoolah moolah_, uint32 shieldHorizon_) {
         if (shieldHorizon_ > 1 days) revert HorizonTooLong();
@@ -122,13 +124,14 @@ contract CushionVault {
         emit CoverWithdrawn(msg.sender, key, amount, to);
     }
 
-    /// @notice True during a closure or within `shieldHorizon` of the next one.
+    /// @notice False only in the regular session while the next closure is known to be more than
+    ///         `shieldHorizon` away. During a closure, when the calendar cannot tell (outside its table) or when
+    ///         the next closure is unknown, shields stay allowed: a shield only spends the user's own cushion on
+    ///         the user's own debt, so failing open here never adds risk.
     function canShieldNow(bytes32 sym) public view returns (bool) {
-        SessionCalendar.Session s = calendar.session(block.timestamp);
-        if (s == SessionCalendar.Session.UNKNOWN) return false;
-        if (s != SessionCalendar.Session.REGULAR) return true;
+        if (calendar.session(block.timestamp) != SessionCalendar.Session.REGULAR) return true;
         (, uint64 startsAt,,) = sessionOracle.windowAhead(sym);
-        return startsAt != 0 && startsAt <= block.timestamp + shieldHorizon;
+        return startsAt == 0 || startsAt <= block.timestamp + shieldHorizon;
     }
 
     function shieldFor(address user, bytes32 key, uint128 amount) external {
@@ -144,12 +147,12 @@ contract CushionVault {
         if (amount > c.balance) revert InsufficientCover(c.balance, amount);
         c.usedToday += amount;
         c.balance -= amount;
-        uint256 pulled = amount;
+        IERC20 t = IERC20(c.token);
+        uint256 b0 = t.balanceOf(address(this));
         if (c.venue == VENUE_LISTA) {
-            IERC20 t = IERC20(c.token);
-            uint256 b0 = t.balanceOf(address(this));
             (uint256 debt, uint128 shares) = _listaDebt(c.mp, user);
-            if (amount >= debt && shares != 0) {
+            if (shares == 0) revert NoDebt();
+            if (amount >= debt) {
                 // Full close: repay by shares and approve exactly what Moolah will pull.
                 t.forceApprove(address(moolah), debt);
                 moolah.repay(c.mp, 0, shares, user, "");
@@ -159,16 +162,21 @@ contract CushionVault {
                 moolah.repay(c.mp, amount, 0, user, "");
             }
             t.forceApprove(address(moolah), 0);
-            pulled = b0 - t.balanceOf(address(this));
-            uint256 refund = amount - pulled;
-            if (refund != 0) {
-                c.balance += uint128(refund);
-                c.usedToday -= uint128(refund);
-            }
         } else {
-            IERC20(c.token).forceApprove(c.vDebt, amount);
-            uint256 code = IVToken(c.vDebt).repayBorrowBehalf(user, amount);
+            uint256 debt = IVToken(c.vDebt).borrowBalanceCurrent(user);
+            if (debt == 0) revert NoDebt();
+            // Full close: the max sentinel repays the exact balance, so an overshoot never reverts.
+            t.forceApprove(c.vDebt, amount);
+            uint256 code = IVToken(c.vDebt).repayBorrowBehalf(user, amount >= debt ? type(uint256).max : amount);
             if (code != 0) revert VenusError(code);
+            t.forceApprove(c.vDebt, 0);
+        }
+        // A full close pulls less than `amount`; the rest goes back to the cover and to today's allowance.
+        uint256 pulled = b0 - t.balanceOf(address(this));
+        uint256 refund = amount - pulled;
+        if (refund != 0) {
+            c.balance += uint128(refund);
+            c.usedToday -= uint128(refund);
         }
         emit ShieldedFor(user, key, uint128(pulled));
     }
