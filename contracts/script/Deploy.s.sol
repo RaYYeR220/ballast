@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {stdJson} from "forge-std/StdJson.sol";
 import {SessionCalendar} from "../src/SessionCalendar.sol";
 import {SessionOracle} from "../src/SessionOracle.sol";
@@ -88,7 +89,12 @@ contract Deploy is Script {
         o.serialize("cushionVault", address(vault));
         o.serialize("guardian", address(guardian));
         string memory json = o.serialize("block", block.number);
-        json.write(string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), ".json"));
+        // Only a real broadcast records addresses; a simulation must not leave a deployments file behind.
+        if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
+            json.write(string.concat(vm.projectRoot(), "/deployments/", vm.toString(block.chainid), ".json"));
+        } else {
+            console2.log("simulation only: deployments file not written");
+        }
         console2.log("sessionOracle", address(oracle));
     }
 

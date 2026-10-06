@@ -18,7 +18,7 @@ abstract contract BallastAccountBase is Initializable {
         uint16 maxLtvBps; // ceiling for restore, and the LTV at which deleverage no longer needs a window
         uint16 shieldLtvBps; // deleverage only above this LTV and never lands more than 1% below it
         uint16 maxSlippageBps;
-        bool autoRestore; // keeper may restore; a keeper deleverage switches it off until the owner sets it again
+        bool autoRestore; // keeper may restore; a keeper collateral sale switches it off until the owner sets it again
     }
 
     address public owner;
