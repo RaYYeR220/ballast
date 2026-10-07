@@ -1,0 +1,27 @@
+.root {
+  position: relative;
+}
+.svg {
+  display: block;
+  overflow: visible;
+  touch-action: none;
+  cursor: grab;
+  border-radius: 50%;
+}
+.svg[data-dragging] {
+  cursor: grabbing;
+}
+.fill {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+.readout {
+  position: absolute;
+  left: 50%;
+  top: -34px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 500 14px/1 var(--f-ui);
+  color: var(--accent);
+}

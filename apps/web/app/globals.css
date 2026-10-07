@@ -1,0 +1,105 @@
+/* Tailwind v4 theme and utilities. Preflight is left out on purpose: the v09 pages ship their own
+   minimal reset, and the port has to match the prototype's defaults. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Ballast v09 "Planisphere" design tokens (design/v09/tokens.css). Night is the default sky;
+   [data-sky="day"] flips a section or page to the day palette. */
+:root {
+  /* Prussian night ramp */
+  --p-950: #070f22; --p-900: #0b1733; --p-800: #12244a; --p-700: #1c3463; --p-600: #2a4677;
+  --p-500: #3d5a94; --p-400: #748cbf; --p-300: #8fa3c9; --p-200: #bac7df; --p-100: #dfe5f1;
+  /* Cream (ink at night, paper by day) */
+  --c-50: #faf6ea; --c-100: #f3ecd9; --c-200: #e8dcbc; --c-300: #d8ccab; --c-500: #a8986f; --c-700: #6f6142; --c-900: #3b331f;
+  /* Signals */
+  --star: #fff6d8; --mint: #3ef0b5; --mint-day: #0b7a5a; --ember: #ff9f80; --ember-day: #b8401f;
+  /* Semantic, night */
+  --bg: var(--p-950); --surface: var(--p-900); --surface-2: var(--p-800); --rule: var(--p-700); --rule-2: var(--p-600);
+  --text: var(--c-100); --text-2: var(--p-300); --text-3: var(--p-400); --accent: var(--mint); --alarm: var(--ember);
+  --btn-bg: var(--c-100); --btn-text: var(--p-900);
+  /* Type: families come from next/font (layout.tsx) */
+  --f-display: var(--font-cormorant), Georgia, serif;
+  --f-ui: var(--font-jost), system-ui, sans-serif;
+  --t-xs: 12px; --t-sm: 14px; --t-md: 17px; --t-lg: 21px; --t-xl: 28px; --t-2xl: 38px; --t-3xl: 52px; --t-4xl: 72px; --t-5xl: 96px;
+  /* Space (4-based, observatory steps) */
+  --s-1: 4px; --s-2: 8px; --s-3: 16px; --s-4: 24px; --s-5: 40px; --s-6: 64px; --s-7: 104px; --s-8: 168px;
+  /* Radius */
+  --r-0: 0; --r-sm: 4px; --r-md: 8px; --r-pill: 999px;
+  /* Line widths */
+  --lw-hair: 1px; --lw-rim: 1.2px; --lw-meridian: 1.5px; --lw-ring: 2px;
+  /* Motion */
+  --m-fast: 120ms; --m-base: 240ms; --m-slow: 600ms; --m-sweep: 2200ms; --ease: cubic-bezier(.2, .7, .2, 1);
+}
+[data-sky="day"] {
+  --bg: var(--c-50); --surface: #ffffff; --surface-2: var(--c-100); --rule: var(--c-200); --rule-2: var(--c-300);
+  --text: var(--p-900); --text-2: #4a5878; --text-3: #5a6785; --accent: var(--mint-day); --alarm: var(--ember-day);
+  --btn-bg: var(--p-900); --btn-text: var(--c-50);
+}
+
+/* Tailwind names point at the variables so [data-sky] flips carry through utilities (v09-system.md section 8) */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-rule: var(--rule);
+  --color-rule-2: var(--rule-2);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-alarm: var(--alarm);
+  --color-star: var(--star);
+  --color-btn: var(--btn-bg);
+  --color-btn-ink: var(--btn-text);
+  --color-p-950: var(--p-950);
+  --color-p-900: var(--p-900);
+  --color-p-800: var(--p-800);
+  --color-p-700: var(--p-700);
+  --color-p-600: var(--p-600);
+  --color-p-500: var(--p-500);
+  --color-p-400: var(--p-400);
+  --color-p-300: var(--p-300);
+  --color-p-200: var(--p-200);
+  --color-p-100: var(--p-100);
+  --color-c-50: var(--c-50);
+  --color-c-100: var(--c-100);
+  --color-c-200: var(--c-200);
+  --color-c-300: var(--c-300);
+  --color-c-500: var(--c-500);
+  --color-c-700: var(--c-700);
+  --color-c-900: var(--c-900);
+  --color-mint: var(--mint);
+  --color-ember: var(--ember);
+  --font-display: var(--f-display);
+  --font-ui: var(--f-ui);
+  --radius-plate: 4px;
+  --ease-sky: cubic-bezier(.2, .7, .2, 1);
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--c-50); color: var(--text); font: 300 var(--t-md)/1.6 var(--f-ui); overflow-x: hidden; }
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+}
+
+/* SVG text cannot read next/font family names from attributes */
+.f-ui { font-family: var(--f-ui); }
+.f-display { font-family: var(--f-display); }
+
+/* planisphere stars and their tooltip */
+[data-star] { cursor: pointer; }
+a[data-star] { outline: none; }
+a[data-star]:focus-visible .star-hit { stroke: var(--mint); stroke-width: 1.5; }
+.star-tip {
+  position: fixed; z-index: 20; pointer-events: none; opacity: 0; transition: opacity var(--m-fast);
+  background: var(--p-900); color: var(--c-100); padding: 10px 12px; border-radius: var(--r-sm);
+  font: 400 13px/1.45 var(--f-ui); min-width: 210px; box-shadow: 0 10px 30px -10px rgba(0, 0, 0, .6);
+  font-variant-numeric: tabular-nums;
+}
+.star-tip b { font: 600 15px/1.2 var(--f-display); display: block; margin-bottom: 2px; }
+@media (prefers-reduced-motion: reduce) { .star-tip { transition: none; } }
+
