@@ -10,6 +10,10 @@ export const DESK_CHAINS = { 56: "bsc", 97: "bsc-testnet", 31337: "bsc-fork" } a
 export type DeskChainId = keyof typeof DESK_CHAINS;
 
 const REDACTED = "[redacted]";
+/** Hard ceiling on one x402 data call. */
+export const MAX_X402_PRICE_USD = 0.05;
+/** Environment variables of the LLM providers Studio supports (desk notes): their values are secrets. */
+export const LLM_KEY_VARS = ["PIEVERSE_LLM_API_KEY", "OPENROUTER_API_KEY", "LLM_PROVIDER_API_KEY", "LLM_PROVIDER_B_API_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"] as const;
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 /** A string that never prints itself: logs, JSON.stringify and util.inspect all see "[redacted]". */
@@ -55,6 +59,18 @@ export interface DeskConfig {
   readonly httpHost: string;
   readonly httpPort: number;
   readonly x402DailyCapUsd: number;
+  /** Paid earnings dates over x402: off (url null) unless X402_EARNINGS_URL is set. */
+  readonly x402: { earningsUrl: string | null; maxPriceUsd: number; networks: readonly string[] };
+  /** The only origin the read API answers CORS requests for (the web app); null sends no CORS headers. */
+  readonly webOrigin: string | null;
+  /** Requests per minute per client IP on the read API. */
+  readonly apiRatePerMin: number;
+  /** Desk notes from the Studio LLM: "auto" uses it when configured, "off" never calls it. */
+  readonly notes: "auto" | "off";
+  /** studio.toml whose [llm] section the desk notes use. */
+  readonly studioToml: string;
+  /** Fork runs only (CHAIN_ID 31337): every loop runs at this interval instead of its own. */
+  readonly forkTickSec: number | null;
   readonly dryRun: boolean;
   /** One line that is safe to log. */
   describe(): string;
@@ -148,10 +164,45 @@ const envSchema = z.object({
   HTTP_HOST: hostVar("127.0.0.1"),
   HTTP_PORT: portVar(8787),
   X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  X402_EARNINGS_URL: optionalText.refine((v) => v === undefined || isHttpUrl(v.replace(/\{(symbol|from|to)\}/g, "x")), "must be an http(s) URL"),
+  X402_MAX_PRICE_USD: numberVar(MAX_X402_PRICE_USD).refine(
+    (n) => Number.isFinite(n) && n > 0 && n <= MAX_X402_PRICE_USD,
+    `must be above 0 and at most ${MAX_X402_PRICE_USD}`,
+  ),
+  X402_NETWORKS: z.preprocess(
+    (v) => blank(v) ?? "eip155:56,eip155:8453",
+    z
+      .string()
+      .transform((v) => v.split(",").map((x) => x.trim()).filter(Boolean))
+      .refine((l) => l.length > 0 && l.every((x) => /^eip155:\d+$/.test(x)), "must be a comma list of eip155:<chainId>"),
+  ),
+  WEB_ORIGIN: optionalText.refine((v) => v === undefined || isOrigin(v), "must be an origin like https://app.example.org (no path)"),
+  API_RATE_PER_MIN: numberVar(120).refine((n) => Number.isInteger(n) && n >= 1 && n <= 100_000, "must be a whole number from 1"),
+  DESK_NOTES: z.preprocess((v) => (blank(v) ?? "auto").toString().trim().toLowerCase(), z.enum(["auto", "off"], { message: "must be auto or off" })),
+  STUDIO_TOML: optionalText,
+  FORK_TICK_SEC: z.preprocess(blank, z.coerce.number().optional()).refine((n) => n === undefined || (Number.isInteger(n) && n >= 1 && n <= 3600), "must be 1..3600 seconds"),
   DRY_RUN: flagVar(true),
 });
 
 type Env = z.infer<typeof envSchema>;
+
+function isHttpUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isOrigin(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === v.replace(/\/$/, "");
+  } catch {
+    return false;
+  }
+}
 
 function resolveSigner(e: Env, cwd: string, issues: string[]): SignerSource | null {
   const keystorePassword = e.AGENT_KEYSTORE_PASSWORD ?? e.WALLET_PASSWORD;
@@ -222,6 +273,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     issues.push("AGENT_BIND_HOST: must be a loopback address on BSC mainnet (the A2A/MCP faces have no auth)");
   }
   if (e.AGENT_PORT === e.HTTP_PORT) issues.push("AGENT_PORT: must differ from HTTP_PORT");
+  if (e.FORK_TICK_SEC !== undefined && e.CHAIN_ID !== 31337) issues.push("FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)");
   if (issues.length > 0 || signer === null) throw new ConfigError(issues);
 
   const chainId = e.CHAIN_ID;
@@ -230,6 +282,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     : path.join(REPO_ROOT, "contracts", "deployments", `${chainId}.json`);
   const dataDir = e.DATA_DIR ? path.resolve(cwd, e.DATA_DIR) : path.join(REPO_ROOT, "apps", "agent", "var");
   const earningsFile = e.EARNINGS_FILE ? path.resolve(cwd, e.EARNINGS_FILE) : path.join(REPO_ROOT, "config", "earnings.json");
+  const studioToml = e.STUDIO_TOML ? path.resolve(cwd, e.STUDIO_TOML) : path.join(REPO_ROOT, "apps", "agent", "app", "agent", "studio.toml");
+  const earningsUrl = e.X402_EARNINGS_URL ?? null;
 
   const summary = [
     `chain=${chainId} (${DESK_CHAINS[chainId]})`,
@@ -241,6 +295,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `agent=${e.AGENT_BIND_HOST}:${e.AGENT_PORT}`,
     `http=${e.HTTP_HOST}:${e.HTTP_PORT}`,
     `x402Cap=$${e.X402_DAILY_CAP_USD}/day`,
+    `x402Earnings=${earningsUrl ? redactUrl(earningsUrl) : "off"}`,
+    `webOrigin=${e.WEB_ORIGIN ?? "none"}`,
+    `notes=${e.DESK_NOTES}`,
     `dryRun=${e.DRY_RUN}`,
   ].join(" ");
 
@@ -257,6 +314,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     httpHost: e.HTTP_HOST,
     httpPort: e.HTTP_PORT,
     x402DailyCapUsd: e.X402_DAILY_CAP_USD,
+    x402: Object.freeze({ earningsUrl, maxPriceUsd: e.X402_MAX_PRICE_USD, networks: Object.freeze([...e.X402_NETWORKS]) }),
+    webOrigin: e.WEB_ORIGIN ? e.WEB_ORIGIN.replace(/\/$/, "") : null,
+    apiRatePerMin: e.API_RATE_PER_MIN,
+    notes: e.DESK_NOTES,
+    studioToml,
+    forkTickSec: e.FORK_TICK_SEC ?? null,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
@@ -269,4 +332,39 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
  */
 export function studioEnv(config: Pick<DeskConfig, "agentBindHost" | "agentPort">): { AGENT_BIND_HOST: string; AGENT_PORT: string } {
   return { AGENT_BIND_HOST: config.agentBindHost, AGENT_PORT: String(config.agentPort) };
+}
+
+/**
+ * Every secret value the desk holds, for scrubbing the feed and API responses: the RPC URL (and the long
+ * pieces of its path and query, where providers put keys), Binance credentials, the signer secret and the
+ * LLM provider keys.
+ */
+export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "binance" | "signer">, env: Record<string, string | undefined> = process.env): string[] {
+  const out = new Set<string>();
+  const rpc = config.rpcUrl.reveal();
+  out.add(rpc);
+  try {
+    const u = new URL(rpc);
+    for (const part of u.pathname.split("/")) if (part.length >= 12) out.add(part);
+    for (const [, v] of u.searchParams) if (v.length >= 12) out.add(v);
+    if (u.password) out.add(u.password);
+  } catch {
+    // not a URL: the whole string is already listed
+  }
+  if (config.binance) {
+    out.add(config.binance.apiKey.reveal());
+    out.add(config.binance.apiSecret.reveal());
+  }
+  if (config.signer.kind === "private-key") {
+    const pk = config.signer.privateKey.reveal();
+    out.add(pk);
+    out.add(pk.replace(/^0x/, ""));
+  } else {
+    out.add(config.signer.password.reveal());
+  }
+  for (const k of LLM_KEY_VARS) {
+    const v = env[k];
+    if (v && v.trim().length >= 8) out.add(v.trim());
+  }
+  return [...out].filter((s) => s.length >= 8);
 }

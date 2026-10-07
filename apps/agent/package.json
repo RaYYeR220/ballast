@@ -6,13 +6,16 @@
   "license": "MIT",
   "engines": { "node": ">=22" },
   "scripts": {
-    "register": "tsx src/desk/register.ts"
+    "register": "tsx src/desk/register.ts",
+    "desk": "tsx src/desk/main.ts"
   },
   "dependencies": {
     "@ballast/binance": "workspace:*",
     "@ballast/risk": "workspace:*",
     "@ballast/sdk": "workspace:*",
     "@bnbagent/sdk": "0.6.0",
+    "@bnbagent/studio-runtime": "0.0.14",
+    "ai": "^7.0.29",
     "viem": "^2.57.3",
     "zod": "^3.25.0"
   },

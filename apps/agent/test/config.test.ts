@@ -1,7 +1,7 @@
 import path from "node:path";
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
-import { ConfigError, isLoopbackHost, loadConfig, redactUrl, studioEnv } from "../src/desk/config";
+import { ConfigError, deskSecrets, isLoopbackHost, loadConfig, redactUrl, studioEnv } from "../src/desk/config";
 
 const PK = `0x${"4f".repeat(32)}`;
 const RPC = "https://bsc-mainnet.example.org/v1/rpc-key-0123456789abcdef";
@@ -193,7 +193,7 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");
@@ -209,5 +209,53 @@ describe("secret handling", () => {
     expect(redactUrl("https://bsc-rpc.publicnode.com")).toBe("https://bsc-rpc.publicnode.com");
     expect(redactUrl("https://bsc-rpc.publicnode.com/")).toBe("https://bsc-rpc.publicnode.com");
     expect(redactUrl("nonsense")).toBe("[redacted]");
+  });
+});
+
+describe("desk API, x402 and notes settings", () => {
+  it("defaults: x402 earnings off, $0.05 per call, BSC then Base, no CORS origin, notes auto", () => {
+    const c = loadConfig(base);
+    expect(c.x402).toEqual({ earningsUrl: null, maxPriceUsd: 0.05, networks: ["eip155:56", "eip155:8453"] });
+    expect(c.webOrigin).toBeNull();
+    expect(c.apiRatePerMin).toBe(120);
+    expect(c.notes).toBe("auto");
+    expect(c.studioToml.endsWith(path.join("apps", "agent", "app", "agent", "studio.toml"))).toBe(true);
+    expect(c.forkTickSec).toBeNull();
+  });
+
+  it("parses explicit values", () => {
+    const c = loadConfig({
+      ...base,
+      CHAIN_ID: "31337",
+      X402_EARNINGS_URL: "https://data.example/api/earnings?ticker={symbol}&from={from}&to={to}",
+      X402_MAX_PRICE_USD: "0.01",
+      X402_NETWORKS: "eip155:56",
+      WEB_ORIGIN: "https://ballast.example.org/",
+      API_RATE_PER_MIN: "30",
+      DESK_NOTES: "OFF",
+      FORK_TICK_SEC: "15",
+    });
+    expect(c.x402).toEqual({ earningsUrl: "https://data.example/api/earnings?ticker={symbol}&from={from}&to={to}", maxPriceUsd: 0.01, networks: ["eip155:56"] });
+    expect(c.webOrigin).toBe("https://ballast.example.org");
+    expect(c.apiRatePerMin).toBe(30);
+    expect(c.notes).toBe("off");
+    expect(c.forkTickSec).toBe(15);
+  });
+
+  it("rejects an x402 price above $0.05, bad networks, origins with paths and fork ticks off the fork", () => {
+    expect(issuesOf({ ...base, X402_MAX_PRICE_USD: "0.06" })[0]).toMatch(/^X402_MAX_PRICE_USD/);
+    expect(issuesOf({ ...base, X402_MAX_PRICE_USD: "0" })[0]).toMatch(/^X402_MAX_PRICE_USD/);
+    expect(issuesOf({ ...base, X402_NETWORKS: "base" })[0]).toMatch(/^X402_NETWORKS/);
+    expect(issuesOf({ ...base, X402_EARNINGS_URL: "ftp://x" })[0]).toMatch(/^X402_EARNINGS_URL/);
+    expect(issuesOf({ ...base, WEB_ORIGIN: "https://app.example.org/path" })[0]).toMatch(/^WEB_ORIGIN/);
+    expect(issuesOf({ ...base, DESK_NOTES: "maybe" })[0]).toMatch(/^DESK_NOTES/);
+    expect(issuesOf({ ...base, FORK_TICK_SEC: "10" })).toEqual(["FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)"]);
+  });
+
+  it("lists every secret value for scrubbing", () => {
+    const c = loadConfig({ ...base, BINANCE_WEB3_API_KEY: "binance-key-1", BINANCE_WEB3_API_SECRET: "binance-secret-1" });
+    const s = deskSecrets(c, { PIEVERSE_LLM_API_KEY: "pv-llm-key-123", LLM_PROVIDER_API_KEY: "" });
+    expect(s).toEqual(expect.arrayContaining([RPC, "rpc-key-0123456789abcdef", "binance-key-1", "binance-secret-1", PK, PK.slice(2), "pv-llm-key-123"]));
+    expect(s).not.toContain("");
   });
 });

@@ -11,9 +11,14 @@
     "abis": "cd contracts && forge build && cd .. && tsx scripts/export-abis.ts",
     "test": "vitest run",
     "backtest": "tsx packages/risk/scripts/backtest.ts",
-    "typecheck": "pnpm -r exec tsc --noEmit"
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "desk": "pnpm --filter @ballast/agent desk",
+    "verify:onchain": "tsx scripts/verify-onchain.ts"
   },
   "devDependencies": {
+    "@ballast/risk": "workspace:*",
+    "@ballast/sdk": "workspace:*",
+    "viem": "^2.57.3",
     "typescript": "^5.6.3",
     "vitest": "^2.1.4",
     "tsx": "^4.19.2",
