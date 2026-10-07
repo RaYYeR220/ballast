@@ -4,8 +4,8 @@ import { appendFile, mkdir, open, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Address, Hex } from "viem";
 
-export type FeedKind = "shield" | "restore" | "refused" | "alert" | "noop" | "publish" | "finding";
-export type FeedSource = "keeper" | "publisher";
+export type FeedKind = "shield" | "restore" | "refused" | "alert" | "noop" | "publish" | "finding" | "submit" | "settle" | "payment";
+export type FeedSource = "keeper" | "publisher" | "guardian" | "x402";
 
 /** A revert or failure as the feed shows it: decoded name, one readable sentence, stringified args. */
 export interface FeedError {
@@ -40,6 +40,8 @@ export interface FeedEvent {
   /** Ballast account, or the user of a CushionVault cover. */
   account?: Address;
   cover?: { user: Address; key: Hex };
+  /** ERC-8183 kernel job id (guardian events). */
+  jobId?: string;
   symbol?: string;
   symbols?: string[];
   window?: FeedWindow;
