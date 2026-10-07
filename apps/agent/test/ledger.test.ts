@@ -85,15 +85,27 @@ describe("ledgerSender", () => {
 
   it("books gas for mined transactions, reverted ones included", async () => {
     const l = new Ledger({ dir: await tmp(), x402DailyCapUsd: 0.5, clock: () => T0 });
-    const ok: SendResult = { ok: true, txHash: `0x${"aa".repeat(32)}`, via: "rpc", status: "reverted", gasUsed: 50_000n, effectiveGasPrice: 10n ** 9n };
+    const ok: SendResult = { ok: true, txHash: `0x${"aa".repeat(32)}`, via: "rpc", status: "reverted", nonce: 1, gasPrice: 10n ** 9n, gasUsed: 50_000n, effectiveGasPrice: 10n ** 9n };
     expect(await ledgerSender(sender(ok), l, "publisher").send(tx)).toBe(ok);
     expect(l.list()[0]).toMatchObject({ kind: "gas", source: "publisher", status: "reverted", feeWei: (50_000n * 10n ** 9n).toString() });
   });
 
-  it("books nothing without a receipt or on an estimate refusal", async () => {
+  it("books nothing for a pending, dropped or refused send, then books a pending one once confirmed", async () => {
     const l = new Ledger({ dir: await tmp(), x402DailyCapUsd: 0.5 });
-    await ledgerSender(sender({ ok: true, txHash: `0x${"aa".repeat(32)}`, via: "rpc", status: "unknown" }), l, "keeper").send(tx);
+    const hash = `0x${"aa".repeat(32)}` as const;
+    const inner = sender({ ok: true, txHash: hash, via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
+    inner.confirm = async () => ({ status: "success", gasUsed: 21_000n, effectiveGasPrice: 10n ** 9n });
+    inner.balance = async () => 5n;
+    const w = ledgerSender(inner, l, "keeper");
+    await w.send(tx);
+    await ledgerSender(sender({ ok: true, txHash: hash, via: "rpc", status: "dropped", nonce: 3, gasPrice: 1n }), l, "keeper").send(tx);
     await ledgerSender(sender({ ok: false, stage: "estimate", error: { name: "X", message: "x" } }), l, "keeper").send(tx);
+    await ledgerSender(sender({ ok: false, stage: "aborted" }), l, "keeper").send(tx);
     expect(l.list()).toEqual([]);
+    expect(await w.confirm!(hash, 3)).toMatchObject({ status: "success" });
+    await w.confirm!(hash, 3);
+    expect(l.list()).toHaveLength(1);
+    expect(l.list()[0]).toMatchObject({ kind: "gas", txHash: hash, feeWei: (21_000n * 10n ** 9n).toString() });
+    expect(await w.balance!()).toBe(5n);
   });
 });

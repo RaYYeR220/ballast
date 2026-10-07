@@ -40,7 +40,7 @@ describe("note text", () => {
 describe("NotesWorker", () => {
   it("notes new shields, restores and refusals only, skipping what was there at start", async () => {
     const dir = await tmp();
-    const feed = new Feed({ dir });
+    const feed = new Feed({ dir, secrets: [] });
     await feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, symbol: "NVDA" });
     const store = new NotesStore(dir);
     const prompts: string[] = [];
@@ -65,7 +65,7 @@ describe("NotesWorker", () => {
 
   it("ignores model failures and timeouts, and scrubs secrets from the prompt", async () => {
     const dir = await tmp();
-    const feed = new Feed({ dir });
+    const feed = new Feed({ dir, secrets: [] });
     const store = new NotesStore(dir);
     const seen: string[] = [];
     let n = 0;

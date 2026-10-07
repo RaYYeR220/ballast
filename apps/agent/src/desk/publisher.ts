@@ -1,7 +1,7 @@
-// Session Oracle overlay publisher. Every 10 min (and right after each regular open and close) it reads the
+// Session Oracle overlay publisher. Every 10 min (and 3 min after each regular open and close) it reads the
 // keyless Binance RWA status for each listed bStock and its Ondo token, builds the overlay the contract
 // accepts, and posts the symbols whose overlay changed or whose 5 h heartbeat is due, in one batched
-// postOverlays. Simulated first; a refused symbol is recorded and backed off for 30 min.
+// postOverlays. Simulated first; a symbol the contract refuses is recorded and backed off for 30 min.
 import { readFile } from "node:fs/promises";
 import { nextClose, nextOpen, regularCloseAt } from "@ballast/risk";
 import {
@@ -20,16 +20,16 @@ import {
 } from "@ballast/sdk";
 import type { AssetStatus, RwaDynamic } from "@ballast/binance";
 import { parseAbi, parseUnits, zeroAddress, type Address } from "viem";
-import type { Feed, FeedError, FeedSim } from "./feed";
-import { safeMessage, type TxSender } from "./tx";
+import { DisagreementWatch, type Feed, type FeedError, type FeedSim } from "./feed";
+import { safeMessage, type GasWatch, type TxSender } from "./tx";
 
 export const TICK_SEC = 600;
 /** Re-post an unchanged overlay after this long (validity is 5.5 h, so 30 min of slack). */
 export const HEARTBEAT_SEC = 5 * 3600;
 export const VALIDITY_SEC = 5.5 * 3600;
 export const BACKOFF_SEC = 30 * 60;
-/** During the regular session, refresh the reference of a ticker without Chainlink at least this often... */
-export const REF_REFRESH_SEC = 3600;
+/** During the regular session, refresh the reference of a ticker without Chainlink after half the oracle's maxRefAge (at least one tick)... */
+export const refRefreshSec = (maxRefAge: number) => Math.max(TICK_SEC, Math.floor(maxRefAge / 2));
 /** ...or as soon as the print moved this far from the last one (a third of the oracle's convergence band). */
 export const REF_MOVE_BPS = 20;
 /** No reference this close to the regular close: the transaction could land after it and revert the batch. */
@@ -105,12 +105,13 @@ export function parseEarnings(json: unknown): EarningsSchedule {
   return out;
 }
 
+/** Reads and parses the schedule. A missing file is an error (the repo ships one), not an empty schedule. */
 export async function loadEarnings(file: string): Promise<EarningsSchedule> {
   let text: string;
   try {
     text = await readFile(file, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`earnings schedule ${file} is missing`);
     throw err;
   }
   return parseEarnings(JSON.parse(text));
@@ -265,7 +266,8 @@ interface Built {
   findings: Finding[];
 }
 
-function buildOverlay(t: TickerOnChain, status: AssetStatus, ondo: RwaDynamic | null, snap: PublisherSnapshot, earnings: EarningsSchedule): Built {
+/** `nextEarnings` is decided by the caller: from the schedule, or carried forward while none has loaded. */
+function buildOverlay(t: TickerOnChain, status: AssetStatus, ondo: RwaDynamic | null, snap: PublisherSnapshot, nextEarnings: number): Built {
   const findings: Finding[] = [];
   const flags = flagsFromStatus(status) | flagsFromStatus(ondo?.statusInfo);
 
@@ -311,7 +313,7 @@ function buildOverlay(t: TickerOnChain, status: AssetStatus, ondo: RwaDynamic | 
 
   const validity = Math.min(VALIDITY_SEC, snap.params.maxOverlayTtl - 300);
   return {
-    overlay: { validUntil: snap.at + validity, nextEarnings: nextEarningsFor(earnings, t.symbol, snap.at), flags, ondoMultiplier, referencePrice },
+    overlay: { validUntil: snap.at + validity, nextEarnings, flags, ondoMultiplier, referencePrice },
     findings,
   };
 }
@@ -327,14 +329,14 @@ interface Last {
   refAt: number;
 }
 
-function dueReason(last: Last, o: Built["overlay"], at: number): string | null {
+function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: number): string | null {
   if (last.postedAt === 0) return "first post";
   if (o.flags !== last.flags) return `flags ${last.flags} -> ${o.flags}`;
   if (o.nextEarnings !== last.nextEarnings) return `nextEarnings ${last.nextEarnings} -> ${o.nextEarnings}`;
   if (o.ondoMultiplier !== last.ondoMultiplier) return "ondo multiplier changed";
   if (o.referencePrice !== 0n) {
     if (last.refPrice === 0n) return "first reference";
-    if (at - last.refAt >= REF_REFRESH_SEC) return "reference refresh";
+    if (at - last.refAt >= refreshSec) return "reference refresh";
     if (devBps(o.referencePrice, last.refPrice) > REF_MOVE_BPS) return "reference moved";
   }
   if (at - last.postedAt >= HEARTBEAT_SEC) return "heartbeat";
@@ -352,6 +354,8 @@ export interface PublisherOptions {
   feed: Feed;
   /** The current earnings schedule (read each tick so operator edits apply without a restart). */
   earnings: () => Promise<EarningsSchedule>;
+  /** Shared low-BNB alert (one per process). */
+  gas?: GasWatch;
   log?: (line: string) => void;
 }
 
@@ -362,6 +366,8 @@ export interface PublishReport {
   /** Symbols skipped this tick, with why. */
   skipped: Record<string, string>;
   txHash?: string;
+  /** The previous tick was still running: this one did nothing. */
+  busy?: true;
 }
 
 type Entry = { symbol: string; overlay: Built["overlay"]; reason: string };
@@ -371,14 +377,29 @@ export class Publisher {
   readonly #backoff = new Map<string, number>();
   readonly #last = new Map<string, Last>();
   #findings = new Set<string>();
-  #earnings: EarningsSchedule = new Map();
+  /** Null until the schedule has loaded once: until then each symbol carries its last nextEarnings forward. */
+  #earnings: EarningsSchedule | null = null;
+  #running = false;
+  readonly #disagreements: DisagreementWatch;
 
   constructor(o: PublisherOptions) {
     this.#o = o;
+    this.#disagreements = new DisagreementWatch(o.feed, "publisher");
   }
 
   async tick(): Promise<PublishReport> {
+    if (this.#running) return { at: 0, posted: [], refused: [], skipped: {}, busy: true };
+    this.#running = true;
+    try {
+      return await this.#tick();
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  async #tick(): Promise<PublishReport> {
     const { reads, sender } = this.#o;
+    await this.#o.gas?.check("publisher");
     const snap = await reads.snapshot();
     const report: PublishReport = { at: snap.at, posted: [], refused: [], skipped: {} };
     const seen = new Set<string>();
@@ -392,7 +413,8 @@ export class Publisher {
     try {
       this.#earnings = await this.#o.earnings();
     } catch (err) {
-      await finding("*", { type: "earnings", message: `earnings schedule unreadable, keeping the last good one: ${safeMessage(err)}` });
+      const keep = this.#earnings ? "keeping the last good one" : "carrying each symbol's on-chain nextEarnings forward";
+      await finding("*", { type: "earnings", message: `earnings schedule unreadable, ${keep}: ${safeMessage(err)}` });
     }
 
     const due: Entry[] = [];
@@ -402,21 +424,24 @@ export class Publisher {
         report.skipped[t.symbol] = `backing off until ${until}`;
         continue;
       }
-      let status: AssetStatus;
-      let ondo: RwaDynamic | null = null;
-      try {
-        [status, ondo] = await Promise.all([
-          this.#o.rwa.assetStatus(RWA_CHAIN, t.bStock),
-          t.ondo ? this.#o.rwa.dynamic(RWA_CHAIN, t.ondo) : Promise.resolve(null),
-        ]);
-      } catch (err) {
+      // The bStock status is required; the Ondo data is optional (no multiplier, no reference without it).
+      const [bStock, ondoRes] = await Promise.allSettled([
+        this.#o.rwa.assetStatus(RWA_CHAIN, t.bStock),
+        t.ondo ? this.#o.rwa.dynamic(RWA_CHAIN, t.ondo) : Promise.resolve(null),
+      ]);
+      if (bStock.status === "rejected") {
         report.skipped[t.symbol] = "RWA status unavailable";
-        await finding(t.symbol, { type: "rwa", message: `RWA status unavailable, not posting: ${safeMessage(err)}` });
+        await finding(t.symbol, { type: "rwa", message: `RWA status unavailable, not posting: ${safeMessage(bStock.reason)}` });
         continue;
       }
-      const built = buildOverlay(t, status, ondo, snap, this.#earnings);
+      let ondo: RwaDynamic | null = null;
+      if (ondoRes.status === "fulfilled") ondo = ondoRes.value;
+      else await finding(t.symbol, { type: "ondo", message: `Ondo RWA data unavailable, posting without a multiplier or reference: ${safeMessage(ondoRes.reason)}` });
+      const last = this.#lastFor(t);
+      const nextEarnings = this.#earnings ? nextEarningsFor(this.#earnings, t.symbol, snap.at) : last.nextEarnings;
+      const built = buildOverlay(t, bStock.value, ondo, snap, nextEarnings);
       for (const f of built.findings) await finding(t.symbol, f);
-      const reason = dueReason(this.#lastFor(t), built.overlay, snap.at);
+      const reason = dueReason(last, built.overlay, snap.at, refRefreshSec(snap.params.maxRefAge));
       if (reason) due.push({ symbol: t.symbol, overlay: built.overlay, reason });
     }
     this.#findings = seen;
@@ -424,11 +449,11 @@ export class Publisher {
 
     // Simulate the batch; if it reverts, find the symbols that revert alone and post the rest.
     let batch = due;
-    let sim = await sender.simulate(writes.postOverlays(this.#o.deployment, batch));
+    let sim = await this.#simulate(batch, snap.at);
     if (!sim.ok) {
       const ok: Entry[] = [];
       for (const e of batch) {
-        const one = await sender.simulate(writes.postOverlays(this.#o.deployment, [e]));
+        const one = await this.#simulate([e], snap.at);
         if (one.ok) ok.push(e);
         else await this.#refuse([e], snap.at, one, one.error, report);
       }
@@ -438,7 +463,7 @@ export class Publisher {
       }
       batch = ok;
       if (batch.length === 0) return report;
-      sim = await sender.simulate(writes.postOverlays(this.#o.deployment, batch));
+      sim = await this.#simulate(batch, snap.at);
       if (!sim.ok) {
         await this.#refuse(batch, snap.at, sim, sim.error, report);
         return report;
@@ -457,13 +482,38 @@ export class Publisher {
       return report;
     }
 
-    const sent = await sender.send(writes.postOverlays(this.#o.deployment, batch));
+    let sent;
+    try {
+      sent = await sender.send(writes.postOverlays(this.#o.deployment, batch));
+    } catch (err) {
+      // Not a contract refusal (RPC down, out of gas money, nonce race): try again next tick.
+      await this.#refuse(batch, snap.at, sim, { name: "BroadcastFailed", message: safeMessage(err) }, report, { backoffSec: TICK_SEC });
+      return report;
+    }
     if (!sent.ok) {
-      await this.#refuse(batch, snap.at, sim, sent.error, report);
+      const error: FeedError = sent.stage === "estimate" ? sent.error : { name: "Aborted", message: "the send was aborted" };
+      await this.#isolate(batch, snap.at, sim, error, report);
       return report;
     }
     if (sent.status === "reverted") {
-      await this.#refuse(batch, snap.at, sim, { name: "Reverted", message: "postOverlays reverted on-chain" }, report, sent.txHash);
+      await this.#isolate(batch, snap.at, sim, { name: "Reverted", message: "postOverlays reverted on-chain" }, report, sent.txHash);
+      return report;
+    }
+    if (sent.status === "dropped") {
+      await this.#refuse(batch, snap.at, sim, { name: "Dropped", message: sent.note ?? "replaced before it was mined" }, report, { txHash: sent.txHash, backoffSec: 0 });
+      return report;
+    }
+    if (sent.status === "pending") {
+      // Not remembered: the next tick finds the symbols still due and its send replaces this transaction.
+      await this.#o.feed.record({
+        kind: "pending",
+        source: "publisher",
+        symbols,
+        sim,
+        txHash: sent.txHash,
+        reason: sent.note ?? "not mined yet",
+        data: { ...data, nonce: sent.nonce },
+      });
       return report;
     }
     await this.#o.feed.record({
@@ -472,7 +522,6 @@ export class Publisher {
       symbols,
       sim,
       txHash: sent.txHash,
-      ...(sent.status === "unknown" ? { reason: sent.note ?? "receipt pending" } : {}),
       data: { ...data, via: sent.via, gasUsed: sent.gasUsed },
     });
     this.#remember(batch, snap.at);
@@ -521,9 +570,39 @@ export class Publisher {
     }
   }
 
-  async #refuse(batch: Entry[], at: number, sim: FeedSim, error: FeedError | undefined, report: PublishReport, txHash?: `0x${string}`) {
+  async #simulate(batch: Entry[], at: number): Promise<FeedSim> {
+    const sim = await this.#o.sender.simulate(writes.postOverlays(this.#o.deployment, batch));
+    await this.#disagreements.note(sim, at, { symbols: batch.map((e) => e.symbol) });
+    return sim;
+  }
+
+  /**
+   * After a revert at estimation or on-chain: simulate each symbol alone at the new head. The ones that fail
+   * alone back off 30 min; the rest back off one tick only.
+   */
+  async #isolate(batch: Entry[], at: number, sim: FeedSim, error: FeedError, report: PublishReport, txHash?: `0x${string}`) {
+    const culprits: { e: Entry; sim: FeedSim }[] = [];
+    const rest: Entry[] = [];
     for (const e of batch) {
-      this.#backoff.set(e.symbol, at + BACKOFF_SEC);
+      const one = await this.#simulate([e], at);
+      if (one.ok) rest.push(e);
+      else culprits.push({ e, sim: one });
+    }
+    if (rest.length) await this.#refuse(rest, at, sim, error, report, { txHash, backoffSec: TICK_SEC });
+    for (const c of culprits) await this.#refuse([c.e], at, c.sim, c.sim.error, report);
+  }
+
+  async #refuse(
+    batch: Entry[],
+    at: number,
+    sim: FeedSim,
+    error: FeedError | undefined,
+    report: PublishReport,
+    o: { txHash?: `0x${string}`; backoffSec?: number } = {},
+  ) {
+    const backoff = o.backoffSec ?? BACKOFF_SEC;
+    for (const e of batch) {
+      if (backoff > 0) this.#backoff.set(e.symbol, at + backoff);
       report.refused.push(e.symbol);
       await this.#o.feed.record({
         kind: "refused",
@@ -531,8 +610,8 @@ export class Publisher {
         symbol: e.symbol,
         sim,
         ...(error ? { error, reason: error.message } : {}),
-        ...(txHash ? { txHash } : {}),
-        data: { overlay: e.overlay, due: e.reason, backoffUntil: at + BACKOFF_SEC },
+        ...(o.txHash ? { txHash: o.txHash } : {}),
+        data: { overlay: e.overlay, due: e.reason, backoffUntil: at + backoff },
       });
     }
   }
@@ -544,8 +623,12 @@ export class Publisher {
  */
 export const BOUNDARY_DELAY_SEC = 180;
 
-/** Seconds until the next publisher run: every TICK_SEC, and BOUNDARY_DELAY_SEC after each regular open and close. */
+/**
+ * Seconds until the next publisher run: every TICK_SEC, except that a run due at or after a regular open or
+ * close within the next tick moves to BOUNDARY_DELAY_SEC after it (never inside the transition pause).
+ */
 export function publisherDelaySec(now: number): number {
-  const boundaries = [nextOpen(now), nextClose(now)].filter((t) => t > now).map((t) => t - now + BOUNDARY_DELAY_SEC);
-  return Math.max(5, Math.min(TICK_SEC, ...boundaries));
+  const soon = [nextOpen(now), nextClose(now)].filter((b) => b > now && b <= now + TICK_SEC);
+  const next = soon.length ? Math.min(...soon) + BOUNDARY_DELAY_SEC : now + TICK_SEC;
+  return Math.max(5, next - now);
 }

@@ -92,7 +92,7 @@ describe("EarningsBuyer", () => {
   it("buys once per trading day and records each payment in the feed", async () => {
     const dir = await tmp();
     let now = NOON_WED;
-    const feed = new Feed({ dir, clock: () => now });
+    const feed = new Feed({ dir, secrets: [], clock: () => now });
     const client = fakeClient((url) => paidResponse(new URL(url).searchParams.get("ticker")!, "2026-11-18"));
     const file = path.join(dir, "earnings-paid.json");
     const b = new EarningsBuyer({ client, urlTemplate: "https://2s.io/api/calendar/earnings", file, feed, symbols: () => ["NVDA", "TSLA"], clock: () => now });
@@ -112,7 +112,7 @@ describe("EarningsBuyer", () => {
 
   it("stops at the cap, keeps earlier dates and does not retry that day", async () => {
     const dir = await tmp();
-    const feed = new Feed({ dir, clock: () => NOON_WED });
+    const feed = new Feed({ dir, secrets: [], clock: () => NOON_WED });
     const file = path.join(dir, "earnings-paid.json");
     await writeFile(file, JSON.stringify({ version: 1, fetchedOn: "2026-10-06", done: ["NVDA"], source: "x", earnings: { TSLA: [{ date: "2026-10-21", timing: "amc" }] } }));
     const client = fakeClient(() => new X402Error("cap", "the daily x402 cap would be exceeded by $0.0025"));
@@ -127,7 +127,7 @@ describe("EarningsBuyer", () => {
 
   it("retries a symbol that failed before any payment, but not one that was paid for", async () => {
     const dir = await tmp();
-    const feed = new Feed({ dir, clock: () => NOON_WED });
+    const feed = new Feed({ dir, secrets: [], clock: () => NOON_WED });
     const file = path.join(dir, "earnings-paid.json");
     let calls = 0;
     const client = fakeClient((url) => {

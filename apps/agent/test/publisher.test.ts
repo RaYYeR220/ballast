@@ -11,6 +11,7 @@ import {
   BACKOFF_SEC,
   HEARTBEAT_SEC,
   Publisher,
+  TICK_SEC,
   VALIDITY_SEC,
   flagsFromStatus,
   loadEarnings,
@@ -20,7 +21,7 @@ import {
   type PublisherSnapshot,
   type TickerOnChain,
 } from "../src/desk/publisher";
-import { revertError, type SendResult, type TxSender } from "../src/desk/tx";
+import { GasWatch, revertError, type SendResult, type TxBuilder, type TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const E18 = 10n ** 18n;
@@ -96,12 +97,25 @@ class StubSender implements TxSender {
     this.sims.push(symbols);
     const bad = symbols.find((s) => this.failing.has(s));
     if (bad) return { via: "rpc" as const, ok: false, error: revertError(this.failing.get(bad)!)! };
+    if (this.disagree) return { via: "rpc" as const, ok: true, disagree: true, note: "binance simulate reported FAILED" };
     return { via: "rpc" as const, ok: true };
   }
 
-  async send(tx: TxRequest): Promise<SendResult> {
+  /** What the next sends return (or throw); default: mined successfully. */
+  outcomes: (SendResult | Error)[] = [];
+  /** Simulations that report a Binance / eth_call disagreement (eth_call wins). */
+  disagree = false;
+
+  async send(tx: TxRequest | TxBuilder): Promise<SendResult> {
+    if (typeof tx === "function") throw new Error("the publisher sends plain transactions");
     this.sent.push(this.decode(tx));
-    return { ok: true, txHash: `0x${"ab".repeat(32)}`, via: "rpc", status: "success" };
+    const next = this.outcomes.shift();
+    if (next instanceof Error) throw next;
+    return next ?? { ok: true, txHash: `0x${"ab".repeat(32)}`, via: "rpc", status: "success", nonce: 1, gasPrice: 1n };
+  }
+
+  async balance() {
+    return 10n ** 18n;
   }
 }
 
@@ -112,7 +126,7 @@ interface Harness {
   state: { at: number; session: PublisherSnapshot["session"]; tickers: TickerOnChain[] };
   status: Map<Address, AssetStatus | Error>;
   dyn: Map<Address, RwaDynamic | Error>;
-  earnings: { json: unknown };
+  earnings: { json: unknown; broken: boolean };
 }
 
 async function harness(tickers: TickerOnChain[], at = REGULAR_AT, session: PublisherSnapshot["session"] = "REGULAR"): Promise<Harness> {
@@ -123,9 +137,9 @@ async function harness(tickers: TickerOnChain[], at = REGULAR_AT, session: Publi
     status.set(t.bStock, trading);
     if (t.ondo) dyn.set(t.ondo, dynamic());
   }
-  const earnings = { json: { earnings: {} } as unknown };
+  const earnings = { json: { earnings: {} } as unknown, broken: false };
   const sender = new StubSender();
-  const feed = new Feed({ dir: await mkdtemp(path.join(tmpdir(), "desk-pub-")), clock: () => state.at });
+  const feed = new Feed({ dir: await mkdtemp(path.join(tmpdir(), "desk-pub-")), secrets: [], clock: () => state.at });
   const answer = <T>(m: Map<Address, T | Error>, a: string) => {
     const v = m.get(getAddress(a));
     if (v === undefined) throw new Error(`no stub for ${a}`);
@@ -141,7 +155,10 @@ async function harness(tickers: TickerOnChain[], at = REGULAR_AT, session: Publi
     },
     sender,
     feed,
-    earnings: async () => parseEarnings(earnings.json),
+    earnings: async () => {
+      if (earnings.broken) throw new Error("Unexpected token } in JSON");
+      return parseEarnings(earnings.json);
+    },
   });
   return { publisher, sender, feed, state, status, dyn, earnings };
 }
@@ -200,9 +217,19 @@ describe("earnings schedule", () => {
     expect(nextEarningsFor(s, "NVDA", regularOpenAt(WED + 1))).toBeGreaterThan(regularOpenAt(WED + 100));
   });
 
-  it("loads the shipped schedule and treats a missing file as empty", async () => {
+  it("loads the shipped schedule and rejects a missing file (an operator error, not an empty schedule)", async () => {
     expect(await loadEarnings(path.resolve(__dirname, "../../../config/earnings.json"))).toBeInstanceOf(Map);
-    expect((await loadEarnings(path.join(tmpdir(), "no-such-earnings.json"))).size).toBe(0);
+    await expect(loadEarnings(path.join(tmpdir(), "no-such-earnings.json"))).rejects.toThrow(/earnings schedule/);
+  });
+
+  it("maps the shipped Q3 dates to the regular open where the gap lands, across the DST change", async () => {
+    const s = await loadEarnings(path.resolve(__dirname, "../../../config/earnings.json"));
+    const now = Date.UTC(2026, 9, 7) / 1000;
+    expect(nextEarningsFor(s, "TSLA", now)).toBe(1_792_675_800); // amc Oct 21 -> Oct 22 09:30 EDT
+    expect(nextEarningsFor(s, "AAPL", now)).toBe(1_793_367_000); // amc Oct 29 -> Oct 30 09:30 EDT
+    expect(nextEarningsFor(s, "NVDA", now)).toBe(1_795_098_600); // amc Nov 18 -> Nov 19 09:30 EST
+    expect(nextEarningsFor(s, "CRCL", now)).toBe(1_794_580_200); // bmo Nov 13 -> Nov 13 09:30 EST
+    expect(nextEarningsFor(s, "SPY", now)).toBe(0);
   });
 
   it("rejects malformed files", () => {
@@ -386,15 +413,172 @@ describe("Publisher", () => {
       expect(h.sender.sent.at(-1)!.symbols).toEqual(["CRCL"]);
     });
 
-    it("backs off the whole batch when the on-chain transaction reverts", async () => {
-      h = await harness([ticker("NVDA")]);
-      h.sender.send = async () => ({ ok: true, txHash: `0x${"cd".repeat(32)}`, via: "rpc", status: "reverted" });
-      await h.publisher.tick();
-      expect(h.feed.list({ kind: "refused" })[0]).toMatchObject({ symbol: "NVDA", txHash: `0x${"cd".repeat(32)}` });
-      h.state.at += 600;
+    it("re-isolates after an on-chain revert: the culprit backs off 30 min, the rest one tick", async () => {
+      h = await harness([ticker("NVDA"), ticker("CRCL")]);
+      h.sender.outcomes = [{ ok: true, txHash: `0x${"cd".repeat(32)}`, via: "rpc", status: "reverted", nonce: 1, gasPrice: 1n }];
+      // The batch simulated fine but reverted when mined; now CRCL fails alone (the session closed meanwhile).
+      const realSend = h.sender.send.bind(h.sender);
+      h.sender.send = async (tx) => {
+        h.sender.send = realSend;
+        const r = await realSend(tx);
+        h.sender.failing.set("CRCL", refOut);
+        return r;
+      };
+      const r = await h.publisher.tick();
+      expect(r.refused.sort()).toEqual(["CRCL", "NVDA"]);
+      expect(h.feed.list({ kind: "refused" }).reverse().map((e) => [e.symbol, e.error?.name, e.txHash])).toEqual([
+        ["NVDA", "Reverted", `0x${"cd".repeat(32)}`],
+        ["CRCL", "ReferenceOutOfBounds", undefined],
+      ]);
+      h.sender.failing.clear();
       h.sender.sims = [];
+      h.state.at += TICK_SEC;
       await h.publisher.tick();
-      expect(h.sender.sims).toEqual([]);
+      expect(h.sender.sent.at(-1)!.symbols).toEqual(["NVDA"]);
+      h.state.at = REGULAR_AT + BACKOFF_SEC;
+      await h.publisher.tick();
+      expect(h.sender.sent.at(-1)!.symbols).toEqual(["CRCL"]);
+    });
+
+    it("re-isolates after a revert at gas estimation", async () => {
+      h = await harness([ticker("NVDA"), ticker("CRCL")]);
+      h.sender.outcomes = [{ ok: false, stage: "estimate", error: revertError(refOut)! }];
+      const realSend = h.sender.send.bind(h.sender);
+      h.sender.send = async (tx) => {
+        const r = await realSend(tx);
+        h.sender.failing.set("CRCL", refOut);
+        return r;
+      };
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "refused" }).reverse().map((e) => [e.symbol, e.data?.backoffUntil])).toEqual([
+        ["NVDA", REGULAR_AT + TICK_SEC],
+        ["CRCL", REGULAR_AT + BACKOFF_SEC],
+      ]);
+    });
+
+    it("records a thrown broadcast failure as a refusal and retries next tick", async () => {
+      h = await harness([ticker("NVDA")]);
+      h.sender.outcomes = [new Error("broadcast failed: insufficient funds for gas")];
+      const r = await h.publisher.tick();
+      expect(r.refused).toEqual(["NVDA"]);
+      expect(h.feed.list({ kind: "refused" })[0]).toMatchObject({ symbol: "NVDA", error: { name: "BroadcastFailed", message: expect.stringMatching(/insufficient funds/) } });
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.sender.sent).toHaveLength(2);
+      expect(h.feed.list({ kind: "publish" })).toHaveLength(1);
+    });
+
+    it("records an unmined post as pending and posts again next tick (the send replaces it)", async () => {
+      h = await harness([ticker("NVDA")]);
+      h.sender.outcomes = [{ ok: true, txHash: `0x${"ef".repeat(32)}`, via: "rpc", status: "pending", nonce: 4, gasPrice: 1n, note: "not mined yet" }];
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "pending" })[0]).toMatchObject({ source: "publisher", symbols: ["NVDA"], txHash: `0x${"ef".repeat(32)}` });
+      expect(h.feed.list({ kind: "publish" })).toEqual([]);
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.sender.sent).toHaveLength(2);
+      expect(h.feed.list({ kind: "publish" })).toHaveLength(1);
+    });
+
+    it("records repeated simulator disagreements as a finding", async () => {
+      h = await harness([ticker("NVDA")]);
+      h.sender.disagree = true;
+      for (let i = 0; i < 3; i++) {
+        h.state.at = REGULAR_AT + i * HEARTBEAT_SEC;
+        await h.publisher.tick();
+      }
+      expect(h.sender.sent).toHaveLength(3); // posts go with eth_call
+      expect(h.feed.list({ kind: "finding" }).filter((e) => /disagreed/.test(e.reason ?? ""))).toHaveLength(1);
+    });
+  });
+
+  describe("earnings source", () => {
+    it("carries the on-chain nextEarnings forward until the schedule has loaded once", async () => {
+      const onChain = regularOpenAt(WED + 1);
+      const posted = { validUntil: REGULAR_AT + 600, nextEarnings: onChain, flags: 0, ondoMultiplier: 1_004n * 10n ** 15n, referencePrice: 0n, postedAt: REGULAR_AT - HEARTBEAT_SEC };
+      h = await harness([ticker("NVDA", { overlay: posted })]);
+      h.earnings.broken = true; // a broken file at startup
+      await h.publisher.tick();
+      expect(h.sender.sent[0]!.overlays[0]!.nextEarnings).toBe(BigInt(onChain));
+      expect(h.feed.list({ kind: "finding" })[0]!.reason).toMatch(/earnings schedule unreadable/);
+      // Fixed: the schedule now decides (here: nothing ahead clears it).
+      h.earnings.broken = false;
+      h.state.at += 600;
+      await h.publisher.tick();
+      expect(h.sender.sent.at(-1)!.overlays[0]!.nextEarnings).toBe(0n);
+    });
+
+    it("keeps the last good schedule when the file breaks later", async () => {
+      h = await harness([ticker("NVDA")]);
+      h.earnings.json = { earnings: { NVDA: [{ date: "2026-10-07", timing: "amc" }] } };
+      await h.publisher.tick();
+      h.earnings.broken = true;
+      h.state.at = REGULAR_AT + HEARTBEAT_SEC;
+      await h.publisher.tick();
+      expect(h.sender.sent[1]!.overlays[0]!.nextEarnings).toBe(BigInt(regularOpenAt(WED + 1)));
+    });
+  });
+
+  describe("Ondo data", () => {
+    it("posts the bStock flags with no multiplier or reference when the Ondo feed fails", async () => {
+      h = await harness([ticker("CRCL")]);
+      h.status.set(TOKENS.CRCL!.bStock, { openState: false, marketStatus: null, reasonCode: "ASSET_PAUSED", reasonMsg: "merger" });
+      h.dyn.set(TOKENS.CRCL!.ondo, new Error("HTTP 503"));
+      await h.publisher.tick();
+      expect(h.sender.sent[0]!.overlays[0]).toMatchObject({ flags: 1 | 2, ondoMultiplier: 0n, referencePrice: 0n });
+      expect(h.feed.list({ kind: "finding" })[0]).toMatchObject({ symbol: "CRCL", reason: expect.stringMatching(/Ondo/) });
+    });
+
+    it("refreshes a reference after half the oracle's maxRefAge, not before", async () => {
+      h = await harness([ticker("CRCL")]);
+      await h.publisher.tick();
+      expect(h.sender.sent[0]!.overlays[0]!.referencePrice).toBe(10_025_000_000n);
+      h.state.at = REGULAR_AT + 3600; // an hour later, same print: no post
+      await h.publisher.tick();
+      expect(h.sender.sent).toHaveLength(1);
+      const short = { ...params, maxRefAge: 3600 };
+      const h2 = await harness([ticker("CRCL")]);
+      h2.publisher = new Publisher({
+        deployment: d,
+        reads: { snapshot: async () => ({ at: h2.state.at, session: h2.state.session, params: short, tickers: h2.state.tickers }) },
+        rwa: { assetStatus: async () => trading, dynamic: async () => dynamic() },
+        sender: h2.sender,
+        feed: h2.feed,
+        earnings: async () => new Map(),
+      });
+      await h2.publisher.tick();
+      h2.state.at += 1800; // maxRefAge / 2
+      await h2.publisher.tick();
+      expect(h2.sender.sent).toHaveLength(2);
+    });
+  });
+
+  describe("loop hygiene", () => {
+    it("skips a tick while the previous one is still running", async () => {
+      h = await harness([ticker("NVDA")]);
+      const [a, b] = await Promise.all([h.publisher.tick(), h.publisher.tick()]);
+      expect([a.busy, b.busy]).toEqual([undefined, true]);
+      expect(h.sender.sims).toHaveLength(1);
+      expect((await h.publisher.tick()).busy).toBeUndefined();
+    });
+
+    it("alerts once when the desk key runs low on BNB", async () => {
+      h = await harness([ticker("NVDA")]);
+      h.sender.balance = async () => 10n ** 15n;
+      const gas = new GasWatch({ sender: h.sender, feed: h.feed, minWei: 3n * 10n ** 15n });
+      const p = new Publisher({
+        deployment: d,
+        reads: { snapshot: async () => ({ at: h.state.at, session: h.state.session, params, tickers: h.state.tickers }) },
+        rwa: { assetStatus: async () => trading, dynamic: async () => dynamic() },
+        sender: h.sender,
+        feed: h.feed,
+        earnings: async () => new Map(),
+        gas,
+      });
+      await p.tick();
+      h.state.at += 600;
+      await p.tick();
+      expect(h.feed.list({ kind: "alert" })).toMatchObject([{ source: "publisher", reason: expect.stringMatching(/below 0\.003 BNB/) }]);
     });
   });
 
@@ -413,8 +597,17 @@ describe("Publisher", () => {
 describe("publisherDelaySec", () => {
   it("runs every 10 min and 3 min after a regular open or close (after the transition pause)", () => {
     expect(publisherDelaySec(REGULAR_AT)).toBe(600);
-    expect(publisherDelaySec(regularCloseAt(WED) - 500)).toBe(600);
+    expect(publisherDelaySec(regularCloseAt(WED) - 700)).toBe(600);
     expect(publisherDelaySec(regularCloseAt(WED) - 100)).toBe(280);
     expect(publisherDelaySec(regularOpenAt(WED) - 1)).toBe(181);
+  });
+
+  it("never lands a regular tick inside the transition pause", () => {
+    const close = regularCloseAt(WED);
+    for (const before of [600, 599, 500, 420, 300, 1]) {
+      const next = close - before + publisherDelaySec(close - before);
+      expect(next < close || next >= close + 180).toBe(true);
+      expect(next).toBe(close + 180);
+    }
   });
 });

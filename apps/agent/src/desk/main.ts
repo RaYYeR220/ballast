@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { PublicRwaClient, Web3Client, createProbe, type ProbeRecord } from "@ballast/binance";
 import { tickers } from "@ballast/risk";
 import { accountState, listAccounts, listCovers, loadDeployment, oracleSnapshot, sessionState, type AccountState, type Deployment } from "@ballast/sdk";
-import type { Address, PublicClient } from "viem";
+import { parseEther, type Address, type PublicClient } from "viem";
 import { loadAccount } from "./account";
 import { ApiProbe, cached, closeServer, createDeskApi, listen } from "./api";
 import { deskPublicClient } from "./client";
@@ -20,7 +20,7 @@ import { KEEPER_TICK_SEC, Keeper, chainKeeperReads } from "./keeper";
 import { Ledger, ledgerSender } from "./ledger";
 import { NOTES_TICK_SEC, NotesStore, NotesWorker, studioNoteModel } from "./notes";
 import { Publisher, chainPublisherReads, publisherDelaySec } from "./publisher";
-import { ChainSender, binanceTxApi, safeMessage } from "./tx";
+import { ChainSender, GasWatch, binanceTxApi, safeMessage } from "./tx";
 import { X402Client } from "./x402";
 
 // ------------------------------------------------------------------- loops
@@ -233,7 +233,9 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   };
   const rwa = new PublicRwaClient({ probe: probeFn });
   const web3 = config.binance ? new Web3Client({ apiKey: config.binance.apiKey.reveal(), apiSecret: config.binance.apiSecret.reveal(), probe: probeFn }) : null;
+  // One sender (one nonce manager) for the key; each loop books its own gas through a ledger wrapper.
   const chainSender = new ChainSender({ client, account, chainId: config.chainId, dryRun: config.dryRun, binance: web3 ? binanceTxApi(web3) : null });
+  const gas = new GasWatch({ sender: chainSender, feed, minWei: parseEther(config.minBnbBalance.toFixed(18)) });
 
   const paidEarningsFile = config.x402.earningsUrl ? path.join(config.dataDir, "earnings-paid.json") : null;
   const publisher = new Publisher({
@@ -243,9 +245,10 @@ export async function startDesk(env: Record<string, string | undefined> = proces
     sender: ledgerSender(chainSender, ledger, "publisher", onError),
     feed,
     earnings: mergedEarnings(config.earningsFile, paidEarningsFile),
+    gas,
     log,
   });
-  const keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, ledger, "keeper", onError), feed, log });
+  const keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, ledger, "keeper", onError), feed, gas, log });
   const guardian = new Guardian({
     deployment,
     reads: chainGuardianReads(client, deployment),

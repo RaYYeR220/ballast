@@ -30,6 +30,7 @@ describe("loadConfig", () => {
     expect(c.httpHost).toBe("127.0.0.1");
     expect(c.httpPort).toBe(8787);
     expect(c.x402DailyCapUsd).toBe(0.5);
+    expect(c.minBnbBalance).toBe(0.003);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
     expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);
@@ -45,6 +46,7 @@ describe("loadConfig", () => {
         CHAIN_ID: "31337",
         HTTP_PORT: "9100",
         X402_DAILY_CAP_USD: "0.25",
+        MIN_BNB_BALANCE: "0.01",
         DRY_RUN: "false",
         DEPLOYMENT_FILE: "deploy/fork.json",
         DATA_DIR: "state",
@@ -57,6 +59,7 @@ describe("loadConfig", () => {
     expect(c.chainId).toBe(31337);
     expect(c.httpPort).toBe(9100);
     expect(c.x402DailyCapUsd).toBe(0.25);
+    expect(c.minBnbBalance).toBe(0.01);
     expect(c.dryRun).toBe(false);
     expect(c.deploymentFile).toBe(path.join(cwd, "deploy", "fork.json"));
     expect(c.dataDir).toBe(path.join(cwd, "state"));
@@ -197,6 +200,11 @@ describe("secret handling", () => {
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");
+  });
+
+  it("lists every secret for the feed scrubber", () => {
+    expect(deskSecrets(configs[0]!)).toEqual(expect.arrayContaining([RPC, "v1/rpc-key-0123456789abcdef", PK, secrets.key, secrets.apiKey, secrets.apiSecret]));
+    expect(deskSecrets(configs[1]!)).toEqual(expect.arrayContaining([`${RPC}?token=abc`, "v1/rpc-key-0123456789abcdef?token=abc", secrets.password]));
   });
 
   it("recognises loopback hosts", () => {

@@ -71,6 +71,8 @@ export interface DeskConfig {
   readonly studioToml: string;
   /** Fork runs only (CHAIN_ID 31337): every loop runs at this interval instead of its own. */
   readonly forkTickSec: number | null;
+  /** Alert when the desk key holds less BNB than this. */
+  readonly minBnbBalance: number;
   readonly dryRun: boolean;
   /** One line that is safe to log. */
   describe(): string;
@@ -181,6 +183,7 @@ const envSchema = z.object({
   DESK_NOTES: z.preprocess((v) => (blank(v) ?? "auto").toString().trim().toLowerCase(), z.enum(["auto", "off"], { message: "must be auto or off" })),
   STUDIO_TOML: optionalText,
   FORK_TICK_SEC: z.preprocess(blank, z.coerce.number().optional()).refine((n) => n === undefined || (Number.isInteger(n) && n >= 1 && n <= 3600), "must be 1..3600 seconds"),
+  MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   DRY_RUN: flagVar(true),
 });
 
@@ -320,6 +323,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     notes: e.DESK_NOTES,
     studioToml,
     forkTickSec: e.FORK_TICK_SEC ?? null,
+    minBnbBalance: e.MIN_BNB_BALANCE,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
@@ -335,36 +339,38 @@ export function studioEnv(config: Pick<DeskConfig, "agentBindHost" | "agentPort"
 }
 
 /**
- * Every secret value the desk holds, for scrubbing the feed and API responses: the RPC URL (and the long
- * pieces of its path and query, where providers put keys), Binance credentials, the signer secret and the
- * LLM provider keys.
+ * Every secret value the desk holds, for scrubbing the feed and API responses: the RPC URL (with its path
+ * and query, whole and in long pieces, where providers put keys), the private key (with and without 0x) or
+ * keystore password, the Binance credentials and the LLM provider keys found in `env`.
  */
-export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "binance" | "signer">, env: Record<string, string | undefined> = process.env): string[] {
+export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "signer" | "binance">, env: Record<string, string | undefined> = process.env): string[] {
   const out = new Set<string>();
   const rpc = config.rpcUrl.reveal();
   out.add(rpc);
   try {
     const u = new URL(rpc);
+    const rest = `${u.pathname.replace(/^\/+|\/+$/g, "")}${u.search}`;
+    if (rest.length >= 8) out.add(rest);
     for (const part of u.pathname.split("/")) if (part.length >= 12) out.add(part);
     for (const [, v] of u.searchParams) if (v.length >= 12) out.add(v);
     if (u.password) out.add(u.password);
   } catch {
-    // not a URL: the whole string is already listed
+    // validated at load: unreachable
+  }
+  if (config.signer.kind === "private-key") {
+    const k = config.signer.privateKey.reveal();
+    out.add(k);
+    out.add(k.replace(/^0x/i, ""));
+  } else {
+    out.add(config.signer.password.reveal());
   }
   if (config.binance) {
     out.add(config.binance.apiKey.reveal());
     out.add(config.binance.apiSecret.reveal());
   }
-  if (config.signer.kind === "private-key") {
-    const pk = config.signer.privateKey.reveal();
-    out.add(pk);
-    out.add(pk.replace(/^0x/, ""));
-  } else {
-    out.add(config.signer.password.reveal());
-  }
   for (const k of LLM_KEY_VARS) {
-    const v = env[k];
-    if (v && v.trim().length >= 8) out.add(v.trim());
+    const v = env[k]?.trim();
+    if (v && v.length >= 8) out.add(v);
   }
-  return [...out].filter((s) => s.length >= 8);
+  return [...out].filter((v) => v.length > 0);
 }

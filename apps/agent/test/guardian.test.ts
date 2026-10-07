@@ -70,6 +70,8 @@ class StubSender implements TxSender {
   sims: Call[] = [];
   sent: Call[] = [];
   onSend?: (c: Call) => void;
+  /** Outcome of the next sends, in order (default success). */
+  statuses: ("success" | "reverted" | "pending" | "dropped" | "throw")[] = [];
   async simulate(tx: TxRequest) {
     const c = decode(tx);
     this.sims.push(c);
@@ -80,8 +82,10 @@ class StubSender implements TxSender {
   async send(tx: TxRequest): Promise<SendResult> {
     const c = decode(tx);
     this.sent.push(c);
-    this.onSend?.(c);
-    return { ok: true, txHash: `0x${String(this.sent.length).padStart(64, "0")}`, via: "rpc", status: "success", gasUsed: 100_000n, effectiveGasPrice: 10n ** 8n };
+    if ((this.statuses[0] ?? "success") === "success") this.onSend?.(c);
+    const status = this.statuses.shift() ?? "success";
+    if (status === "throw") throw new Error("broadcast failed: connection reset");
+    return { ok: true, txHash: `0x${String(this.sent.length).padStart(64, "0")}`, via: "rpc", status, nonce: this.sent.length, gasPrice: 10n ** 8n, gasUsed: 100_000n, effectiveGasPrice: 10n ** 8n };
   }
 }
 
@@ -106,7 +110,7 @@ async function setup(w: Partial<World> = {}, dir?: string) {
     if (c.fn === "submit") world.jobs.set(id, { ...j, status: "Submitted", deliverable: c.args[1] as Hex });
     if (c.fn === "settle") world.jobs.set(id, { ...j, status: world.survived ? "Completed" : "Rejected" });
   };
-  const feed = new Feed({ dir: dataDir, clock: () => world.at });
+  const feed = new Feed({ dir: dataDir, secrets: [], clock: () => world.at });
   const ledger = new Ledger({ dir: dataDir, x402DailyCapUsd: 0.5, clock: () => world.at });
   const state = new GuardianState(dataDir);
   await state.load();
@@ -294,6 +298,47 @@ describe("Guardian", () => {
     expect(sender.sent).toEqual([]);
     expect(feed.list({ kind: "submit" })).toHaveLength(1);
     expect(feed.list({ kind: "submit" })[0]).toMatchObject({ dryRun: true });
+  });
+
+  it("follows a pending settle on the next loop and books it from its own receipt", async () => {
+    const { world, sender, guardian, feed, ledger } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    sender.statuses = ["pending"];
+    const r1 = await guardian.tick();
+    expect(r1.settled).toEqual([]);
+    expect(feed.list({ kind: "pending" })[0]).toMatchObject({ source: "guardian", jobId: "101", data: { step: "settle", nonce: 1 } });
+    // the transaction lands between loops
+    world.jobs.set(101n, job(101n, { status: "Completed" }));
+    const r2 = await guardian.tick();
+    expect(r2.settled).toEqual(["101"]);
+    expect(sender.sent).toHaveLength(1);
+    expect(ledger.list({ kind: "income" })[0]).toMatchObject({ amount: E18.toString(), txHash: `0x${"1".padStart(64, "0")}` });
+    expect(ledger.list({ kind: "income" })[0]).not.toHaveProperty("estimated");
+  });
+
+  it("re-sends a pending submit that did not land, with the same evidence", async () => {
+    const { world, sender, guardian } = await setup();
+    world.jobs.set(101n, job(101n));
+    sender.statuses = ["pending"];
+    await guardian.tick();
+    await guardian.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["submit", "submit", "settle"]);
+    expect(sender.sent[1]!.args[1]).toBe(sender.sent[0]!.args[1]);
+  });
+
+  it("records dropped, reverted and thrown sends as refusals; dropped retries next loop", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    sender.statuses = ["dropped", "throw", "reverted"];
+    await guardian.tick();
+    world.at += 600;
+    await guardian.tick();
+    world.at += 600;
+    await guardian.tick(); // backing off after the thrown broadcast
+    world.at += REFUSAL_BACKOFF_SEC;
+    await guardian.tick();
+    const names = feed.list({ kind: "refused" }).map((e) => e.error?.name).reverse();
+    expect(names).toEqual(["Dropped", "BroadcastFailed", "Reverted"]);
   });
 
   it("isolates a failing job from the others", async () => {

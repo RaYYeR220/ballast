@@ -5,7 +5,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { formatUnits, type Address, type Hex } from "viem";
 import type { TxRequest } from "@ballast/sdk";
-import type { SendResult, TxSender } from "./tx";
+import type { Confirmation, SendOptions, SendResult, SimulateOptions, TxBuilder, TxSender } from "./tx";
 
 export type LedgerSource = "publisher" | "keeper" | "guardian" | "x402" | "other";
 
@@ -217,32 +217,50 @@ export class Ledger {
 }
 
 /**
- * Wraps a sender so every broadcast transaction with a receipt books its gas (reverted ones too). Ledger
- * failures never reach the caller: the send result is what the loop acts on.
+ * Wraps a sender so every mined transaction books its gas (reverted ones too): at send time when the receipt
+ * is there, or when a later confirm() resolves a pending one. Each hash is booked once. Ledger failures never
+ * reach the caller: the send result is what the loop acts on.
  */
 export function ledgerSender(inner: TxSender, ledger: Ledger, source: LedgerSource, onError?: (m: string) => void): TxSender {
-  return {
+  const booked = new Set<string>();
+  const book = async (txHash: Hex, status: string, gasUsed?: bigint, effectiveGasPrice?: bigint) => {
+    if ((status !== "success" && status !== "reverted") || gasUsed === undefined || effectiveGasPrice === undefined) return;
+    const k = txHash.toLowerCase();
+    if (booked.has(k)) return;
+    booked.add(k);
+    if (booked.size > 10_000) booked.delete(booked.values().next().value as string);
+    try {
+      await ledger.record({
+        kind: "gas",
+        source,
+        txHash,
+        status,
+        gasUsed: gasUsed.toString(),
+        effectiveGasPrice: effectiveGasPrice.toString(),
+        feeWei: (gasUsed * effectiveGasPrice).toString(),
+      });
+    } catch (err) {
+      onError?.(`ledger gas entry failed: ${(err as Error).message}`);
+    }
+  };
+  const wrapped: TxSender = {
     address: inner.address,
     dryRun: inner.dryRun,
-    simulate: (tx: TxRequest) => inner.simulate(tx),
-    async send(tx: TxRequest): Promise<SendResult> {
-      const r = await inner.send(tx);
-      if (r.ok && r.status !== "unknown" && r.gasUsed !== undefined && r.effectiveGasPrice !== undefined) {
-        try {
-          await ledger.record({
-            kind: "gas",
-            source,
-            txHash: r.txHash,
-            status: r.status,
-            gasUsed: r.gasUsed.toString(),
-            effectiveGasPrice: r.effectiveGasPrice.toString(),
-            feeWei: (r.gasUsed * r.effectiveGasPrice).toString(),
-          });
-        } catch (err) {
-          onError?.(`ledger gas entry failed: ${(err as Error).message}`);
-        }
-      }
+    simulate: (tx: TxRequest, opts?: SimulateOptions) => inner.simulate(tx, opts),
+    async send(tx: TxRequest | TxBuilder, opts?: SendOptions): Promise<SendResult> {
+      const r = await inner.send(tx, opts);
+      if (r.ok) await book(r.txHash, r.status, r.gasUsed, r.effectiveGasPrice);
       return r;
     },
   };
+  if (inner.confirm) {
+    const confirm = inner.confirm.bind(inner);
+    wrapped.confirm = async (txHash: Hex, nonce?: number): Promise<Confirmation> => {
+      const c = await confirm(txHash, nonce);
+      await book(txHash, c.status, c.gasUsed, c.effectiveGasPrice);
+      return c;
+    };
+  }
+  if (inner.balance) wrapped.balance = inner.balance.bind(inner);
+  return wrapped;
 }

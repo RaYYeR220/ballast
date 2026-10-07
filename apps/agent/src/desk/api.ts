@@ -12,7 +12,7 @@ import type { Feed, FeedEvent, FeedKind, FeedSource } from "./feed";
 import type { Ledger, LedgerEntry } from "./ledger";
 import type { NotesStore } from "./notes";
 
-const FEED_KINDS: readonly FeedKind[] = ["shield", "restore", "refused", "alert", "noop", "publish", "finding", "submit", "settle", "payment"];
+const FEED_KINDS: readonly FeedKind[] = ["shield", "restore", "refused", "alert", "noop", "publish", "finding", "pending", "submit", "settle", "payment"];
 const FEED_SOURCES: readonly FeedSource[] = ["keeper", "publisher", "guardian", "x402"];
 const LEDGER_KINDS: readonly LedgerEntry["kind"][] = ["gas", "income", "x402"];
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;

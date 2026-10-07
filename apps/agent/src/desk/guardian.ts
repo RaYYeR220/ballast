@@ -16,11 +16,12 @@ import {
   type GuardianJob,
   type GuardianJobsPage,
   type ReadClient,
+  type TxRequest,
 } from "@ballast/sdk";
 import { erc20Abi, keccak256, parseEventLogs, stringToBytes, type Address, type Hex, type PublicClient } from "viem";
 import type { Feed, FeedError, FeedEvent, FeedInput, FeedSim } from "./feed";
 import { stableUsd, type Ledger } from "./ledger";
-import { safeMessage, type TxSender } from "./tx";
+import { safeMessage, type SendResult, type TxSender } from "./tx";
 
 export const GUARDIAN_TICK_SEC = 600;
 /** Job ids scanned per call, and calls per tick (later ids wait for the next tick). */
@@ -306,11 +307,22 @@ export class Guardian {
         return;
       }
       case "Completed":
-      case "Rejected":
-        // Settled by someone else (settle is permissionless): book what the kernel paid out.
+      case "Rejected": {
+        // Our settle that was still pending last loop, or someone else's (settle is permissionless).
+        const settleTx = this.#o.state.jobs.get(k)?.settleTx;
+        if (settleTx) {
+          const own = await this.#outcomeOf(job, settleTx);
+          if (own.survived !== null) {
+            report.settled.push(k);
+            await this.#bookOutcome(job, own.survived, settleTx, own.paid, false, own.token);
+            this.#done(k);
+            return;
+          }
+        }
         await this.#bookOutcome(job, job.status === "Completed", null, job.status === "Completed" ? job.budget : 0n, true);
         this.#done(k);
         return;
+      }
       case "Expired":
         await this.#event({ kind: "alert", job, reason: "the job expired and was refunded to the client" });
         this.#done(k);
@@ -335,15 +347,8 @@ export class Guardian {
       await this.#wait(job, at, "submit", { kind: "submit", job, sim, dryRun: true, reason: "dry run: submit simulated, not sent", data });
       return false;
     }
-    const sent = await sender.send(tx);
-    if (!sent.ok) {
-      await this.#refused(job, at, "submit", sim, sent.error);
-      return false;
-    }
-    if (sent.status === "reverted") {
-      await this.#refused(job, at, "submit", sim, { name: "Reverted", message: "submit reverted on-chain" }, sent.txHash);
-      return false;
-    }
+    const sent = await this.#broadcast(job, at, "submit", tx, sim, data);
+    if (!sent) return false;
     const rec = state.jobs.get(k);
     if (rec) Object.assign(rec, { deliverable: ev.hash, submitTx: sent.txHash });
     await state.save();
@@ -404,29 +409,12 @@ export class Guardian {
       await this.#wait(job, at, "settle", { kind: "settle", job, sim, dryRun: true, reason: "dry run: settle simulated, not sent" });
       return;
     }
-    const sent = await sender.send(tx);
-    if (!sent.ok) {
-      if (sent.error.name === "CannotEvaluateNow") {
-        await this.#wait(job, at, "cannot-evaluate", { kind: "noop", job, sim, error: sent.error, reason: "account health cannot be read right now; settling on a later loop" });
-        return;
-      }
-      await this.#refused(job, at, "settle", sim, sent.error);
-      return;
-    }
-    if (sent.status === "reverted") {
-      await this.#refused(job, at, "settle", sim, { name: "Reverted", message: "settle reverted on-chain" }, sent.txHash);
-      return;
-    }
+    const sent = await this.#broadcast(job, at, "settle", tx, sim);
+    if (!sent) return;
     const rec = state.jobs.get(k);
     if (rec) rec.settleTx = sent.txHash;
-    let token: PaymentToken | null = null;
-    let outcome: SettleOutcome = { survived: null, paid: 0n };
-    try {
-      token = await reads.paymentToken(job.jobId);
-      outcome = await reads.settleOutcome(sent.txHash, job.jobId, token.token, this.#me);
-    } catch (err) {
-      this.#o.log?.(`guardian job ${k}: settle receipt unreadable: ${safeMessage(err)}`);
-    }
+    const outcome = await this.#outcomeOf(job, sent.txHash);
+    const token = outcome.token;
     // Without the event, the job status after settlement is the truth: refresh once.
     let survived = outcome.survived;
     if (survived === null) {
@@ -437,6 +425,60 @@ export class Guardian {
     await this.#bookOutcome(job, survived, sent.txHash, outcome.paid, false, token, sim);
     this.#done(k);
     this.#o.log?.(`guardian settled job ${k} (${survived === null ? "unknown" : survived ? "complete" : "reject"}) in ${sent.txHash}`);
+  }
+
+  /** Outcome and payout from our settle receipt; survived null when it cannot be read. */
+  async #outcomeOf(job: GuardianJob, txHash: Hex): Promise<SettleOutcome & { token: PaymentToken | null }> {
+    try {
+      const token = await this.#o.reads.paymentToken(job.jobId);
+      return { ...(await this.#o.reads.settleOutcome(txHash, job.jobId, token.token, this.#me)), token };
+    } catch (err) {
+      this.#o.log?.(`guardian job ${job.jobId}: settle receipt unreadable: ${safeMessage(err)}`);
+      return { survived: null, paid: 0n, token: null };
+    }
+  }
+
+  /**
+   * Sends a submit or settle and records every outcome that is not a mined success: a refusal (estimate
+   * revert, on-chain revert, broadcast failure), a wait (CannotEvaluateNow at estimate), a replacement
+   * (dropped: retried next loop) or a pending transaction (the next loop's job refresh shows whether it landed).
+   */
+  async #broadcast(job: GuardianJob, at: number, step: "submit" | "settle", tx: TxRequest, sim: FeedSim, data: Record<string, unknown> = {}): Promise<{ txHash: Hex; via: string } | null> {
+    const k = job.jobId.toString();
+    let sent: SendResult;
+    try {
+      sent = await this.#o.sender.send(tx);
+    } catch (err) {
+      await this.#refused(job, at, step, sim, { name: "BroadcastFailed", message: safeMessage(err) });
+      return null;
+    }
+    if (!sent.ok) {
+      if (sent.stage === "estimate" && sent.error.name === "CannotEvaluateNow") {
+        await this.#wait(job, at, "cannot-evaluate", { kind: "noop", job, sim, error: sent.error, reason: "account health cannot be read right now; settling on a later loop" });
+        return null;
+      }
+      await this.#refused(job, at, step, sim, sent.stage === "estimate" ? sent.error : { name: "Aborted", message: `${step} was not sent` });
+      return null;
+    }
+    const rec = this.#o.state.jobs.get(k);
+    if (sent.status === "pending") {
+      if (rec) {
+        if (step === "submit") rec.submitTx = sent.txHash;
+        else rec.settleTx = sent.txHash;
+      }
+      await this.#o.state.save();
+      await this.#event({ kind: "pending", job, sim, txHash: sent.txHash, reason: `${step} sent but not mined yet; the next loop reads the job again`, data: { ...data, step, nonce: sent.nonce } });
+      return null;
+    }
+    if (sent.status === "dropped") {
+      await this.#refused(job, at, step, sim, { name: "Dropped", message: `${step} was replaced before it was mined` }, sent.txHash, 0);
+      return null;
+    }
+    if (sent.status === "reverted") {
+      await this.#refused(job, at, step, sim, { name: "Reverted", message: `${step} reverted on-chain` }, sent.txHash);
+      return null;
+    }
+    return { txHash: sent.txHash, via: sent.via };
   }
 
   async #bookOutcome(
@@ -488,12 +530,12 @@ export class Guardian {
     this.#waits.delete(k);
   }
 
-  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim, error: FeedError | undefined, txHash?: Hex) {
+  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim, error: FeedError | undefined, txHash?: Hex, backoffSec = REFUSAL_BACKOFF_SEC) {
     const k = job.jobId.toString();
-    this.#backoff.set(k, at + REFUSAL_BACKOFF_SEC);
+    this.#backoff.set(k, at + backoffSec);
     this.#waits.delete(k);
     const e = error ?? { name: "SimulationFailed", message: `${step} simulation failed` };
-    await this.#event({ kind: "refused", job, sim, error: e, reason: `${step}: ${e.message}`, ...(txHash ? { txHash } : {}), data: { step, backoffUntil: at + REFUSAL_BACKOFF_SEC } });
+    await this.#event({ kind: "refused", job, sim, error: e, reason: `${step}: ${e.message}`, ...(txHash ? { txHash } : {}), data: { step, backoffUntil: at + backoffSec } });
   }
 
   /** Records a waiting event, re-recording an identical one at most every REPEAT_EVENT_SEC. */

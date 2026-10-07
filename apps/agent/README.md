@@ -14,6 +14,11 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `src/desk/config.ts` | Validated environment; secrets are wrapped and never printed |
 | `src/desk/account.ts` | Signer from a raw key or a Studio keystore (Web3 Secret Storage v3) |
 | `src/desk/register.ts` | ERC-8004 identity: builds the registration file and mints or updates it |
+| `src/desk/feed.ts` | Audit feed: every attempt as one JSON line under `DATA_DIR`, plus an in-memory ring for the API |
+| `src/desk/tx.ts` | Simulation, signing, nonces, broadcast, receipt follow-up and the low-BNB alert |
+| `src/desk/publisher.ts` | Session Oracle overlay publisher (RWA status, Ondo multiplier, references, earnings) |
+| `src/desk/keeper.ts` | Shields accounts and covers before closures, restores accounts after the open |
+| `src/desk/client.ts` | The desk's viem client (uncached head block) |
 | `test/` | Unit tests (`pnpm test` at the repo root) |
 
 ## Environment
@@ -29,6 +34,9 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `AGENT_BIND_HOST`, `AGENT_PORT` | `127.0.0.1`, `9000` | Studio A2A/MCP listener; must be loopback on chain 56 |
 | `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy |
 | `X402_DAILY_CAP_USD` | `0.5` | daily ceiling for paid data |
+| `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
+| `DATA_DIR` | `apps/agent/var/` | feed and other desk state; outside git |
+| `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
 | `DRY_RUN` | `true` | simulate every write, broadcast nothing |
 | `AGENT_PUBLIC_URL`, `APP_URL` | | register only: stand-ins for `--agent-url` and `--web-url` |
 
@@ -55,6 +63,18 @@ with `registrations` filled in once the agentId is known. If the second one fail
 already exists. Re-run with `--agent-id <id>` (printed after the first transaction, also in its
 `Registered` event) to rewrite only the URI; the script checks that the signer owns that id first.
 The same flag updates endpoints later. Running without `--agent-id` always mints a new identity.
+
+## What the keeper manages
+
+- Ballast accounts whose `keeper` is the desk key, and CushionVault covers that name the desk key.
+- Shields run in the hour before a regular close (the whole session before an earnings window);
+  restores run in the regular session, only when the owner allows them, only up to what the desk
+  itself repaid in that shield cycle and never above the pre-shield LTV. If the owner repays or
+  closes the loan after a shield, the cycle ends and the desk borrows nothing back.
+- A liquidated account is no longer managed. The desk records the seizure on-chain with
+  `recordLiquidation()` once and then leaves the account alone; the owner takes it from there.
+- A transaction that is not mined in time is recorded as `pending` and settled on a later tick; the
+  next send from the desk key replaces it at a higher gas price if it is still stuck.
 
 ## Security posture
 

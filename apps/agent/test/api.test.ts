@@ -31,8 +31,8 @@ async function start(o: { ratePerMin?: number } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "desk-api-"));
   const config = loadConfig(ENV);
   const secrets = deskSecrets(config, ENV);
-  // The feed here keeps secrets on purpose: the API must still never send them.
-  const feed = new Feed({ dir });
+  // The feed here keeps secrets on purpose (empty scrub list): the API must still never send them.
+  const feed = new Feed({ dir, secrets: [] });
   const ev = await feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, symbol: "NVDA", reason: `rpc ${RPC} said no, key ${ENV.BINANCE_WEB3_API_KEY}` });
   await feed.record({ kind: "publish", source: "publisher", symbols: ["NVDA"], data: { pk: PK } });
   const notes = new NotesStore(dir);
