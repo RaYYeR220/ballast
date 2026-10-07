@@ -1,0 +1,22 @@
+{
+  "name": "@ballast/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "register": "tsx src/desk/register.ts"
+  },
+  "dependencies": {
+    "@ballast/binance": "workspace:*",
+    "@ballast/risk": "workspace:*",
+    "@ballast/sdk": "workspace:*",
+    "@bnbagent/sdk": "0.6.0",
+    "viem": "^2.57.3",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  }
+}

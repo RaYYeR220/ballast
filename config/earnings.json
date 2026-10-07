@@ -1,0 +1,4 @@
+{
+  "note": "Earnings schedule for the Session Oracle publisher, maintained by the operator. Per symbol, a list of { \"date\": \"YYYY-MM-DD\" (US Eastern), \"timing\": \"bmo\" | \"amc\" } or { \"realisedAt\": <unix seconds of the regular open where the gap lands> }. Dates already past are ignored. The publisher re-reads this file every run.",
+  "earnings": {}
+}

@@ -1,0 +1,23 @@
+# bnbagent-studio workspace defaults.
+# All agent secrets - the encrypted keystore AND .env.local - live HERE under
+# .studio/ at the workspace root, OUTSIDE app/agent (the deploy codeLocation),
+# so no deploy packaging path can bundle them. Never commit .studio/.
+.studio/
+
+# The AgentCore descriptor is AWS-only and unused by the self-hosted desk, and
+# `bag dev --container` writes a runtime secret bundle (wallet material + unlock
+# password + provider keys) into agentcore/.env.local. Never commit any of it.
+agentcore/
+
+# Node
+node_modules/
+dist/
+
+# Editor / OS junk
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Desk state: audit feed, cursors (DATA_DIR default)
+var/

@@ -3,11 +3,12 @@
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "engines": { "node": ">=22" },
-  "pnpm": { "overrides": { "rollup": "<4.62.4" } },
+  "pnpm": { "overrides": { "rollup": "<4.62.4", "abitype>zod": "^3.25.76" } },
   "scripts": {
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
     "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv",
+    "abis": "cd contracts && forge build && cd .. && tsx scripts/export-abis.ts",
     "test": "vitest run",
     "backtest": "tsx packages/risk/scripts/backtest.ts",
     "typecheck": "pnpm --filter @ballast/web exec next typegen && pnpm -r exec tsc --noEmit"
