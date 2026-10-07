@@ -55,6 +55,8 @@ export interface DeskConfig {
   readonly httpHost: string;
   readonly httpPort: number;
   readonly x402DailyCapUsd: number;
+  /** Alert when the desk key holds less BNB than this. */
+  readonly minBnbBalance: number;
   readonly dryRun: boolean;
   /** One line that is safe to log. */
   describe(): string;
@@ -148,6 +150,7 @@ const envSchema = z.object({
   HTTP_HOST: hostVar("127.0.0.1"),
   HTTP_PORT: portVar(8787),
   X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   DRY_RUN: flagVar(true),
 });
 
@@ -257,10 +260,37 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     httpHost: e.HTTP_HOST,
     httpPort: e.HTTP_PORT,
     x402DailyCapUsd: e.X402_DAILY_CAP_USD,
+    minBnbBalance: e.MIN_BNB_BALANCE,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
   });
+}
+
+/**
+ * Every secret value in the config, for the feed scrubber: the RPC URL (and its path, where providers put
+ * keys), the private key, the keystore password and the Binance credentials.
+ */
+export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "signer" | "binance">): string[] {
+  const out: string[] = [];
+  const rpc = config.rpcUrl.reveal();
+  out.push(rpc);
+  try {
+    const u = new URL(rpc);
+    const rest = `${u.pathname.replace(/^\/+|\/+$/g, "")}${u.search}`;
+    if (rest.length >= 8) out.push(rest);
+    if (u.password) out.push(u.password);
+  } catch {
+    // validated at load: unreachable
+  }
+  if (config.signer.kind === "private-key") {
+    const k = config.signer.privateKey.reveal();
+    out.push(k, k.replace(/^0x/i, ""));
+  } else {
+    out.push(config.signer.password.reveal());
+  }
+  if (config.binance) out.push(config.binance.apiKey.reveal(), config.binance.apiSecret.reveal());
+  return out.filter((v) => v.length > 0);
 }
 
 /**
