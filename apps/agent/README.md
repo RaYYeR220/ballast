@@ -19,6 +19,13 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `src/desk/publisher.ts` | Session Oracle overlay publisher (RWA status, Ondo multiplier, references, earnings) |
 | `src/desk/keeper.ts` | Shields accounts and covers before closures, restores accounts after the open |
 | `src/desk/client.ts` | The desk's viem client (uncached head block) |
+| `src/desk/guardian.ts` | Guardian jobs: scans the kernel from a persisted cursor, submits the evidence hash after each window, settles |
+| `src/desk/ledger.ts` | Income, gas per transaction and x402 spend under the daily cap (`DATA_DIR/ledger.json`) |
+| `src/desk/x402.ts` | x402 buyer: exact scheme, EIP-3009 on pinned stablecoins, per-call and daily caps checked before signing |
+| `src/desk/earnings.ts` | Buys the next earnings dates once per trading day; `config/earnings.json` is the fallback |
+| `src/desk/notes.ts` | Two-sentence desk notes from the Studio LLM after shields, restores and refusals (never a decision input) |
+| `src/desk/api.ts` | Read API: health, feed, accounts, oracle, ledger, evidence, Binance API health |
+| `src/desk/main.ts` | The process: API first, then the loops with jitter and back-off; graceful SIGTERM |
 | `test/` | Unit tests (`pnpm test` at the repo root) |
 
 ## Environment
@@ -34,6 +41,14 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `AGENT_BIND_HOST`, `AGENT_PORT` | `127.0.0.1`, `9000` | Studio A2A/MCP listener; must be loopback on chain 56 |
 | `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy |
 | `X402_DAILY_CAP_USD` | `0.5` | daily ceiling for paid data |
+| `X402_EARNINGS_URL` | unset (off) | x402 earnings-calendar endpoint; `{symbol}`, `{from}`, `{to}` are filled in |
+| `X402_MAX_PRICE_USD` | `0.05` | most one call may cost (at most 0.05) |
+| `X402_NETWORKS` | `eip155:56,eip155:8453` | networks the desk pays on, preferred first |
+| `WEB_ORIGIN` | unset | the one origin the read API answers CORS for |
+| `API_RATE_PER_MIN` | `120` | requests per minute per client IP |
+| `DESK_NOTES` | `auto` | `off` never calls the LLM; `auto` uses the Studio `[llm]` provider when its key is set |
+| `STUDIO_TOML` | `app/agent/studio.toml` | where the notes read `[llm]` |
+| `FORK_TICK_SEC` | unset | fork only (`CHAIN_ID=31337`): every loop runs at this interval |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
 | `DATA_DIR` | `apps/agent/var/` | feed and other desk state; outside git |
 | `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
@@ -44,6 +59,7 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 
 ```bash
 pnpm install                     # from the repo root
+pnpm desk                        # the desk: read API on 127.0.0.1:8787, then the loops (DRY_RUN=true by default)
 cd apps/agent
 bag dev                          # Studio faces on 127.0.0.1:9000 (needs a Studio wallet and LLM key)
 
@@ -52,6 +68,8 @@ pnpm run register --agent-url https://desk.example.org --web-url https://ballast
 # write it (mainnet also needs the explicit flag)
 DRY_RUN=false pnpm run register --agent-url ... --web-url ... --confirm-mainnet
 ```
+
+On a VPS the desk runs as a systemd service behind Caddy: see `deploy/README.md`.
 
 The signer must be a plain EOA. The registry mints with ERC-721 `safeMint`, so an account carrying
 an EIP-7702 delegation that does not accept ERC-721 tokens makes `register()` revert.

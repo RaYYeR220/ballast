@@ -1,0 +1,48 @@
+# Ballast Risk Desk: publisher, keeper, guardian, x402 data and the read API in one process.
+# Install: see deploy/README.md. Secrets live only in /etc/ballast/agent.env (root:ballast, 0640).
+[Unit]
+Description=Ballast Risk Desk
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=ballast
+Group=ballast
+WorkingDirectory=/opt/ballast/apps/agent
+EnvironmentFile=/etc/ballast/agent.env
+ExecStart=/opt/ballast/apps/agent/node_modules/.bin/tsx src/desk/main.ts
+Restart=always
+RestartSec=10
+# SIGTERM stops the loops, lets a send waiting for its receipt finish, then flushes the ledger and state.
+KillSignal=SIGTERM
+TimeoutStopSec=180
+# Desk state (feed, ledger, guardian cursor, evidence): /var/lib/ballast, set DATA_DIR to it.
+StateDirectory=ballast
+StateDirectoryMode=0750
+UMask=0027
+
+# Hardening: the desk needs the network and its state directory, nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+LimitNOFILE=8192
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target
