@@ -33,6 +33,8 @@ export interface Deployment {
   owner: Address | null;
   /** Block of the deployment, the lower bound for log scans. */
   block: number;
+  /** Kernel jobCounter when the guardian was deployed: no guardian job has a lower id. Absent in older files. */
+  guardianStartJobId?: bigint;
   external: ExternalAddresses;
 }
 
@@ -83,6 +85,15 @@ export function parseDeployment(chainId: number, json: unknown, external?: Exter
   if (!Number.isSafeInteger(block) || block < 0) throw new Error(`${where}: invalid block`);
   const out = { chainId, block, owner: j.owner === undefined ? null : address(j, "owner", where) } as Deployment;
   for (const k of DEPLOYMENT_KEYS) out[k] = address(j, k, where);
+  if (j.guardianStartJobId !== undefined) {
+    try {
+      const id = BigInt(j.guardianStartJobId as string | number);
+      if (id < 0n) throw new Error("negative");
+      out.guardianStartJobId = id;
+    } catch {
+      throw new Error(`${where}: invalid guardianStartJobId`);
+    }
+  }
   out.external = external ?? bscExternal();
   return out;
 }

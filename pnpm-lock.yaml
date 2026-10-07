@@ -92,6 +92,30 @@ importers:
 
   packages/binance: {}
 
+  packages/mcp:
+    dependencies:
+      '@ballast/binance':
+        specifier: workspace:*
+        version: link:../binance
+      '@ballast/risk':
+        specifier: workspace:*
+        version: link:../risk
+      '@ballast/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.32.1
+        version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@3.25.76)
+      tsx:
+        specifier: ^4.19.2
+        version: 4.23.15
+      viem:
+        specifier: ^2.57.3
+        version: 2.57.3(typescript@5.9.3)(zod@3.25.76)
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+
   packages/risk: {}
 
   packages/sdk:

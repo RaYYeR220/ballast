@@ -53,3 +53,16 @@ describe("deployments", () => {
     expect(() => loadDeployment(31337, { file: join(dir, "missing.json") })).toThrow(/deployment/);
   });
 });
+
+describe("guardianStartJobId", () => {
+  const base = { owner: addr(0xa0), calendar: addr(0xa1), sessionOracle: addr(0xa2), sessionAwareFeed: addr(0xa3), factory: addr(0xa4), listaImpl: addr(0xa5), venusImpl: addr(0xa6), cushionVault: addr(0xa7), guardian: addr(0xa8), block: 1 };
+  it("is optional and parsed as a bigint", () => {
+    expect(parseDeployment(31337, base).guardianStartJobId).toBeUndefined();
+    expect(parseDeployment(31337, { ...base, guardianStartJobId: "123456789012345678901" }).guardianStartJobId).toBe(123456789012345678901n);
+    expect(parseDeployment(31337, { ...base, guardianStartJobId: 7 }).guardianStartJobId).toBe(7n);
+  });
+  it("rejects a bad value", () => {
+    expect(() => parseDeployment(31337, { ...base, guardianStartJobId: "abc" })).toThrow(/guardianStartJobId/);
+    expect(() => parseDeployment(31337, { ...base, guardianStartJobId: -1 })).toThrow(/guardianStartJobId/);
+  });
+});
