@@ -204,14 +204,20 @@ export class Feed {
     return this.shieldCycle(account)?.preShieldDebt ?? null;
   }
 
-  /** `pending` events of `source` whose transaction no later event resolved, oldest first. */
+  /**
+   * `pending` events of `source` whose transaction no later event resolved, oldest first. A resolving event
+   * names it by its txHash or, when a speed-up was mined instead, by `data.pendingTx`.
+   */
   unresolvedPending(source: FeedSource): FeedEvent[] {
     const open = new Map<string, FeedEvent>();
     for (const e of this.#ring) {
-      if (!e.txHash) continue;
-      const k = e.txHash.toLowerCase();
-      if (e.kind === "pending" && e.source === source) open.set(k, e);
-      else open.delete(k);
+      const pendingTx = typeof e.data?.pendingTx === "string" ? e.data.pendingTx.toLowerCase() : null;
+      if (e.kind === "pending" && e.source === source && e.txHash) {
+        open.set(e.txHash.toLowerCase(), e);
+        continue;
+      }
+      if (e.txHash) open.delete(e.txHash.toLowerCase());
+      if (pendingTx) open.delete(pendingTx);
     }
     return [...open.values()];
   }

@@ -2,7 +2,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { decodeFunctionData, encodeErrorResult, getAddress, keccak256, toHex, type Address, type Hex } from "viem";
+import { decodeFunctionData, encodeAbiParameters, encodeErrorResult, encodeEventTopics, getAddress, keccak256, toHex, type Address, type Hex } from "viem";
 import {
   ballastAccountBaseAbi,
   cushionVaultAbi,
@@ -16,8 +16,8 @@ import {
 } from "@ballast/sdk";
 import { regularCloseAt, regularOpenAt } from "@ballast/risk";
 import { Feed } from "../src/desk/feed";
-import { Keeper, deleveragePathFor, keeperPhase, restoreTargetUsd, trimSale, type KeeperReads } from "../src/desk/keeper";
-import { GasWatch, revertError, type Confirmation, type SendOptions, type SendResult, type SimulateOptions, type TxBuilder, type TxSender } from "../src/desk/tx";
+import { Keeper, deleveragePathFor, keeperPhase, restoreTargetUsd, shieldedDebts, trimSale, type KeeperReads } from "../src/desk/keeper";
+import { GasWatch, revertError, type Confirmation, type SendOptions, type SendResult, type SimulateOptions, type TxBuilder, type TxLog, type TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const E18 = 10n ** 18n;
@@ -137,6 +137,12 @@ function decode(tx: TxRequest): Call {
 type Stage = "estimate" | "revert" | "throw" | "pending" | "dropped";
 const tooLittle = encodeErrorResult({ abi: [{ type: "error", name: "Error", inputs: [{ type: "string", name: "message" }] }], errorName: "Error", args: ["Too little received"] });
 const hashOf = (n: number) => `0x${String(n).padStart(64, "0")}` as Hex;
+/** A Shielded(kind, debtBefore, debtAfter, collateralSold) log of the account. */
+const shieldedLog = (before: bigint, after: bigint, kind = 0, sold = 0n, address: Address = ACCOUNT): TxLog => ({
+  address,
+  topics: encodeEventTopics({ abi: ballastAccountBaseAbi, eventName: "Shielded" }) as Hex[],
+  data: encodeAbiParameters([{ type: "uint8" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" }], [kind, before, after, sold]),
+});
 
 class StubSender implements TxSender {
   readonly address = AGENT;
@@ -147,12 +153,15 @@ class StubSender implements TxSender {
   outcome = new Map<string, Stage>();
   /** fn names whose simulations disagree between Binance and eth_call. */
   disagree = new Set<string>();
-  /** txHash -> what confirm() reports. */
-  confirms = new Map<string, Confirmation["status"]>();
+  /** txHash -> what confirm() reports (default: still pending). */
+  confirms = new Map<string, Confirmation>();
+  /** Logs the next mined send of a function returns. */
+  logs = new Map<string, TxLog[]>();
+  unsticks = 0;
   /** Runs inside send before the builder (as if another send held the nonce meanwhile). */
   beforeBuild?: () => void;
   sims: (Call & { strict: boolean })[] = [];
-  sent: (Call & { mev: boolean })[] = [];
+  sent: (Call & { mev: boolean; critical: boolean })[] = [];
   #n = 0;
 
   async simulate(tx: TxRequest, opts?: SimulateOptions) {
@@ -173,7 +182,7 @@ class StubSender implements TxSender {
     const tx = typeof input === "function" ? await input() : input;
     if (!tx) return { ok: false, stage: "aborted" };
     const c = decode(tx);
-    this.sent.push({ ...c, mev: opts?.mevProtect === true });
+    this.sent.push({ ...c, mev: opts?.mevProtect === true, critical: opts?.critical === true });
     const stage = this.outcome.get(c.fn);
     this.outcome.delete(c.fn);
     const base = { ok: true as const, txHash: hashOf(++this.#n), via: "rpc" as const, nonce: this.#n, gasPrice: 1n };
@@ -189,12 +198,17 @@ class StubSender implements TxSender {
       case "pending":
         return { ...base, status: "pending", note: "not mined yet" };
       default:
-        return { ...base, status: "success" };
+        return { ...base, status: "success", logs: this.logs.get(c.fn) ?? [] };
     }
   }
 
   async confirm(txHash: Hex): Promise<Confirmation> {
-    return { status: this.confirms.get(txHash) ?? "pending" };
+    return this.confirms.get(txHash) ?? { status: "pending" };
+  }
+
+  async unstick() {
+    this.unsticks++;
+    return null;
   }
 
   async balance() {
@@ -619,8 +633,19 @@ describe("Keeper sale failures (C2)", () => {
     ["gas estimation", (st) => st.outcome.set("shieldDeleverage", "estimate")],
     ["on-chain revert", (st) => st.outcome.set("shieldDeleverage", "revert")],
     ["a thrown broadcast", (st) => st.outcome.set("shieldDeleverage", "throw")],
-    ["a dropped transaction", (st) => st.outcome.set("shieldDeleverage", "dropped")],
   ];
+
+  it("treats a dropped sale as a lost nonce race: no fallback, no hold, re-planned next tick", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista({ cushion: 10n * E18 })];
+    sender.outcome.set("shieldDeleverage", "dropped");
+    await keeper.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["shieldDeleverage"]);
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "Dropped" } });
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["shieldDeleverage", "shieldDeleverage"]);
+  });
 
   it.each(cases)("falls back to the cushion repay at once after a failed sale at %s, and holds only the sale", async (_name, arrange) => {
     const { world, sender, feed, keeper } = await setup();
@@ -684,6 +709,20 @@ describe("Keeper sale failures (C2)", () => {
   });
 });
 
+describe("shieldedDebts", () => {
+  it("spans a keeper sale: the cushion spend's debtBefore to the sale's debtAfter, this account only", () => {
+    const logs = [
+      shieldedLog(999n, 1n, 0, 0n, addr(0x99)), // another account in the same receipt
+      shieldedLog(1800n, 1790n), // cushion spend
+      { address: ACCOUNT, topics: [`0x${"12".repeat(32)}`] as Hex[], data: "0x" as Hex }, // some other event
+      shieldedLog(1790n, 1200n, 1, 3n), // the sale
+    ];
+    expect(shieldedDebts(logs, ACCOUNT)).toEqual({ before: 1800n, after: 1200n });
+    expect(shieldedDebts([], ACCOUNT)).toBeNull();
+    expect(shieldedDebts(undefined, ACCOUNT)).toBeNull();
+  });
+});
+
 describe("trimSale", () => {
   it("shrinks the flash loan to leave minLoan + 2 and the sale in proportion, rounded up", () => {
     // debt after the cushion 1000, minLoan 100: a flash of 950 would leave 50 < 102.
@@ -702,8 +741,8 @@ describe("trimSale", () => {
   });
 });
 
-describe("Keeper pending transactions (C1)", () => {
-  it("records an unmined shield as pending (no shield, no restore cycle) and confirms it on a later tick", async () => {
+describe("Keeper pending transactions (C1, N2, N3)", () => {
+  it("records an unmined shield as pending (no shield, no restore cycle) and confirms it from the receipt logs", async () => {
     const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "pending");
@@ -713,27 +752,83 @@ describe("Keeper pending transactions (C1)", () => {
     expect(feed.list({ kind: "shield" })).toEqual([]);
     expect(feed.shieldCycle(ACCOUNT)).toBeNull();
 
-    sender.confirms.set(hashOf(1), "success");
+    sender.confirms.set(hashOf(1), { status: "success", logs: [shieldedLog(1800n * E18, 1711n * E18)] });
     world.accounts = [lista({ debt: 1711n * E18, cushion: 11n * E18 })];
     world.oracle = oracle(LEAD + 300);
     await keeper.tick();
-    expect(feed.list({ kind: "shield" })[0]).toMatchObject({ txHash: hashOf(1), plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1711n * E18).toString() }, data: { confirmedLater: true } });
+    expect(feed.list({ kind: "shield" })[0]).toMatchObject({
+      txHash: hashOf(1),
+      plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1711n * E18).toString() },
+      data: { confirmedLater: true, pendingTx: hashOf(1) },
+    });
     expect(feed.shieldCycle(ACCOUNT)).toMatchObject({ preShieldDebt: 1800n * E18, postShieldDebt: 1711n * E18, repaid: 89n * E18 });
   });
 
-  it("re-plans while a shield is still unmined (the real sender replaces it) and records the old one as dropped", async () => {
+  it("takes the debts from the receipt even when the owner repaid between send and confirm (N3)", async () => {
     const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "pending");
     await keeper.tick();
+    // Mined at 1800 -> 1711; then the owner repaid 300 before the keeper looked again.
+    sender.confirms.set(hashOf(1), { status: "success", logs: [shieldedLog(1800n * E18, 1711n * E18)] });
+    world.accounts = [lista({ debt: 1411n * E18, cushion: 11n * E18 })];
     world.oracle = oracle(LEAD + 300);
-    await keeper.tick(); // still pending: the keeper sends again
-    expect(sender.sent).toHaveLength(2);
-    expect(feed.list({ kind: "shield" })).toMatchObject([{ txHash: hashOf(2) }]);
-    sender.confirms.set(hashOf(1), "dropped");
-    world.oracle = oracle(LEAD + 600);
+    await keeper.tick();
+    expect(feed.shieldCycle(ACCOUNT)).toMatchObject({ postShieldDebt: 1711n * E18, repaid: 89n * E18 });
+    // At the open the debt is below what the shield left: the owner acted, nothing is restored.
+    world.oracle = oracle(MORNING + 86_400, { canAddRisk: true, reason: "OK" });
+    await keeper.tick();
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ data: { cycleClosed: true } });
+    expect(sender.sent.map((c) => c.fn)).toEqual(["shieldRepay"]);
+  });
+
+  it("records a speed-up that was mined instead under its own hash, naming the pending one", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    const faster = `0x${"fa".repeat(32)}` as Hex;
+    sender.confirms.set(hashOf(1), { status: "success", txHash: faster, logs: [shieldedLog(1800n * E18, 1711n * E18)] });
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(feed.list({ kind: "shield" }).find((e) => e.txHash === faster)).toMatchObject({ data: { replaces: hashOf(1), pendingTx: hashOf(1) } });
+    expect(feed.unresolvedPending("keeper")).toEqual([]);
+  });
+
+  it("leaves the account alone while its send is unmined and nudges the sender instead (N2)", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    expect(sender.unsticks).toBe(1);
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick(); // still pending
+    expect(sender.sent).toHaveLength(1);
+    expect(sender.unsticks).toBe(2);
+    expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/waiting for the desk's pending transaction/);
+  });
+
+  it("re-plans in the same tick once the pending send turns out dropped, without a back-off", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    sender.confirms.set(hashOf(1), { status: "dropped" });
+    world.oracle = oracle(LEAD + 300);
     await keeper.tick();
     expect(feed.list({ kind: "refused" })[0]).toMatchObject({ txHash: hashOf(1), error: { name: "Dropped" } });
+    expect(sender.sent).toHaveLength(2);
+    expect(feed.list({ kind: "shield" })).toMatchObject([{ txHash: hashOf(2) }]);
+    expect(feed.list({ kind: "alert" })).toEqual([]); // not yet in the last minutes
+  });
+
+  it("alerts when a shield is dropped in the last minutes before the close (N4)", async () => {
+    const { world, sender, feed, keeper } = await setup({ oracle: oracle(CLOSE - 300) });
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "dropped");
+    await keeper.tick();
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "Dropped" } });
+    expect(feed.list({ kind: "alert" })[0]!.reason).toMatch(/replaced before it was mined in the last minutes/);
   });
 
   it("records a pending shield that reverted when mined as a refusal", async () => {
@@ -741,32 +836,57 @@ describe("Keeper pending transactions (C1)", () => {
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "pending");
     await keeper.tick();
-    sender.confirms.set(hashOf(1), "reverted");
+    sender.confirms.set(hashOf(1), { status: "reverted" });
     world.accounts = [lista({ debt: 1000n * E18 })];
     world.oracle = oracle(LEAD + 300);
     await keeper.tick();
     expect(feed.list({ kind: "refused" })[0]).toMatchObject({ txHash: hashOf(1), error: { name: "Reverted" } });
   });
 
-  it("picks pending transactions back up from the feed after a restart", async () => {
+  it("after a restart with a send pending at N, sends nothing else for that account until it settles (N2)", async () => {
     const first = await setup();
     first.world.accounts = [lista()];
     first.sender.outcome.set("shieldRepay", "pending");
     await first.keeper.tick();
-    first.sender.confirms.set(hashOf(1), "success");
-    first.world.accounts = [lista({ debt: 1711n * E18 })];
+    // Restart: a new keeper on the same feed; the restore window opens while the shield is still unmined.
     const restarted = new Keeper({ deployment: d, reads: first.reads, sender: first.sender, feed: first.feed });
+    first.world.oracle = oracle(MORNING + 86_400, { canAddRisk: true, reason: "OK" });
+    await restarted.tick();
+    expect(first.sender.sent).toHaveLength(1);
+    expect(first.sender.unsticks).toBe(2);
+    // Mined at last: recorded from its receipt.
+    first.sender.confirms.set(hashOf(1), { status: "success", logs: [shieldedLog(1800n * E18, 1711n * E18)] });
+    first.world.accounts = [lista({ debt: 1711n * E18 })];
     first.world.oracle = oracle(LEAD + 300);
     await restarted.tick();
     expect(first.feed.list({ kind: "shield" })[0]).toMatchObject({ txHash: hashOf(1), plan: { debtAfter: (1711n * E18).toString() } });
   });
 
-  it("records a dropped repay as a refusal", async () => {
+  it("records a confirmed shield without receipt logs with an unknown debtAfter (nothing to restore)", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    await keeper.tick();
+    expect(feed.list({ kind: "shield" })[0]!.plan).toMatchObject({ debtBefore: (1800n * E18).toString(), debtAfter: null });
+    expect(feed.shieldCycle(ACCOUNT)).toMatchObject({ repaid: 0n });
+    expect(sender.sent).toHaveLength(1);
+  });
+
+  it("records a dropped repay as a refusal without a back-off", async () => {
     const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "dropped");
     await keeper.tick();
     expect(feed.list({ kind: "refused" })[0]).toMatchObject({ txHash: hashOf(1), error: { name: "Dropped" } });
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sent).toHaveLength(2);
+  });
+
+  it("sends shields as time-critical and restores as plain", async () => {
+    const { world, sender, keeper } = await setup();
+    world.accounts = [lista()];
+    await keeper.tick();
+    expect(sender.sent[0]).toMatchObject({ fn: "shieldRepay", critical: true });
   });
 });
 
@@ -874,6 +994,21 @@ describe("Keeper hygiene", () => {
     world.oracle = oracle(LEAD + 300);
     await keeper.tick();
     expect(sender.sims).toEqual([]); // backed off
+  });
+
+  it("records the same recordLiquidation refusal once a day", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista({ liquidated: true, liquidationRecorded: false })];
+    sender.failing.set("recordLiquidation", encodeErrorResult({ abi: ballastAccountBaseAbi, errorName: "Locked" }));
+    for (let i = 0; i < 6; i++) {
+      world.oracle = oracle(LEAD + i * 1000);
+      await keeper.tick();
+    }
+    expect(sender.sims.length).toBeGreaterThan(1); // retried after each back-off
+    expect(feed.list({ kind: "refused" })).toHaveLength(1);
+    world.oracle = oracle(LEAD + 86_400 + 1000);
+    await keeper.tick();
+    expect(feed.list({ kind: "refused" })).toHaveLength(2);
   });
 
   it("puts the whole cushion on the debt when the venue cannot price the collateral (M14)", async () => {

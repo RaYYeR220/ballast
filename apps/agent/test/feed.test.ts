@@ -130,6 +130,9 @@ describe("Feed", () => {
     await feed.record({ kind: "pending", source: "publisher", txHash: "0xcc" });
     await feed.record({ kind: "shield", source: "keeper", account: A, txHash: "0xAA" });
     expect(feed.unresolvedPending("keeper").map((e) => e.txHash)).toEqual(["0xbb"]);
+    // A speed-up of 0xbb was mined: the event carries the new hash and names the pending one.
+    await feed.record({ kind: "shield", source: "keeper", account: B, txHash: "0xdd", data: { pendingTx: "0xbb" } });
+    expect(feed.unresolvedPending("keeper")).toEqual([]);
     expect(feed.unresolvedPending("publisher").map((e) => e.txHash)).toEqual(["0xcc"]);
   });
 });

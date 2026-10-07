@@ -4,10 +4,12 @@
 // survive the coming gap; in the regular session restore it toward its pre-shield debt when the owner allows
 // and the oracle says risk may be added. Every decision is deterministic; the contracts bound every action.
 // Each send re-reads and re-plans inside the sender's critical section (abort if the plan moved) and is
-// simulated first. A transaction left unmined is recorded as pending and confirmed on a later tick.
+// simulated first. A transaction left unmined is recorded as pending: the account is left alone until it is
+// mined or dropped, and the sender speeds a stuck shield up at its own nonce.
 import { bscConfig, nextClose, session as calendarSession } from "@ballast/risk";
 import {
   accountState,
+  ballastAccountBaseAbi,
   comptrollerAbi,
   cushionVaultAbi,
   isRevert,
@@ -29,9 +31,9 @@ import {
   type ReadClient,
   type TxRequest,
 } from "@ballast/sdk";
-import { encodeAbiParameters, erc20Abi, formatUnits, keccak256, parseAbi, zeroHash, type Address, type Hex } from "viem";
+import { decodeEventLog, encodeAbiParameters, erc20Abi, formatUnits, keccak256, parseAbi, zeroHash, type Address, type Hex } from "viem";
 import { DisagreementWatch, type Feed, type FeedError, type FeedInput, type FeedSim, type FeedWindow, type ShieldCycle } from "./feed";
-import { safeMessage, type GasWatch, type SendResult, type TxSender } from "./tx";
+import { safeMessage, type GasWatch, type SendResult, type TxLog, type TxSender } from "./tx";
 
 export const KEEPER_TICK_SEC = 300;
 /** Shield this long before a regular close. */
@@ -555,8 +557,6 @@ interface Target extends Subject {
   calldata(step: Step): TxRequest;
   /** Fresh read and decision inside the send critical section. */
   recheck(cushionOnly: boolean): Promise<Fresh>;
-  /** Read after a confirmed send (debtAfter for the restore cycle). Accounts only. */
-  after?(): Promise<AccountState>;
 }
 
 /** A transaction sent but not mined yet: confirmed (or found dropped) on a later tick. */
@@ -567,11 +567,32 @@ interface PendingTx {
   intent: "shield" | "restore" | "alert";
   fields: Record<string, unknown>;
   sim?: FeedSim;
-  after?: () => Promise<AccountState>;
 }
 
 /** Shields stop backing off this long before the close. */
 const LAST_ATTEMPT_SEC = 6 * 60;
+/** A repeated recordLiquidation refusal for the same reason is recorded once a day. */
+const LIQUIDATION_REFUSAL_EVERY_SEC = 86_400;
+
+/**
+ * Debt before and after a confirmed shield from its receipt: the first Shielded log's debtBefore and the
+ * last one's debtAfter (a keeper sale logs the cushion spend and the sale). Null when the receipt has none.
+ */
+export function shieldedDebts(logs: readonly TxLog[] | undefined, account: Address): { before: bigint; after: bigint } | null {
+  let before: bigint | null = null;
+  let after: bigint | null = null;
+  for (const l of logs ?? []) {
+    if (!same(l.address, account)) continue;
+    try {
+      const e = decodeEventLog({ abi: ballastAccountBaseAbi, eventName: "Shielded", data: l.data, topics: l.topics as [Hex, ...Hex[]] });
+      before ??= e.args.debtBefore;
+      after = e.args.debtAfter;
+    } catch {
+      // another event
+    }
+  }
+  return before === null || after === null ? null : { before, after };
+}
 
 export class Keeper {
   readonly #o: KeeperOptions;
@@ -580,6 +601,8 @@ export class Keeper {
   readonly #alerts = new Set<string>();
   readonly #backoff = new Map<string, number>();
   readonly #pending = new Map<string, PendingTx>();
+  /** Last recordLiquidation refusal event per account and reason. */
+  readonly #liquidationRefusals = new Map<string, number>();
   readonly #disagreements: DisagreementWatch;
   #pendingLoaded = false;
   #running = false;
@@ -627,7 +650,7 @@ export class Keeper {
     await guard("gas", async () => {
       await this.#o.gas?.check("keeper");
     });
-    await guard("pending", () => this.#resolvePending(report));
+    await guard("pending", async () => this.#loadPending());
     let accounts: Address[] = [];
     await guard("listAccounts", async () => {
       accounts = await this.#o.reads.accounts();
@@ -649,6 +672,14 @@ export class Keeper {
         await this.#cover(c, oracle, report);
       });
     }
+    // Pending sends of subjects not visited this tick, then a nudge for whatever is still stuck: the sender
+    // speeds stuck shields up at their own nonce and cancels other stuck sends.
+    await guard("pending", () => this.#settleAll(report));
+    if (this.#pending.size > 0 && !this.#o.sender.dryRun) {
+      await guard("unstick", async () => {
+        await this.#o.sender.unstick?.();
+      });
+    }
     return report;
   }
 
@@ -661,13 +692,17 @@ export class Keeper {
     const snap = await oracle(state.symbol);
     const lead = this.#o.leadTimeSec ?? LEAD_TIME_SEC;
     const phase = keeperPhase(snap.at, snap.windowAhead, lead);
+    // Never a second transaction for an account while one of ours is unmined: it would queue behind it.
+    if (await this.#settle({ account: address }, report)) {
+      await this.#noop({ key: `${address}|pending`, account: address, symbol: state.symbol }, "waiting for the desk's pending transaction to be mined or replaced", phase.window);
+      return;
+    }
 
     if (state.liquidated) {
       if (!state.liquidationRecorded) await this.#recordLiquidation(state, phase.window, report);
       return;
     }
     const pathFor = (s: AccountState) => deleveragePathFor(s, this.#o.paths);
-    const after = () => reads.account(address);
 
     if (phase.phase === "lead") {
       const key = `${address}|shield`;
@@ -685,7 +720,6 @@ export class Keeper {
           if (p.phase !== "lead") return { decision: null, state: s, window: p.window, why: "the lead time is over" };
           return { decision: decideShield(s, o, pathFor, { cushionOnly }), state: s, window: p.window };
         },
-        after,
       };
       const decision = decideShield(state, snap, pathFor, { cushionOnly: saleOnHold });
       if (saleOnHold && decision.plan.kind === "repay+deleverage") {
@@ -729,7 +763,6 @@ export class Keeper {
           if (!s.mandate.autoRestore) return { decision: null, state: s, window: p.window, why: "auto-restore was disabled" };
           return { decision: decideRestore(s, o, cycle), state: s, window: p.window };
         },
-        after,
       };
       await this.#act(target, decideRestore(state, snap, cycle), state, phase.window, report);
     }
@@ -774,7 +807,7 @@ export class Keeper {
     const fields = { account: t.account, symbol: t.symbol, window, plan: { step: { fn: "recordLiquidation" } } };
     const sim = await sender.simulate(tx);
     if (!sim.ok) {
-      await this.#refused(t, fields, sim, sim.error ?? { name: "SimulationFailed", message: "simulation failed" }, REFUSAL_BACKOFF_SEC);
+      await this.#refusedLiquidation(t, fields, sim, sim.error ?? { name: "SimulationFailed", message: "simulation failed" }, REFUSAL_BACKOFF_SEC);
       return;
     }
     if (sender.dryRun) {
@@ -785,17 +818,18 @@ export class Keeper {
     try {
       sent = await sender.send(tx);
     } catch (err) {
-      await this.#refused(t, fields, sim, { name: "BroadcastFailed", message: safeMessage(err) }, REFUSAL_BACKOFF_SEC);
+      await this.#refusedLiquidation(t, fields, sim, { name: "BroadcastFailed", message: safeMessage(err) }, REFUSAL_BACKOFF_SEC);
       return;
     }
     if (!sent.ok) {
       const error = sent.stage === "estimate" ? sent.error : { name: "Aborted", message: "aborted" };
-      await this.#refused(t, fields, sim, error, REFUSAL_BACKOFF_SEC);
+      await this.#refusedLiquidation(t, fields, sim, error, REFUSAL_BACKOFF_SEC);
       return;
     }
     if (sent.status === "reverted" || sent.status === "dropped") {
       const error = { name: sent.status === "reverted" ? "Reverted" : "Dropped", message: `recordLiquidation ${sent.status}` };
-      await this.#refused(t, fields, sim, error, REFUSAL_BACKOFF_SEC, sent.txHash);
+      // A dropped send lost a nonce race: no back-off, the next tick tries again.
+      await this.#refusedLiquidation(t, fields, sim, error, sent.status === "dropped" ? 0 : REFUSAL_BACKOFF_SEC, sent.txHash);
       return;
     }
     report.sent++;
@@ -815,6 +849,10 @@ export class Keeper {
     const phase = keeperPhase(snap.at, snap.windowAhead, lead);
     if (phase.phase !== "lead") return; // covers only shield; nothing to restore
     const t: Subject = { key: `${e.user}|${e.key}|shield`, account: e.user, cover: { user: e.user, key: e.key }, symbol: e.cover.symbol };
+    if (await this.#settle({ account: e.user, cover: { user: e.user, key: e.key } }, report)) {
+      await this.#noop({ ...t, key: `${t.key}|pending` }, "waiting for the desk's pending transaction to be mined or replaced", phase.window);
+      return;
+    }
     const state = await reads.coverState(e);
     if (!state) {
       await this.#noop(t, `no ${e.cover.symbol} collateral found for this ${e.cover.venue} loan`, phase.window);
@@ -900,7 +938,9 @@ export class Keeper {
       await prepare();
     } else {
       try {
-        sent = await sender.send(prepare, sale ? { mevProtect: true } : {});
+        // Shields are time-critical: if one is not mined in time, later sends speed it up at its nonce.
+        const critical = target.mode === "shield";
+        sent = await sender.send(prepare, { ...(sale ? { mevProtect: true } : {}), ...(critical ? { critical: true } : {}) });
       } catch (err) {
         if (!ctx.sim?.ok) throw err; // failed before the broadcast (reads): the tick guard records it
         thrown = err;
@@ -937,14 +977,17 @@ export class Keeper {
     const r = sent as SendResult;
     if (!r.ok) return fail(r.stage === "estimate" ? r.error : { name: "Aborted", message: "the send was aborted" });
     if (r.status === "reverted") return fail({ name: "Reverted", message: `${step.fn} reverted on-chain` }, r.txHash);
-    if (r.status === "dropped") return fail({ name: "Dropped", message: r.note ?? `${step.fn} was replaced before it was mined` }, r.txHash);
+    if (r.status === "dropped") {
+      await this.#dropped({ txHash: r.txHash, nonce: r.nonce, intent, fields, sim }, r.note ?? `${step.fn} was replaced before it was mined`);
+      return;
+    }
     report.sent++;
     this.#noops.delete(target.key);
     if (r.status === "pending") {
-      await this.#markPending({ txHash: r.txHash, nonce: r.nonce, intent, fields, sim, ...(target.after ? { after: target.after } : {}) }, r.note);
+      await this.#markPending({ txHash: r.txHash, nonce: r.nonce, intent, fields, sim }, r.note);
       return;
     }
-    await this.#confirmed({ intent, fields, sim, txHash: r.txHash, ...(target.after ? { after: target.after } : {}) }, {
+    await this.#confirmed({ intent, fields, sim, txHash: r.txHash }, r.txHash, r.logs, {
       via: r.via,
       gasUsed: r.gasUsed,
       effectiveGasPrice: r.effectiveGasPrice,
@@ -995,67 +1038,139 @@ export class Keeper {
     } as FeedInput);
   }
 
-  /** Records a mined transaction; shields and restores carry the debt read right after it. */
-  async #confirmed(p: Omit<PendingTx, "nonce">, data: Record<string, unknown>) {
+  /**
+   * Records a mined transaction as `minedHash` (a speed-up may have replaced the one first sent). A shield
+   * takes its debt before and after from the receipt's Shielded logs, never from a later read.
+   */
+  async #confirmed(p: Omit<PendingTx, "nonce">, minedHash: Hex, logs: readonly TxLog[] | undefined, data: Record<string, unknown>) {
     const fields = { ...p.fields };
-    if (p.after && p.intent !== "alert") {
-      let debtAfter: bigint | null = null;
-      try {
-        debtAfter = (await p.after()).debt;
-      } catch {
-        // unreadable right now: the cycle counts nothing repaid for this shield (restores stay conservative)
-      }
-      fields.plan = { ...(fields.plan as Record<string, unknown>), debtAfter };
+    const plan = { ...(fields.plan as Record<string, unknown> | undefined) };
+    if (p.intent === "shield" && !fields.cover && typeof fields.account === "string") {
+      const debts = shieldedDebts(logs, fields.account as Address);
+      // Without the logs the cycle counts nothing repaid for this shield, so a restore stays conservative.
+      if (debts) Object.assign(plan, { debtBefore: debts.before, debtAfter: debts.after });
+      else plan.debtAfter = null;
+      fields.plan = plan;
     }
-    await this.#o.feed.record({ kind: p.intent, source: "keeper", ...fields, ...(p.sim ? { sim: p.sim } : {}), txHash: p.txHash, data } as FeedInput);
+    const extra = minedHash.toLowerCase() === p.txHash.toLowerCase() ? {} : { replaces: p.txHash };
+    await this.#o.feed.record({
+      kind: p.intent,
+      source: "keeper",
+      ...fields,
+      ...(p.sim ? { sim: p.sim } : {}),
+      txHash: minedHash,
+      data: { ...data, ...extra, pendingTx: p.txHash },
+    } as FeedInput);
   }
 
-  /** Settles transactions left pending by earlier ticks (also after a restart, from the feed). */
-  async #resolvePending(report: KeeperReport) {
-    const { feed, sender, reads } = this.#o;
-    if (!this.#pendingLoaded) {
-      this.#pendingLoaded = true;
-      for (const e of feed.unresolvedPending("keeper")) {
-        if (!e.txHash) continue;
-        const intent = e.data?.intent;
-        const { seq: _seq, ts: _ts, kind: _kind, source: _source, txHash, sim, reason: _reason, data, ...fields } = e;
-        const account = e.account;
-        this.#pending.set(txHash.toLowerCase(), {
-          txHash,
-          ...(typeof data?.nonce === "number" ? { nonce: data.nonce } : {}),
-          intent: intent === "restore" || intent === "alert" ? intent : "shield",
-          fields,
-          ...(sim ? { sim } : {}),
-          ...(account && !e.cover ? { after: () => reads.account(account) } : {}),
-        });
-      }
-    }
-    if (!sender.confirm) return;
-    for (const [k, p] of [...this.#pending]) {
-      const c = await sender.confirm(p.txHash, p.nonce);
-      if (c.status === "pending") continue;
-      this.#pending.delete(k);
-      if (c.status === "success") {
-        report.sent++;
-        await this.#confirmed(p, { confirmedLater: true, gasUsed: c.gasUsed, effectiveGasPrice: c.effectiveGasPrice });
-        continue;
-      }
-      await feed.record({
-        kind: "refused",
-        source: "keeper",
-        ...p.fields,
-        ...(p.sim ? { sim: p.sim } : {}),
+  /**
+   * A send whose nonce another transaction took first. Not a refusal by the contract: no back-off, the next tick
+   * re-plans. Inside the last attempt window before the close the owner is told.
+   */
+  async #dropped(p: PendingTx, message: string) {
+    const window = p.fields.window as FeedWindow | undefined;
+    await this.#o.feed.record({
+      kind: "refused",
+      source: "keeper",
+      ...p.fields,
+      ...(p.sim ? { sim: p.sim } : {}),
+      txHash: p.txHash,
+      error: { name: "Dropped", message },
+      reason: `${message}; it will be re-planned next tick`,
+      data: { pendingTx: p.txHash },
+    } as FeedInput);
+    if (p.intent === "shield" && window && window.startsAt > 0 && this.#at >= window.startsAt - LAST_ATTEMPT_SEC) {
+      const subject: Subject = {
+        key: `${String(p.fields.account)}|dropped`,
+        account: p.fields.account as Address,
+        ...(p.fields.cover ? { cover: p.fields.cover as { user: Address; key: Hex } } : {}),
+        symbol: String(p.fields.symbol ?? ""),
+      };
+      await this.#alert(subject, "dropped", window, {
+        message: "a shield was replaced before it was mined in the last minutes before the close; the desk will try again but the position may enter the closure unshielded.",
         txHash: p.txHash,
-        error: c.status === "reverted" ? { name: "Reverted", message: "reverted on-chain" } : { name: "Dropped", message: "replaced before it was mined" },
-        reason: c.status === "reverted" ? "the pending transaction reverted when mined" : "the pending transaction was replaced before it was mined",
-      } as FeedInput);
+      });
     }
   }
 
-  async #refused(t: Subject, fields: Record<string, unknown>, sim: FeedSim, error: FeedError, backoffSec: number, txHash?: Hex) {
+  /** Rebuilds pending sends from the feed once (after a restart). */
+  #loadPending() {
+    if (this.#pendingLoaded) return;
+    this.#pendingLoaded = true;
+    for (const e of this.#o.feed.unresolvedPending("keeper")) {
+      if (!e.txHash) continue;
+      const intent = e.data?.intent;
+      const { seq: _seq, ts: _ts, kind: _kind, source: _source, txHash, sim, reason: _reason, data, ...fields } = e;
+      this.#pending.set(txHash.toLowerCase(), {
+        txHash,
+        ...(typeof data?.nonce === "number" ? { nonce: data.nonce } : {}),
+        intent: intent === "restore" || intent === "alert" ? intent : "shield",
+        fields,
+        ...(sim ? { sim } : {}),
+      });
+    }
+  }
+
+  /** Settles this subject's pending sends; true while one is still unmined. */
+  async #settle(subject: { account: Address; cover?: { user: Address; key: Hex } }, report: KeeperReport): Promise<boolean> {
+    let waiting = false;
+    for (const [k, p] of [...this.#pending]) {
+      const cover = p.fields.cover as { user: Address; key: Hex } | undefined;
+      const mine = subject.cover
+        ? !!cover && same(cover.user, subject.cover.user) && cover.key.toLowerCase() === subject.cover.key.toLowerCase()
+        : !cover && typeof p.fields.account === "string" && same(p.fields.account, subject.account);
+      if (!mine) continue;
+      if (await this.#settleOne(k, p, report)) waiting = true;
+    }
+    return waiting;
+  }
+
+  async #settleAll(report: KeeperReport) {
+    for (const [k, p] of [...this.#pending]) await this.#settleOne(k, p, report);
+  }
+
+  /** True while the send is still unmined. */
+  async #settleOne(k: string, p: PendingTx, report: KeeperReport): Promise<boolean> {
+    const { sender, feed } = this.#o;
+    if (!sender.confirm) return true;
+    const c = await sender.confirm(p.txHash, p.nonce);
+    if (c.status === "pending") return true;
+    this.#pending.delete(k);
+    if (c.status === "success") {
+      report.sent++;
+      if (p.intent === "alert") {
+        await feed.record({ kind: "alert", source: "keeper", ...p.fields, txHash: c.txHash ?? p.txHash, data: { confirmedLater: true, pendingTx: p.txHash } } as FeedInput);
+        return false;
+      }
+      await this.#confirmed(p, c.txHash ?? p.txHash, c.logs, { confirmedLater: true, gasUsed: c.gasUsed, effectiveGasPrice: c.effectiveGasPrice });
+      return false;
+    }
+    if (c.status === "dropped") {
+      await this.#dropped(p, "replaced before it was mined");
+      return false;
+    }
+    await feed.record({
+      kind: "refused",
+      source: "keeper",
+      ...p.fields,
+      ...(p.sim ? { sim: p.sim } : {}),
+      txHash: c.txHash ?? p.txHash,
+      error: { name: "Reverted", message: "reverted on-chain" },
+      reason: "the pending transaction reverted when mined",
+      data: { pendingTx: p.txHash },
+    } as FeedInput);
+    return false;
+  }
+
+  /** recordLiquidation refusals: backed off as given, recorded once a day per account and reason. */
+  async #refusedLiquidation(t: Subject, fields: Record<string, unknown>, sim: FeedSim, error: FeedError, backoffSec: number, txHash?: Hex) {
     const until = this.#at + backoffSec;
-    this.#backoff.set(t.key, until);
+    if (backoffSec > 0) this.#backoff.set(t.key, until);
     this.#noops.delete(t.key);
+    const k = `${t.account.toLowerCase()}|${error.name}`;
+    const last = this.#liquidationRefusals.get(k);
+    if (last !== undefined && this.#at - last < LIQUIDATION_REFUSAL_EVERY_SEC) return;
+    this.#liquidationRefusals.set(k, this.#at);
     await this.#o.feed.record({
       kind: "refused",
       source: "keeper",
