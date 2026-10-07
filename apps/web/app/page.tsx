@@ -246,8 +246,9 @@ export default function Landing() {
                   far edge of the band, not for the middle.
                 </li>
                 <li>
-                  <b>Why it works</b>Over 246 weekends for the 20 most-held names, the bStock price at the end of the weekend tracked the Monday gap
-                  with a correlation of 0.97. Weekend prices carry real information. They just aren&apos;t the open.
+                  <b>Why it works</b>Across 597 weekends, the Saturday and Sunday bStock price says almost nothing about Monday&apos;s open
+                  (R&sup2; at most 0.2) until US overnight venues reopen on Sunday evening. By 09:00 ET Monday it tracks the open with a
+                  correlation of 0.97. The dark hours are noise, so Ballast does not let them add risk.
                 </li>
               </ol>
               <div>
