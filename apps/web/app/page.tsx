@@ -248,7 +248,7 @@ export default function Landing() {
                 <li>
                   <b>Why it works</b>Across 597 weekends, the Saturday and Sunday bStock price says almost nothing about Monday&apos;s open
                   (R&sup2; at most 0.2) until US overnight venues reopen on Sunday evening. By 09:00 ET Monday it tracks the open with a
-                  correlation of 0.97. The dark hours are noise, so Ballast does not let them add risk.
+                  correlation of 0.97. The dark hours are mostly noise, so Ballast does not let them add risk.
                 </li>
               </ol>
               <div>
