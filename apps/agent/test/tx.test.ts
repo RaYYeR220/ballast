@@ -123,6 +123,24 @@ describe("ChainSender.simulate", () => {
     expect(r).toMatchObject({ via: "binance", ok: false, error: { name: "NotInShieldWindow" } });
   });
 
+  it("lets eth_call decide when Binance reports a failure the replay does not reproduce", async () => {
+    const { client } = stubClient();
+    const { api } = stubBinance({
+      simulate: async () => ({ status: "FAILED", failReason: "unsupported opcode", balanceChanges: [], allowanceChanges: [] }),
+    });
+    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
+    expect(await s.simulate(tx)).toEqual({ via: "rpc", ok: true, note: expect.stringContaining("unsupported opcode") });
+  });
+
+  it("keeps Binance's reason when the RPC replay is down", async () => {
+    const { client } = stubClient({ call: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
+    const { api } = stubBinance({
+      simulate: async () => ({ status: "FAILED", failReason: "execution reverted", balanceChanges: [], allowanceChanges: [] }),
+    });
+    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
+    expect(await s.simulate(tx)).toEqual({ via: "binance", ok: false, error: { name: "SimulationFailed", message: "execution reverted" } });
+  });
+
   it("falls back to eth_call when the Binance API is unavailable (geo block) and says so", async () => {
     const { client } = stubClient();
     const { api } = stubBinance({ simulate: async () => Promise.reject(Object.assign(new Error("HTTP 403 code 40304"), { code: "40304" })) });

@@ -174,15 +174,17 @@ export class ChainSender implements TxSender {
         return { ...sim, note: `binance simulate unavailable, used eth_call: ${safeMessage(err)}` };
       }
       if (r.status === "SUCCESS") return { via: "binance", ok: true };
-      // Binance reports a reason string; replay on the RPC for the decoded custom error.
-      let error: FeedError = { name: "SimulationFailed", message: r.failReason ?? "simulation failed" };
+      // Binance reports a reason string; replay on the RPC for the decoded custom error. When the replay
+      // succeeds the two simulators disagree: eth_call against the head decides, and the note keeps both.
+      const reason = r.failReason ?? "simulation failed";
+      let replay: FeedSim;
       try {
-        const replay = await this.#rpcSimulate(tx);
-        if (replay.error) error = replay.error;
+        replay = await this.#rpcSimulate(tx);
       } catch {
-        // RPC down: keep Binance's reason
+        return { via: "binance", ok: false, error: { name: "SimulationFailed", message: reason } };
       }
-      return { via: "binance", ok: false, error };
+      if (replay.ok) return { via: "rpc", ok: true, note: `binance simulate reported FAILED (${reason}) but eth_call succeeded` };
+      return { via: "binance", ok: false, error: replay.error ?? { name: "SimulationFailed", message: reason } };
     }
     return this.#rpcSimulate(tx);
   }
