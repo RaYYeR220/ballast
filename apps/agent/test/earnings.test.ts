@@ -49,23 +49,33 @@ describe("earnings helpers", () => {
     expect(() => parseEarningsResponse({ nope: 1 }, "NVDA", "2026-10-07")).toThrow(/no list/);
   });
 
-  it("lets the operator file win and fills the rest from the purchase", async () => {
+  it("uses a fresh purchase with dates per symbol and falls back to the operator file otherwise", async () => {
     const dir = await tmp();
     const op = path.join(dir, "earnings.json");
     const paid = path.join(dir, "earnings-paid.json");
-    await writeFile(op, JSON.stringify({ earnings: { NVDA: [{ date: "2026-11-19", timing: "amc" }] } }));
+    await writeFile(op, JSON.stringify({ earnings: { NVDA: [{ date: "2026-11-19", timing: "amc" }], AAPL: [{ date: "2026-10-29", timing: "amc" }] } }));
     await writeFile(
       paid,
-      JSON.stringify({ version: 1, fetchedOn: "2026-10-07", done: [], source: "x", earnings: { NVDA: [{ date: "2026-11-18", timing: "amc" }], TSLA: [{ date: "2026-10-21", timing: "amc" }] } }),
+      JSON.stringify({
+        version: 1,
+        fetchedOn: "2026-10-07",
+        done: [],
+        source: "x",
+        earnings: { NVDA: [{ date: "2026-11-18", timing: "amc" }], TSLA: [{ date: "2026-10-21", timing: "amc" }], AAPL: [] },
+      }),
     );
-    const s = await mergedEarnings(op, paid)();
-    const nov19 = Date.UTC(2026, 10, 19) / 1000 / DAY;
-    const oct21 = Date.UTC(2026, 9, 21) / 1000 / DAY;
-    expect(s.get("NVDA")).toEqual([nextOpen(regularCloseAt(nov19))]);
-    expect(s.get("TSLA")).toEqual([nextOpen(regularCloseAt(oct21))]);
+    const at = (y: number, m: number, d: number) => nextOpen(regularCloseAt(Date.UTC(y, m - 1, d) / 1000 / DAY));
+    const s = await mergedEarnings(op, paid, () => NOON_WED)();
+    expect(s.get("NVDA")).toEqual([at(2026, 11, 18)]);
+    expect(s.get("TSLA")).toEqual([at(2026, 10, 21)]);
+    expect(s.get("AAPL")).toEqual([at(2026, 10, 29)]); // empty purchase: the operator's date stays
+    // a stale purchase is ignored
+    const stale = await mergedEarnings(op, paid, () => NOON_WED + 9 * DAY)();
+    expect(stale.get("NVDA")).toEqual([at(2026, 11, 19)]);
+    expect(stale.has("TSLA")).toBe(false);
     // a broken purchase falls back to the operator file alone
     await writeFile(paid, "{broken");
-    expect([...(await mergedEarnings(op, paid)()).keys()]).toEqual(["NVDA"]);
+    expect([...(await mergedEarnings(op, paid, () => NOON_WED)()).keys()].sort()).toEqual(["AAPL", "NVDA"]);
   });
 });
 

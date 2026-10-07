@@ -1,7 +1,7 @@
-// Earnings dates for the publisher's nextEarnings. The operator file (config/earnings.json) always wins for
-// the symbols it lists; for the others the desk buys the next dates once per trading day from an x402 data
-// endpoint (X402_EARNINGS_URL, off by default) and keeps them in <dataDir>/earnings-paid.json in the same
-// format. Any failure leaves the last good purchase, and without one the operator file alone.
+// Earnings dates for the publisher's nextEarnings. When X402_EARNINGS_URL is set the desk buys the next dates
+// once per trading day from that x402 data endpoint and keeps them in <dataDir>/earnings-paid.json (same
+// format as the operator file). A recent purchase with at least one date wins for its symbol; everything
+// else (purchase off, failed, stale, or empty for a symbol) falls back to the operator file, config/earnings.json.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isTradingDay, localDay, tickers } from "@ballast/risk";
@@ -81,16 +81,22 @@ async function readPaid(file: string): Promise<PaidEarningsFile | null> {
   return null;
 }
 
+/** A purchase older than this is not trusted any more: the operator file takes over. */
+export const PAID_MAX_AGE_DAYS = 7;
+
 /**
- * The schedule the publisher uses: the operator file, plus purchased dates for the symbols it does not list.
- * A broken operator file throws (the publisher keeps its last good schedule); a broken purchase is ignored.
+ * The schedule the publisher uses: per symbol, the purchased dates when the purchase is at most
+ * PAID_MAX_AGE_DAYS old and has at least one date, else the operator file. A broken operator file throws
+ * (the publisher keeps its last good schedule); a broken or stale purchase is ignored.
  */
-export function mergedEarnings(operatorFile: string, paidFile: string | null): () => Promise<EarningsSchedule> {
+export function mergedEarnings(operatorFile: string, paidFile: string | null, clock: () => number = () => Math.floor(Date.now() / 1000)): () => Promise<EarningsSchedule> {
   return async () => {
     const operator = await loadEarnings(operatorFile);
     if (!paidFile) return operator;
     const paid = await readPaid(paidFile);
-    if (!paid) return operator;
+    if (!paid || !/^\d{4}-\d{2}-\d{2}$/.test(paid.fetchedOn)) return operator;
+    const ageDays = (clock() - Date.parse(`${paid.fetchedOn}T00:00:00Z`) / 1000) / DAY;
+    if (!(ageDays <= PAID_MAX_AGE_DAYS + 1)) return operator;
     let bought: EarningsSchedule;
     try {
       bought = parseEarnings({ earnings: paid.earnings });
@@ -98,7 +104,7 @@ export function mergedEarnings(operatorFile: string, paidFile: string | null): (
       return operator;
     }
     const out = new Map(operator);
-    for (const [sym, list] of bought) if (!out.has(sym)) out.set(sym, list);
+    for (const [sym, list] of bought) if (list.length > 0) out.set(sym, list);
     return out;
   };
 }
