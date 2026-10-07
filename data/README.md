@@ -18,3 +18,16 @@ Assumptions (read these before quoting the numbers):
 - `long_weekend_holiday` is treated as a holiday window. Only the 12 underlyings with a configured gap buffer are replayed (697 of 3378 rows); the rest are skipped. One ~3 month sample (2026-06-12 to 2026-09-24).
 
 Result and trigger rate (`backtest-lltv75.json`): at startLtv 0.70 the shield fires in 652 of 697 windows (average repay 2.6% of debt) and liquidations drop from 5 to 2; at 0.72 it fires in all 697 (average repay 5.1%) and liquidations drop from 27 to 2. At 0.65 it fires in 24 windows with no liquidations either way. The buffer is a p99, so the shield is often active at high starting LTVs; the two remaining protected liquidations are moves beyond the buffer, both earnings nights: META (closure 2026-07-29 to 2026-07-30, gap -10.2%) and AAPL (2026-07-30 to 2026-07-31, gap -8.6%).
+
+## Liquidations on the week
+
+`liquidations-week.json` - every `Liquidate` event on Lista Moolah (`0x8f73b65b4caaf64fba2af91cc5d4a2a1318e5d8c`, BNB Chain) in a market that involves a bStock, from 2026-06-18 to 2026-09-22: 121 rows. Read with `eth_getLogs` over blocks 101,500,000 to 123,963,563 (topic `0xa4946ede45d0c6f06a0f5ce92c9ad3b4751452d2fe0e25010783bcab57a67e41`, the Morpho-style `Liquidate(id, caller, borrower, repaidAssets, repaidShares, seizedAssets, badDebtAssets, badDebtShares)`), then placed on the New York trading week. Venus seized no bStock collateral in the same window. This is the data behind the planisphere on the landing page; every figure quoted there is computed from this file.
+
+Fields: `h` (hour of the week in New York time, Monday 00:00 = 0), `usd` (repaid amount in USD), `s` (session at the time: regular, pre, post, overnight, holiday), `g` (group, below), `c` (bStock symbol), `tx` (transaction hash, linked to BscScan from each star), `et` (New York timestamp), `t` (timing class for organic rows, e.g. `regular: first 90 min`).
+
+Groups:
+- `organic` (33 rows, $30.6k repaid): real borrowers. $24.8k of it (81%) was repaid in the first 90 minutes after a regular open.
+- `seed` (87 rows, $4 to $26 each): one test address, `0x05e3a7a66945ca9af73f66660f22ffb36332fa54`, that opened tiny positions across many markets. They mark when prices crossed the line but are not losses, so the page draws them as hollow, dimmed rings and says so.
+- `loan` (1 row): the one market where a bStock was the loan asset rather than the collateral. The "0 of 120" weekend figure counts the 120 bStock-collateral rows.
+
+No row falls between Friday 20:00 and Sunday 20:00 New York time.
