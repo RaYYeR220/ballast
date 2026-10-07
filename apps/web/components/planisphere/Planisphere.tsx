@@ -1,8 +1,9 @@
 "use client";
 /* <Planisphere>: the New York week as a star wheel you can turn.
-   - the mint meridian at the top is "now"; the wheel follows New York's clock (360 deg per 168 h), checked each minute
+   - the mint meridian at the top is "now"; the wheel follows New York's clock (360 deg per 168 h), read on each minute
    - on load the sky sweeps the last 30 hours into place, unless the reader prefers reduced motion
-   - drag to scrub; as a slider it takes Arrow keys (1 h), PageUp/PageDown (1 day), Home/End
+   - mouse and pen turn it by angle; a finger turns it by dragging sideways, so a vertical swipe still scrolls the page
+   - as a slider it takes Arrow keys (1 h), PageUp/PageDown (1 day), Home/End
    - sessions come from the NYSE calendar in @ballast/risk, so holidays and early closes show on the ring */
 import {
   memo,
@@ -13,16 +14,17 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
 } from "react";
 import { hourAtTop, r2, radiusForUsd, rotationFor, shortestTurn, WEEK_HOURS, wrapHour } from "@/lib/planisphere/geometry";
-import { hourOfWeek, meridianReadout, mondayOf, sectorsOfWeek, typicalWeekSectors } from "@/lib/planisphere/sessions";
-import type { ClosureWindow, Liquidation } from "@/lib/planisphere/types";
+import { hourOfWeek, meridianReadout, mondayOf, sectorsOfWeek, TYPICAL_WEEK_TS, tsOfHour } from "@/lib/planisphere/sessions";
+import type { ClosureWindow, Liquidation, ScrubPoint } from "@/lib/planisphere/types";
 import { StarTip, starIndexOf, useStarTip } from "./StarTip";
-import { bscscanTx, SKY, WheelDefs, WheelSky } from "./Wheel";
+import { SKY, WheelDefs, WheelSky } from "./Wheel";
 import styles from "./Planisphere.module.css";
 
 const Sky = memo(WheelSky);
@@ -30,7 +32,9 @@ const Sky = memo(WheelSky);
 const SWEEP_MS = 2200;
 const SWEEP_HOURS = 30;
 const RETURN_TO_NOW_MS = 60_000;
-const COMPACT_QUERY = "(max-width: 959.98px)";
+const COMPACT_BELOW_PX = 480;
+/** a finger has to travel this far, and more sideways than down, before the dial takes the gesture */
+const TOUCH_SLOP_PX = 8;
 
 export interface DialGeometry {
   /** viewBox size in px (the svg is drawn 1:1) */
@@ -41,18 +45,22 @@ export interface DialGeometry {
 
 export interface PlanisphereProps {
   liquidations: readonly Liquidation[];
-  /** unix seconds for the meridian; omit to follow the live New York clock */
+  /** unix seconds for the meridian; omit to follow the live New York clock. A new value always re-centres the dial. */
   now?: number;
+  /** after the reader turns the dial, drift back to now (60 s after the last turn, never while focused) */
+  followNow?: boolean;
   /** a closure window to mark on the wheel, e.g. from nextWindow() in @ballast/risk */
   window?: ClosureWindow | null;
-  /** called with the hour of the week under the meridian whenever the reader turns the wheel */
-  onScrub?: (hourOfWeek: number) => void;
+  /** called whenever the reader turns the wheel */
+  onScrub?: (point: ScrubPoint) => void;
   /** "card": the printed planisphere aperture of the landing hero; "plain": the app's wheel */
   frame?: "card" | "plain";
   /** italic caption running along the aperture (card frame) */
   caption?: string;
   /** accessible name of the dial */
   label: string;
+  /** small labels and stars; by default when the drawing is narrower than 480 px */
+  compact?: boolean;
   /** the page-load sweep of the last 30 hours (skipped for reduced motion) */
   sweep?: boolean;
   starOpacity?: number;
@@ -61,29 +69,49 @@ export interface PlanisphereProps {
   className?: string;
   svgClassName?: string;
   readoutClassName?: string;
+  hintClassName?: string;
 }
 
 const easeOutCubic = (k: number) => 1 - Math.pow(1 - k, 3);
 
+/** Wheel hours of a closure; the end is read on the clock, so a DST change inside it does not stretch the arc. */
+export function closureHours(w: ClosureWindow): { h0: number; h1: number } {
+  const h0 = hourOfWeek(w.startsAt);
+  let h1 = hourOfWeek(w.endsAt);
+  if (h1 <= h0) h1 += WEEK_HOURS;
+  return { h0, h1 };
+}
+
+interface TouchGesture {
+  id: number;
+  x0: number;
+  y0: number;
+  r0: number;
+  width: number;
+  active: boolean;
+}
+
 export function Planisphere({
   liquidations,
   now,
+  followNow = true,
   window: closure = null,
   onScrub,
   frame = "plain",
   caption,
   label,
+  compact: compactProp,
   sweep = true,
   starOpacity,
   marks,
   className,
   svgClassName,
   readoutClassName,
+  hintClassName,
 }: PlanisphereProps) {
   const id = "pl" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState<number | null>(null);
-  const [compact, setCompact] = useState(false);
   const [liveNow, setLiveNow] = useState<number | null>(null);
   const [rot, setRot] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -91,14 +119,22 @@ export function Planisphere({
   const sweepFrame = useRef<number | null>(null);
   const swept = useRef(false);
   const lastScrub = useRef(-Infinity);
+  const focused = useRef(false);
   const drag = useRef<{ a0: number; r0: number } | null>(null);
+  const touch = useRef<TouchGesture | null>(null);
+  const swallowClick = useRef(false);
   const { tip, handlers: tipHandlers, hide: hideTip } = useStarTip(liquidations);
 
   const ts = now ?? liveNow;
   const nowH = ts === null ? null : hourOfWeek(ts);
-  const monday = ts === null ? null : mondayOf(ts);
-  // the ring only changes when the week does
-  const sectors = useMemo(() => (monday === null ? typicalWeekSectors() : sectorsOfWeek(monday)), [monday]);
+  const nowHRef = useRef(nowH);
+  useLayoutEffect(() => {
+    nowHRef.current = nowH;
+  });
+  // until the clock is read, a plain week; the ring only changes when the week does
+  const monday = mondayOf(ts ?? TYPICAL_WEEK_TS);
+  const sectors = useMemo(() => sectorsOfWeek(monday), [monday]);
+  const compact = compactProp ?? (size !== null && size < COMPACT_BELOW_PX);
 
   const apply = useCallback((deg: number) => {
     rotRef.current = deg;
@@ -108,16 +144,15 @@ export function Planisphere({
     if (sweepFrame.current !== null) cancelAnimationFrame(sweepFrame.current);
     sweepFrame.current = null;
   }, []);
+  const centre = useCallback((h: number) => apply(rotRef.current + shortestTurn(rotRef.current, rotationFor(h))), [apply]);
 
-  // size the drawing to the element, like the prototype (text and strokes stay in px)
+  // size the drawing to the element (text and strokes stay in px)
   useLayoutEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
-    const mq = window.matchMedia(COMPACT_QUERY);
     const measure = () => {
       const w = Math.round(svg.getBoundingClientRect().width);
       if (w > 0) setSize(w);
-      setCompact(mq.matches);
     };
     measure();
     let t: ReturnType<typeof setTimeout> | undefined;
@@ -126,65 +161,83 @@ export function Planisphere({
       t = setTimeout(measure, 150);
     });
     ro.observe(svg);
-    mq.addEventListener("change", measure);
     return () => {
       clearTimeout(t);
       ro.disconnect();
-      mq.removeEventListener("change", measure);
     };
   }, []);
 
-  // the live clock: New York time, re-read each minute
+  // the live clock, read on each minute boundary
   useEffect(() => {
     if (now !== undefined) return;
-    const tick = () => setLiveNow(Math.floor(Date.now() / 1000));
+    let t: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      const ms = Date.now();
+      setLiveNow(Math.floor(ms / 1000));
+      t = setTimeout(tick, 60_000 - (ms % 60_000) + 20);
+    };
     tick();
-    const t = setInterval(tick, 60_000);
-    return () => clearInterval(t);
+    return () => clearTimeout(t);
   }, [now]);
 
   const ready = size !== null && nowH !== null;
 
-  // first: sweep into place; afterwards: follow the clock unless the reader is exploring
+  // first placement: sweep the last 30 hours into place
   useEffect(() => {
-    if (!ready || nowH === null) return;
-    const target = rotationFor(nowH);
-    if (!swept.current) {
-      swept.current = true;
-      const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (!sweep || still) {
-        apply(target);
-        return;
-      }
-      const from = rotationFor(nowH - SWEEP_HOURS);
-      const t0 = performance.now();
-      const step = (t: number) => {
-        const k = Math.max(0, Math.min(1, (t - t0) / SWEEP_MS));
-        apply(from + (target - from) * easeOutCubic(k));
-        sweepFrame.current = k < 1 ? requestAnimationFrame(step) : null;
-      };
-      apply(from);
-      sweepFrame.current = requestAnimationFrame(step);
-      // interrupted before it finished (unmount, or a new minute): run it again next time
-      return () => {
-        if (sweepFrame.current === null) return;
-        stopSweep();
-        swept.current = false;
-      };
+    if (!ready || swept.current || nowHRef.current === null) return;
+    swept.current = true;
+    const target = () => rotationFor(nowHRef.current ?? 0);
+    if (!sweep || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      apply(target());
+      return;
     }
-    if (drag.current || sweepFrame.current !== null) return;
+    const from = rotationFor(nowHRef.current - SWEEP_HOURS);
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const k = Math.max(0, Math.min(1, (t - t0) / SWEEP_MS));
+      apply(from + (target() - from) * easeOutCubic(k));
+      sweepFrame.current = k < 1 ? requestAnimationFrame(step) : null;
+    };
+    apply(from);
+    sweepFrame.current = requestAnimationFrame(step);
+    // interrupted before it finished (unmount): run it again next time
+    return () => {
+      if (sweepFrame.current === null) return;
+      stopSweep();
+      swept.current = false;
+    };
+  }, [ready, sweep, apply, stopSweep]);
+
+  // a new controlled `now` always re-centres
+  const prevNow = useRef(now);
+  useEffect(() => {
+    if (prevNow.current === now) return;
+    prevNow.current = now;
+    if (now === undefined || !swept.current) return;
+    stopSweep();
+    drag.current = null;
+    touch.current = null;
+    setDragging(false);
+    centre(hourOfWeek(now));
+  }, [now, centre, stopSweep]);
+
+  // the live clock moved: follow it unless the reader is exploring
+  useEffect(() => {
+    if (now !== undefined || nowH === null || !swept.current || !followNow) return;
+    if (drag.current || touch.current?.active || focused.current || sweepFrame.current !== null) return;
     if (performance.now() - lastScrub.current < RETURN_TO_NOW_MS) return;
-    apply(rotRef.current + shortestTurn(rotRef.current, target));
-  }, [ready, nowH, sweep, apply, stopSweep]);
+    centre(nowH);
+  }, [nowH, now, followNow, centre]);
 
   const scrubTo = useCallback(
     (deg: number) => {
       stopSweep();
       apply(deg);
       lastScrub.current = performance.now();
-      onScrub?.(hourAtTop(deg));
+      const h = hourAtTop(deg);
+      onScrub?.({ hourOfWeek: h, ts: tsOfHour(monday, h) });
     },
-    [apply, onScrub, stopSweep],
+    [apply, onScrub, stopSweep, monday],
   );
 
   const pointerAngle = (e: PointerEvent<SVGSVGElement>) => {
@@ -193,21 +246,62 @@ export function Planisphere({
   };
 
   const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
-    if (!ready || e.button !== 0 || starIndexOf(e.target) !== null) return;
+    tipHandlers.onPointerDown(e);
+    if (!ready || e.button !== 0) return;
+    if (e.pointerType === "touch") {
+      // wait: the page keeps vertical swipes (touch-action: pan-y), the dial takes sideways ones
+      touch.current = { id: e.pointerId, x0: e.clientX, y0: e.clientY, r0: rotRef.current, width: e.currentTarget.getBoundingClientRect().width || 1, active: false };
+      return;
+    }
+    if (starIndexOf(e.target) !== null) return;
     stopSweep();
     drag.current = { a0: pointerAngle(e), r0: rotRef.current };
     setDragging(true);
     hideTip();
-    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
   };
+
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
+    const g = touch.current;
+    if (g && e.pointerId === g.id) {
+      const dx = e.clientX - g.x0;
+      const dy = e.clientY - g.y0;
+      if (!g.active) {
+        if (Math.abs(dx) <= TOUCH_SLOP_PX || Math.abs(dx) <= Math.abs(dy)) return;
+        g.active = true;
+        setDragging(true);
+        hideTip();
+        e.currentTarget.setPointerCapture?.(e.pointerId);
+      }
+      scrubTo(g.r0 + (dx / g.width) * 180);
+      return;
+    }
     if (drag.current) scrubTo(drag.current.r0 + pointerAngle(e) - drag.current.a0);
   };
-  const endDrag = () => {
+
+  const endGesture = (e: PointerEvent<SVGSVGElement>) => {
+    const g = touch.current;
+    if (g && e.pointerId === g.id) {
+      touch.current = null;
+      if (g.active) {
+        swallowClick.current = e.type === "pointerup";
+        setDragging(false);
+        lastScrub.current = performance.now();
+      }
+      return;
+    }
     if (!drag.current) return;
     drag.current = null;
     setDragging(false);
     lastScrub.current = performance.now();
+  };
+
+  const onClick = (e: MouseEvent<SVGSVGElement>) => {
+    if (swallowClick.current) {
+      swallowClick.current = false;
+      return;
+    }
+    tipHandlers.onClick(e);
   };
 
   const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
@@ -225,10 +319,13 @@ export function Planisphere({
     scrubTo(rotRef.current + shortestTurn(rotRef.current, rotationFor(wrapHour(next))));
   };
 
-  const onClick = (e: MouseEvent<SVGSVGElement>) => {
-    const i = starIndexOf(e.target);
-    const r = i === null ? undefined : liquidations[i];
-    if (r) window.open(bscscanTx(r.tx), "_blank", "noopener");
+  const onFocus = (e: FocusEvent<SVGSVGElement>) => {
+    if (e.target === e.currentTarget) focused.current = true;
+    tipHandlers.onFocus(e);
+  };
+  const onBlur = (e: FocusEvent<SVGSVGElement>) => {
+    if (e.target === e.currentTarget) focused.current = false;
+    tipHandlers.onBlur(e);
   };
 
   const S = size ?? 0;
@@ -236,12 +333,7 @@ export function Planisphere({
   const R = frame === "card" ? (S / 2 / 1.12) * 0.93 : S / 2 - 18;
   const geo = useMemo<DialGeometry>(() => ({ size: S, R, compact }), [S, R, compact]);
   const marksNode = useMemo(() => (ready && marks ? marks(geo) : null), [ready, marks, geo]);
-  const win = useMemo(() => {
-    if (!closure) return null;
-    const h0 = hourOfWeek(closure.startsAt);
-    const span = Math.min(WEEK_HOURS - 0.01, Math.max(0, (closure.endsAt - closure.startsAt) / 3600));
-    return { h0, h1: h0 + span };
-  }, [closure]);
+  const win = useMemo(() => (closure ? closureHours(closure) : null), [closure]);
 
   const top = hourAtTop(rot);
   const readout = ready ? meridianReadout(sectors, top) : "";
@@ -260,13 +352,16 @@ export function Planisphere({
         aria-valuenow={Math.round(top * 100) / 100}
         aria-valuetext={readout || undefined}
         data-dragging={dragging || undefined}
+        onPointerOver={tipHandlers.onPointerOver}
+        onPointerOut={tipHandlers.onPointerOut}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
         onKeyDown={onKeyDown}
         onClick={onClick}
-        {...tipHandlers}
+        onFocus={onFocus}
+        onBlur={onBlur}
       >
         {ready && (
           <>
@@ -284,6 +379,9 @@ export function Planisphere({
       </svg>
       <p className={readoutClassName ?? styles.readout} aria-hidden="true">
         {readout}
+      </p>
+      <p className={[styles.hint, hintClassName].filter(Boolean).join(" ")} aria-hidden="true">
+        Drag sideways to turn
       </p>
       <StarTip tip={tip} />
     </div>

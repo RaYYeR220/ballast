@@ -1,6 +1,5 @@
 /* The star wheel itself: disc, daylight, first-90-minute wedges, money graticule, session ring, rim, stars.
-   Pure SVG with no hooks, so it renders on the server for static skies and inside <Planisphere> for the dial.
-   Port of planisphere.js (design v09); same geometry and the same marks. */
+   Pure SVG with no hooks, so it renders on the server for static skies and inside <Planisphere> for the dial. */
 import type { ReactNode } from "react";
 import {
   angleOf,
@@ -15,7 +14,7 @@ import {
 import { regularSectors } from "@/lib/planisphere/sessions";
 import type { Liquidation, Sector, SectorKind } from "@/lib/planisphere/types";
 
-/* colours are the v09 tokens; SVG presentation attributes cannot read CSS variables */
+/* colours are the design tokens; SVG presentation attributes cannot read CSS variables */
 export const SKY = {
   star: "#fff6d8",
   cream: "#f3ecd9",
@@ -30,7 +29,7 @@ export const SKY = {
   ember: "#ff9f80",
 } as const;
 
-/* the validated one-hue session ramp (v09-system.md); the weekend is left dark */
+/* the one-hue session ramp (validated for contrast on the night disc); the weekend is left dark */
 const RING: Partial<Record<SectorKind, readonly [string, number]>> = {
   regular: ["#e6ecf7", 1],
   pre: ["#b5c4e2", 0.75],
@@ -56,7 +55,7 @@ const GROUP_NAME: Record<Liquidation["g"], string> = {
 export const bscscanTx = (tx: string) => `https://bscscan.com/tx/${tx}`;
 
 export const starLabel = (r: Liquidation) =>
-  `${r.et}, ${SESSION_NAME[r.s]}, ${r.c}, $${r.usd.toLocaleString("en-US", { maximumFractionDigits: 2 })} repaid, ${GROUP_NAME[r.g]}`;
+  `${r.et}, ${r.holiday ? `holiday (${r.holiday})` : SESSION_NAME[r.s]}, ${r.c}, $${r.usd.toLocaleString("en-US", { maximumFractionDigits: 2 })} repaid, ${GROUP_NAME[r.g]}`;
 
 export interface WheelSkyProps {
   /** unique prefix for gradient and filter ids */

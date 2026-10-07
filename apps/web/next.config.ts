@@ -6,7 +6,7 @@ const config: NextConfig = {
   poweredByHeader: false,
   // workspace packages ship TypeScript source
   transpilePackages: ["@ballast/risk"],
-  outputFileTracingRoot: path.resolve(process.cwd(), "../.."),
+  outputFileTracingRoot: path.join(__dirname, "../.."),
 };
 
 export default config;

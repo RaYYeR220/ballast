@@ -1,27 +1,43 @@
-/* Static figures of the landing page, ported from v09-landing.html: clock vs money bars, p99 gaps,
-   one close as a sky path, the Session Oracle band and the guardian seal. Server-rendered SVG. */
+/* Static figures of the landing page: clock vs money bars, p99 gaps, one close as a sky path,
+   the Session Oracle band and the guardian seal. Server-rendered SVG. */
+import type { BandExample } from "@/lib/band";
 import { r2 } from "@/lib/planisphere/geometry";
+import type { ShareKind } from "@/lib/planisphere/sessions";
 
 const INK = "#f3ecd9";
+const NAVY = "#0b1733";
 const MUTED = "#8fa3c9";
 const f1 = (x: number) => x.toFixed(1);
+const pm = "\u00b1";
+
+/* WCAG relative luminance and contrast, to pick the label ink on each bar segment */
+function luminance(hex: string) {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0]! + 0.7152 * c[1]! + 0.0722 * c[2]!;
+}
+const contrast = (a: string, b: string) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+  return (hi + 0.05) / (lo + 0.05);
+};
+/** navy on the light segments, cream on the dark ones: whichever reads better */
+export const labelInk = (fill: string) => (contrast(NAVY, fill) >= contrast(INK, fill) ? NAVY : INK);
 
 /* ---------- clock vs money ---------- */
 
-/* session shares from the S2 measurement: share of the clock, share of liquidated dollars (120 bStock-collateral rows) */
-export const SESSION_SHARES = [
-  { name: "Regular session", color: "#e6ecf7", clock: 18.4, dollars: 85.5 },
-  { name: "Pre and after hours", color: "#b5c4e2", clock: 26.8, dollars: 7.3 },
-  { name: "Overnight", color: "#8399c8", clock: 22.7, dollars: 7.1 },
-  { name: "Holiday", color: "#5f78b2", clock: 3.1, dollars: 0.1 },
-  { name: "Weekend", color: "#4a639f", clock: 29.0, dollars: 0 },
-] as const;
+/* the one-hue session ramp, light = more open */
+export const SESSION_GROUPS: readonly { key: ShareKind; name: string; color: string }[] = [
+  { key: "regular", name: "Regular session", color: "#e6ecf7" },
+  { key: "prePost", name: "Pre and after hours", color: "#b5c4e2" },
+  { key: "overnight", name: "Overnight", color: "#8399c8" },
+  { key: "holiday", name: "Holiday", color: "#5f78b2" },
+  { key: "weekend", name: "Weekend", color: "#4a639f" },
+];
 
 export function SessionLegend({ className }: { className?: string }) {
   return (
     <div className={className}>
-      {SESSION_SHARES.map((k) => (
-        <span key={k.name}>
+      {SESSION_GROUPS.map((k) => (
+        <span key={k.key}>
           <i style={{ background: k.color }} />
           {k.name}
         </span>
@@ -30,43 +46,47 @@ export function SessionLegend({ className }: { className?: string }) {
   );
 }
 
-export function SessionShares() {
+const share1 = (x: number) => Math.round(x * 1000) / 10;
+const shareText = (x: number) => {
+  const v = share1(x);
+  return `${v % 1 ? v.toFixed(1) : v}%`;
+};
+
+/** Clock (from the calendar over the sample window) against dollars (from the liquidation file). */
+export function SessionShares({ clock, dollars }: { clock: Record<ShareKind, number>; dollars: Record<ShareKind, number> }) {
   const x0 = 120;
   const w = 500;
   const h = 40;
+  const describe = (s: Record<ShareKind, number>) => SESSION_GROUPS.map((k) => `${k.name.toLowerCase()} ${shareText(s[k.key])}`).join(", ");
   return (
-    <svg
-      viewBox="0 0 640 170"
-      role="img"
-      aria-label="Two stacked bars. Clock: regular session 18.4%, pre and after hours 26.8%, overnight 22.7%, holiday 3.1%, weekend 29.0%. Dollars: regular 85.5%, pre and after hours 7.3%, overnight 7.1%, holiday 0.1%, weekend 0%."
-    >
-      {(["clock", "dollars"] as const).map((col, row) => {
+    <svg viewBox="0 0 640 170" role="img" aria-label={`Two stacked bars. Clock: ${describe(clock)}. Dollars: ${describe(dollars)}.`}>
+      {[clock, dollars].map((col, row) => {
         const y = 20 + row * 78;
         let x = x0;
         return (
-          <g key={col}>
+          <g key={row}>
             <text className="f-display" x={0} y={y + h / 2 + 6} fontSize={22} fill={INK}>
               {row ? "Dollars" : "Clock"}
             </text>
-            {SESSION_SHARES.map((k) => {
-              const v = k[col];
-              const ww = (w * v) / 100;
+            {SESSION_GROUPS.map((k) => {
+              const v = col[k.key];
+              const ww = w * v;
               const at = x;
               x += ww;
-              if (ww <= 0) return null;
+              if (share1(v) <= 0) return null;
               return (
-                <g key={k.name}>
+                <g key={k.key}>
                   <rect x={r2(at + 1)} y={y} width={r2(Math.max(1, ww - 2))} height={h} fill={k.color} rx={2} />
                   {ww > 46 && (
-                    <text className="f-ui" x={r2(at + ww / 2)} y={y + h / 2 + 5} textAnchor="middle" fontSize={14} fontWeight={500} fill="#0b1733">
-                      {v % 1 ? v.toFixed(1) : v}%
+                    <text className="f-ui" x={r2(at + ww / 2)} y={y + h / 2 + 5} textAnchor="middle" fontSize={14} fontWeight={500} fill={labelInk(k.color)}>
+                      {shareText(v)}
                     </text>
                   )}
                 </g>
               );
             })}
             <text className="f-ui" x={x0 + w} y={y + h + 22} textAnchor="end" fontSize={13} fill={MUTED}>
-              {row ? "Weekend: 0%" : "Weekend: 29% of the clock"}
+              {row ? `Weekend: ${Math.round(dollars.weekend * 100)}%` : `Weekend: ${Math.round(clock.weekend * 100)}% of the clock`}
             </text>
           </g>
         );
@@ -77,6 +97,7 @@ export function SessionShares() {
 
 /* ---------- p99 down-gaps ---------- */
 
+/* pooled p99 down-gaps from the gap study (data/README.md, "Figures from the gap study") */
 export const P99_GAPS = [
   ["Overnight", 4.4],
   ["Weekend", 5.5],
@@ -205,106 +226,92 @@ export function DayArc({ mobile, className }: { mobile: boolean; className?: str
 
 /* ---------- Session Oracle band ---------- */
 
-/** Ballast's band model: a power law through the measured p99 gaps (4.4% at 17.5 h closed, 5.5% at 65.5 h). */
-export const bandP99 = (hoursClosed: number) => (hoursClosed <= 0 ? 0 : 4.4 * Math.pow(hoursClosed / 17.5, 0.169));
+const pctBps = (bps: number) => `${(bps / 100).toFixed(1)}%`;
 
-export function OracleBand({ className }: { className?: string }) {
-  const W = 700;
-  const l = 56;
-  const r = 64;
-  const top = 24;
-  const bot = 330;
-  const T = 65.5;
-  const x = (t: number) => l + (t / T) * (W - l - r);
-  const k = (bot - top) / 2 / 7;
-  const mid = (top + bot) / 2;
-  const y = (p: number) => mid - p * k;
-  let up = "";
-  let dn = "";
-  let lo = "";
-  for (let i = 0; i <= 120; i++) {
-    const t = (i / 120) * T;
-    const w = bandP99(t);
-    up += (i ? "L" : "M") + f1(x(t)) + " " + f1(y(w));
-    dn = `L${f1(x(t))} ${f1(y(-w))}` + dn;
-    lo += (i ? "L" : "M") + f1(x(t)) + " " + f1(y(-w));
-  }
-  /* illustrative venue paths: one shared slow drift plus small venue offsets (deterministic) */
-  const venues = [
-    { n: "bStocks", c: "#f3ecd9", ph: 0, off: 0.12 },
-    { n: "Ondo", c: "#bac7df", ph: 1.7, off: -0.18 },
-    { n: "xStocks", c: "#8fa3c9", ph: 3.1, off: 0.05 },
-  ];
-  const common = (t: number) => -1.1 * Math.sin(t / 16) + 0.25 * Math.sin(t / 5.3) + (t > 52 ? -((t - 52) / 13.5) * 0.7 : 0);
-  const paths = venues.map((v) => {
-    let d = "";
-    let val = 0;
-    for (let i = 0; i <= 130; i++) {
-      const t = (i / 130) * T;
-      val = common(t) + v.off * Math.min(1, t / 6) + 0.12 * Math.sin(t / 2.4 + v.ph);
-      d += (i ? "L" : "M") + f1(x(t)) + " " + f1(y(val));
-    }
-    return { ...v, d, end: y(val) };
-  });
-  const ends = paths.map((p) => ({ n: p.n, c: p.c, y: p.end })).sort((a, b) => a.y - b.y);
-  for (let i = 1; i < ends.length; i++) if (ends[i]!.y - ends[i - 1]!.y < 14) ends[i]!.y = ends[i - 1]!.y + 14;
-  const ta = 41.3;
-  const axis = (s: string, xx: number, yy: number, anchor: "start" | "middle" | "end" = "middle") => (
-    <text className="f-ui" x={r2(xx)} y={r2(yy)} textAnchor={anchor} fontSize={12} fill={MUTED}>
-      {s}
-    </text>
-  );
+/** One row per closure kind: the band the contract enforces, from the close to the next open. */
+export function OracleBand({ examples, symbol, mobile, className }: { examples: readonly BandExample[]; symbol: string; mobile: boolean; className?: string }) {
+  const W = mobile ? 360 : 700;
+  const x0 = mobile ? 8 : 170;
+  const x1 = mobile ? 340 : 560;
+  const H_MAX = 90;
+  const BPS_MAX = 2400;
+  const rowH = mobile ? 122 : 98;
+  const top = 30;
+  const plotH = mobile ? 60 : 76;
+  const xh = (h: number) => x0 + (h / H_MAX) * (x1 - x0);
+  const height = top + examples.length * rowH + (mobile ? 4 : 6);
+  const summary = examples
+    .map(
+      (e) =>
+        `${e.label.toLowerCase()} from plus or minus ${pctBps(e.baseBps)} at the close to ${pctBps(e.openBps)} at the open ${e.hours} hours later${e.capAtHours !== null ? `, capped at three times after ${e.capAtHours} hours` : ""}`,
+    )
+    .join("; ");
   return (
-    <svg
-      className={className}
-      viewBox="0 0 700 380"
-      role="img"
-      aria-label="Chart from Friday 4 PM to Monday 9:30 AM. A band around the reference price widens from zero to plus or minus 5.5%. Three venue prices drift inside it."
-    >
-      {[-6, -4, -2, 0, 2, 4, 6].map((p) => (
-        <g key={p}>
-          <line x1={l} x2={W - r} y1={r2(y(p))} y2={r2(y(p))} stroke="#2a4677" strokeWidth={1} />
-          {axis(`${p > 0 ? "+" : ""}${p}%`, l - 10, y(p) + 4, "end")}
+    <svg className={className} viewBox={`0 0 ${W} ${height}`} role="img" aria-label={`The price band the oracle enforces for ${symbol} while New York is closed: ${summary}.`}>
+      {[0, 24, 48, 72].map((h) => (
+        <g key={h}>
+          {/* day lines run through the plots only, never through the row labels */}
+          {mobile ? (
+            examples.map((_, i) => {
+              const yb = top + (i + 1) * rowH - 14;
+              return <line key={i} x1={r2(xh(h))} x2={r2(xh(h))} y1={yb - plotH - 4} y2={yb} stroke="#2a4677" strokeWidth={1} />;
+            })
+          ) : (
+            <line x1={r2(xh(h))} x2={r2(xh(h))} y1={top - 8} y2={height - 4} stroke="#2a4677" strokeWidth={1} />
+          )}
+          <text className="f-ui" x={r2(xh(h))} y={top - 14} textAnchor={h ? "middle" : "start"} fontSize={12} fill={MUTED}>
+            {h ? `+${h} h` : "close"}
+          </text>
         </g>
       ))}
-      {(
-        [
-          [0, "Fri 4 PM"],
-          [8, "Sat 0:00"],
-          [32, "Sun 0:00"],
-          [52, "Sun 8 PM"],
-          [65.5, "Mon 9:30"],
-        ] as const
-      ).map(([t, s]) => (
-        <g key={t}>
-          <line x1={r2(x(t))} x2={r2(x(t))} y1={top} y2={bot} stroke="#2a4677" strokeWidth={1} />
-          {axis(s, x(t), bot + 20, t === 0 ? "start" : t === T ? "end" : "middle")}
-        </g>
-      ))}
-      <path d={up + dn + "Z"} fill="#3ef0b5" opacity={0.12} />
-      <path d={up} fill="none" stroke="#3ef0b5" strokeWidth={1.5} />
-      <path d={lo} fill="none" stroke="#3ef0b5" strokeWidth={1.5} />
-      {paths.map((p) => (
-        <path key={p.n} d={p.d} fill="none" stroke={p.c} strokeWidth={1.6} opacity={0.95} />
-      ))}
-      {ends.map((e) => (
-        <text key={e.n} className="f-ui" x={W - r + 6} y={r2(e.y + 4)} fontSize={12} fill={e.c}>
-          {e.n}
-        </text>
-      ))}
-      <line x1={r2(x(ta))} x2={r2(x(ta))} y1={top} y2={bot} stroke={INK} strokeWidth={1} strokeDasharray="3 4" />
-      <text className="f-ui" x={r2(x(ta) - 8)} y={top + 14} textAnchor="end" fontSize={13} fill={INK}>
-        Reference age 41 h 18 min
-      </text>
-      <text className="f-ui" x={r2(x(ta) - 8)} y={top + 32} textAnchor="end" fontSize={13} fill="#3ef0b5">
-        {`band \u00b1${bandP99(ta).toFixed(1)}%`}
-      </text>
-      <text className="f-display" x={r2(x(17.5))} y={r2(y(bandP99(17.5)) - 10)} textAnchor="middle" fontStyle="italic" fontSize={17} fill="#dfe5f1">
-        {"\u00b14.4% after a night"}
-      </text>
-      <text className="f-display" x={r2(x(T) - 6)} y={r2(y(5.5) + 20)} textAnchor="end" fontStyle="italic" fontSize={17} fill="#dfe5f1">
-        {"\u00b15.5% at the open"}
-      </text>
+      {examples.map((e, i) => {
+        const y0 = top + i * rowH;
+        const yb = y0 + rowH - (mobile ? 14 : 10);
+        const y = (bps: number) => yb - (bps / BPS_MAX) * plotH;
+        const line = e.curve.map(([h, b], k) => `${k ? "L" : "M"}${f1(xh(h))} ${f1(y(b))}`).join("");
+        const xe = xh(e.hours);
+        const ye = y(e.openBps);
+        const cap = e.capAtHours;
+        return (
+          <g key={e.window}>
+            <line x1={x0} x2={x1} y1={yb} y2={yb} stroke="#2a4677" strokeWidth={1} />
+            <path d={`${line}L${f1(xe)} ${yb}L${f1(xh(0))} ${yb}Z`} fill="#3ef0b5" opacity={0.13} />
+            <path d={line} fill="none" stroke="#3ef0b5" strokeWidth={1.6} />
+            <circle cx={r2(xh(0))} cy={r2(y(e.baseBps))} r={3.2} fill={INK} />
+            <circle cx={r2(xe)} cy={r2(ye)} r={3.2} fill="#12244a" stroke="#3ef0b5" strokeWidth={1.6} />
+            {cap !== null && (
+              <text className="f-ui" x={r2(xh(cap) + 4)} y={r2(mobile ? y(e.openBps) + 15 : y(e.openBps) - 7)} fontSize={11.5} fill={mobile ? "#bac7df" : MUTED}>
+                capped at 3x
+              </text>
+            )}
+            {mobile ? (
+              <>
+                <text className="f-display" x={x0} y={y0 + 16} fontSize={18} fill={INK}>
+                  {e.label}
+                </text>
+                <text className="f-ui" x={x0} y={y0 + 34} fontSize={12} fill={MUTED}>
+                  {`${pm}${pctBps(e.baseBps)} at the close, ${pm}${pctBps(e.openBps)} at the open, ${e.hours} h later`}
+                </text>
+              </>
+            ) : (
+              <>
+                <text className="f-display" x={0} y={y0 + 34} fontSize={20} fill={INK}>
+                  {e.label}
+                </text>
+                <text className="f-ui" x={0} y={y0 + 56} fontSize={13} fill={MUTED}>
+                  {`p99 gap ${pm}${pctBps(e.baseBps)}`}
+                </text>
+                <text className="f-ui" x={0} y={y0 + 74} fontSize={13} fill={MUTED}>
+                  {`closed ${e.hours} h`}
+                </text>
+                <text className="f-ui" x={r2(xe + 9)} y={r2(ye + 4)} fontSize={13} fill={INK}>
+                  {`${pm}${pctBps(e.openBps)} at the open`}
+                </text>
+              </>
+            )}
+          </g>
+        );
+      })}
     </svg>
   );
 }

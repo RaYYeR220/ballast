@@ -1,10 +1,10 @@
-/* Tailwind v4 theme and utilities. Preflight is left out on purpose: the v09 pages ship their own
+/* Tailwind v4 theme and utilities. Preflight is left out on purpose: the design ships its own
    minimal reset, and the port has to match the prototype's defaults. */
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 
-/* Ballast v09 "Planisphere" design tokens (design/v09/tokens.css). Night is the default sky;
+/* Ballast "Planisphere" design tokens. Night is the default sky;
    [data-sky="day"] flips a section or page to the day palette. */
 :root {
   /* Prussian night ramp */
@@ -37,7 +37,7 @@
   --btn-bg: var(--p-900); --btn-text: var(--c-50);
 }
 
-/* Tailwind names point at the variables so [data-sky] flips carry through utilities (v09-system.md section 8) */
+/* Tailwind names point at the variables so [data-sky] flips carry through utilities */
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);

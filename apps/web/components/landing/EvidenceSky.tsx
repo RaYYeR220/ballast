@@ -1,18 +1,22 @@
 "use client";
 /* Evidence: the full wheel of 121 liquidations with the weekend at the bottom and four callouts.
    Stars are links to BscScan; Tab enters the sky once, arrow keys walk the stars in time order. */
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { StarTip, useStarRoving, useStarTip } from "@/components/planisphere/StarTip";
 import { Wheel } from "@/components/planisphere/Wheel";
 import { angleOf, polar, r2, radiusForUsd } from "@/lib/planisphere/geometry";
-import { typicalWeekSectors } from "@/lib/planisphere/sessions";
+import { typicalWeekSectors, weekShare } from "@/lib/planisphere/sessions";
 import { FACTS, kUsd, LIQUIDATIONS, pct } from "@/lib/liquidations";
+
+/* tooltip and focus state change often; the 121 stars only need to redraw when the scale or the tab stop moves */
+const StaticWheel = memo(Wheel);
 
 const CX = 380;
 const CY = 360;
 const R = 282;
 const ROT = 180 - angleOf(140); // Saturday 20:00 at the bottom
 const SECTORS = typicalWeekSectors();
+const WEEKEND_SHARE = weekShare(SECTORS, ["weekend"]);
 
 const toScreen = (deg: number, r: number): [number, number] => {
   const [x, y] = polar(deg + ROT, r);
@@ -41,7 +45,7 @@ const CALLOUTS: CalloutSpec[] = [
     lx: 4,
     ly: (k) => 708 - 2 * 22 * k,
     anchor: "start",
-    lines: ["The weekend sky is empty", "Friday 8 PM to Sunday 8 PM:", "29% of the clock, no liquidations"],
+    lines: ["The weekend sky is empty", "Friday 8 PM to Sunday 8 PM:", `${pct(WEEKEND_SHARE)} of the clock, ${FACTS.weekend ? `${FACTS.weekend} liquidations` : "no liquidations"}`],
   },
   {
     deg: angleOf(bigMonday.h),
@@ -125,7 +129,7 @@ function Callout({ spec, k }: { spec: CalloutSpec; k: number }) {
 export function EvidenceSky({ className }: { className?: string }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [k, setK] = useState(1);
-  const { tip, handlers } = useStarTip(LIQUIDATIONS);
+  const { tip, handlers } = useStarTip(LIQUIDATIONS, { links: true });
   const { active, onKeyDown } = useStarRoving(LIQUIDATIONS);
 
   // the drawing scales with the column; text grows back to a readable size on narrow screens
@@ -156,11 +160,11 @@ export function EvidenceSky({ className }: { className?: string }) {
         className={className}
         viewBox="0 0 760 720"
         role="group"
-        aria-label="The full star wheel of 121 Lista liquidations with the weekend at the bottom. The weekend sector is empty. The brightest stars sit just after Monday's open. Each star links to its transaction; use the arrow keys to move between stars in time order."
+        aria-label={`The full star wheel of ${FACTS.total} Lista liquidations with the weekend at the bottom. The weekend sector is empty. The brightest stars sit just after Monday's open. Each star links to its transaction; use the arrow keys to move between stars in time order.`}
         onKeyDown={onKeyDown}
         {...handlers}
       >
-        <Wheel
+        <StaticWheel
           id="ev"
           cx={CX}
           cy={CY}
@@ -176,7 +180,7 @@ export function EvidenceSky({ className }: { className?: string }) {
           <Callout key={i} spec={c} k={k} />
         ))}
       </svg>
-      <StarTip tip={tip} />
+      <StarTip tip={tip} links />
     </>
   );
 }

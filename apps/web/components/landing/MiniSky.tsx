@@ -1,4 +1,6 @@
-/* The small wheel on the refusal slip: the sky at the attempted restore (Saturday 14:02), meridian in ember. */
+"use client";
+/* The small wheel on the refusal slip: the sky at the attempted restore (Saturday 14:02), meridian in ember.
+   A client component so the rows come from the shared JS chunk instead of being serialised into the page payload. */
 import { Wheel } from "@/components/planisphere/Wheel";
 import { rotationFor } from "@/lib/planisphere/geometry";
 import { typicalWeekSectors } from "@/lib/planisphere/sessions";

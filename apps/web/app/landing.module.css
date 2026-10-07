@@ -1,5 +1,5 @@
-/* Landing page, ported from design/v09/v09-landing.html. Element rules sit under :where(.landing)
-   so every selector keeps the prototype's specificity. */
+/* Landing page. Element rules sit under :where(.landing)
+   so every selector keeps the specificity of the original design. */
 :where(.landing) :where(section, header, footer) { background: var(--bg); color: var(--text); overflow-x: clip; }
 :where(.landing) h2 { font: 500 clamp(36px, 4.2vw, 56px)/1.05 var(--f-display); letter-spacing: -.01em; max-width: 18ch; text-wrap: balance; }
 
@@ -30,7 +30,8 @@
 .hero .cta { margin-top: var(--s-5); }
 .hero .cta:hover { background: var(--p-700); }
 .hero .how { margin-top: var(--s-5); max-width: 40ch; }
-.finder { position: relative; width: var(--D); height: var(--D); --D: min(84vh, 48vw); }
+/* the third term keeps the meridian readout clear of the nav on short laptop screens (1366x768) */
+.finder { position: relative; width: var(--D); height: var(--D); --D: min(84vh, 48vw, calc(100vh - 208px)); }
 .finderSvg { position: absolute; inset: -6%; width: 112%; height: 112%; }
 /* the focus ring hugs the printed outer ring of the card instead of the svg box */
 .finderSvg:focus-visible { outline-offset: calc(14px - .0787 * var(--D)); }
@@ -72,7 +73,7 @@
 .slip dd { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .slip .rev { color: var(--ember); }
 .slip .ft { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--p-700); display: flex; justify-content: space-between; gap: 16px; align-items: center; font-size: 13px; color: var(--p-300); }
-.slip .ft .txLink { color: var(--mint); }
+.slip .ctx { display: block; color: var(--p-300); }
 .slip .minisky { position: absolute; right: -34px; top: -58px; width: 150px; height: 150px; }
 .example { display: inline-block; font-family: var(--f-ui); font-weight: 400; vertical-align: middle; font-size: 12px; padding: 2px 8px; border: 1px solid currentColor; border-radius: var(--r-pill); opacity: .8; }
 
@@ -83,6 +84,7 @@
 .oracle li { border-top: 1px solid var(--p-600); padding-top: var(--s-3); color: var(--p-200); }
 .oracle li b { display: block; font: 500 22px/1.2 var(--f-display); color: var(--c-100); }
 .band { width: 100%; height: auto; display: block; overflow: visible; }
+.bandMob { display: none; }
 .bandNote { margin-top: 10px; }
 
 /* guardians */
@@ -147,6 +149,11 @@
   .close { min-height: 640px; }
 }
 @media (max-width: 759.98px) {
-  .dayarcDesk { display: none; }
-  .dayarcMob { display: block; }
+  .dayarcDesk, .bandDesk { display: none; }
+  .dayarcMob, .bandMob { display: block; }
+}
+/* touch screens get a line under the card: "Drag sideways to turn" */
+.finder .finderHint { top: auto; bottom: calc(-6% - 34px); }
+@media (hover: none) and (pointer: coarse) {
+  .finder { margin-bottom: 48px; }
 }

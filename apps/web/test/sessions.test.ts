@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  clockShares,
+  dayNumber,
+  holidayName,
   hourOfWeek,
+  localToUtc,
+  tsOfHour,
+  weekShare,
   kindAt,
   meridianReadout,
   mondayOf,
@@ -24,7 +30,7 @@ function intlHour(ts: number) {
   return ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(g("weekday")) * 24 + +g("hour") + +g("minute") / 60 + +g("second") / 3600;
 }
 
-/* the generic week the v09 prototype draws (planisphere.js session()) */
+/* the generic week of the original wheel design: fixed hours, no holidays */
 function prototypeSession(h: number): SectorKind {
   const d = Math.floor(h / 24);
   const t = h % 24;
@@ -142,6 +148,47 @@ describe("session sectors", () => {
     expect(meridianReadout(plain, 125)).toBe("Saturday 05:00 New York, weekend, closed");
     expect(meridianReadout(plain, 166)).toBe("Sunday 22:00 New York, overnight, closed");
     const thanksgiving = weekSectors(1795453200).sectors;
-    expect(meridianReadout(thanksgiving, 84)).toBe("Thursday 12:00 New York, holiday, closed");
+    expect(meridianReadout(thanksgiving, 84)).toBe("Thursday 12:00 New York, Thanksgiving, closed");
+    expect(meridianReadout(thanksgiving, 70)).toBe("Wednesday 22:00 New York, Thanksgiving, closed");
+  });
+});
+
+describe("calendar helpers", () => {
+  it("names the holidays the calendar lists, and only those", () => {
+    expect(holidayName(dayNumber("2026-06-19"))).toBe("Juneteenth");
+    expect(holidayName(dayNumber("2026-11-26"))).toBe("Thanksgiving");
+    expect(holidayName(dayNumber("2026-09-07"))).toBe("Labor Day");
+    expect(holidayName(dayNumber("2026-07-03"))).toBe("Independence Day");
+    expect(holidayName(dayNumber("2027-01-18"))).toBe("Martin Luther King Jr. Day");
+    expect(holidayName(dayNumber("2027-03-26"))).toBe("Good Friday");
+    expect(holidayName(dayNumber("2027-12-24"))).toBe("Christmas");
+    expect(holidayName(dayNumber("2026-10-12"))).toBeNull(); // Columbus Day: the exchange is open
+    expect(holidayName(dayNumber("2026-11-27"))).toBeNull(); // early close, not a holiday
+  });
+
+  it("maps an hour of the shown week back to an instant, across DST", () => {
+    const monday = dayNumber("2026-10-26");
+    expect(tsOfHour(monday, 9.5)).toBe(1793021400); // Mon 26 Oct 09:30 EDT
+    expect(tsOfHour(monday, 6 * 24 + 12)).toBe(localToUtc(dayNumber("2026-11-01"), 12 * 3600)); // Sun 1 Nov noon, now EST
+    expect(tsOfHour(monday, 6 * 24 + 12) - tsOfHour(monday, 9.5)).toBe((6 * 24 + 2.5 + 1) * 3600);
+    expect(hourOfWeek(tsOfHour(monday, 100.25))).toBe(100.25);
+  });
+
+  it("splits the clock of a plain week: 32.5 h regular, 48 h weekend", () => {
+    const plain = typicalWeekSectors();
+    expect(weekShare(plain, ["regular"]) * 168).toBe(32.5);
+    expect(weekShare(plain, ["weekend"]) * 168).toBe(48);
+    expect(1 - weekShare(plain, ["regular"])).toBeCloseTo(0.8065, 4);
+  });
+
+  it("measures wall-clock shares over a span from the calendar", () => {
+    const mon = dayNumber("2026-09-14");
+    const week = clockShares(localToUtc(mon, 0), localToUtc(mon + 7, 0));
+    expect(week.regular * 168).toBeCloseTo(32.5, 9);
+    expect(week.prePost * 168).toBeCloseTo(47.5, 9);
+    expect(week.weekend * 168).toBeCloseTo(48, 9);
+    expect(week.holiday).toBe(0);
+    expect(Object.values(week).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 12);
+    expect(() => clockShares(1909143000, 1909143000 + 3600)).toThrow(/does not cover/);
   });
 });

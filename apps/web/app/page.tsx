@@ -4,11 +4,15 @@ import { EvidenceSky } from "@/components/landing/EvidenceSky";
 import { HeroDial } from "@/components/landing/HeroDial";
 import { MiniSky } from "@/components/landing/MiniSky";
 import { DayArc, GapBars, GuardianSeal, OracleBand, SessionLegend, SessionShares } from "@/components/landing/charts";
+import { bandExamples } from "@/lib/band";
+import { SAMPLE_CLOCK, WEEK } from "@/lib/clock";
 import { FACTS, kUsd, pct } from "@/lib/liquidations";
 import { LINKS } from "@/lib/links";
 import s from "./landing.module.css";
 
 const APP = "/app";
+const BAND_SYMBOL = "NVDA";
+const BAND = bandExamples(BAND_SYMBOL);
 
 function FootLink({ href, children }: { href: string | null; children: string }) {
   return href ? (
@@ -31,7 +35,7 @@ const LIMITS = [
   ["It doesn't stop Lista or Venus", "The contract limits what the agent and you can do with your loan. Liquidations are still run by the lending market's own rules and prices."],
   ["Shielding has a cost", "A smaller loan overnight means less borrowed for those hours. Restoring needs a transaction after the open, and prices may have moved by then."],
   ["The evidence is young", `Three months of one lending market: ${FACTS.total} liquidations, ${FACTS.organic} of them from real borrowers. Venus seized no bStock collateral in the same period. We will keep publishing as the sample grows.`],
-  ["The oracle band is a model", "It is fitted on 6.3 years of gaps in the underlying stocks. It is not a guarantee, and it says so on every reading."],
+  ["The oracle band is a rule, not a forecast", "It starts from p99 gaps measured over 6.3 years of the underlying stocks and widens on a fixed schedule. It is not a guarantee, and it says so on every reading."],
   ["This is new code", "Ballast's contracts have not been audited yet. Start with an amount you are prepared to lose."],
 ] as const;
 
@@ -64,7 +68,7 @@ export default function Landing() {
           </svg>
           <div className={s.wrap}>
             <div className={s.copy}>
-              <h1>Wall Street sleeps 81% of the week. Ballast keeps the watch.</h1>
+              <h1>Wall Street sleeps {pct(WEEK.closedShare)} of the week. Ballast keeps the watch.</h1>
               <p>
                 A credit line on your tokenized stocks. Before every close, an agent moves your loan into a state that survives the gap. While the
                 market is shut, a contract on BNB Chain lets it only reduce risk.
@@ -73,11 +77,11 @@ export default function Landing() {
                 Open a credit line
               </Link>
               <p className={`${s.how} ${s.serifI}`}>
-                Turn the wheel to any hour. Each star is a real liquidation on Lista since June; the further out, the more dollars. The weekend sky is
-                empty.
+                Turn the wheel to any hour. Each star is a Lista liquidation between 18 June and 22 September; hollow rings are tripwire tests. The
+                further out, the more dollars. The weekend sky is empty.
               </p>
             </div>
-            <HeroDial className={s.finder} svgClassName={s.finderSvg} readoutClassName={s.read} />
+            <HeroDial className={s.finder} svgClassName={s.finderSvg} readoutClassName={s.read} hintClassName={s.finderHint} />
           </div>
         </section>
 
@@ -102,8 +106,8 @@ export default function Landing() {
                     {FACTS.weekend} of {FACTS.bStockCollateral}
                   </b>
                   <span>
-                    bStock-collateral liquidations fell on a weekend, though Friday 8 PM to Sunday 8 PM is 29% of the clock. The same bots liquidated
-                    12% of non-stock positions on weekends.
+                    bStock-collateral liquidations fell on a weekend, though Friday 8 PM to Sunday 8 PM is {pct(WEEK.weekendShare)} of the clock. The
+                    same bots liquidated 12% of non-stock positions on weekends.
                   </span>
                 </div>
                 <div className={s.fact}>
@@ -124,7 +128,7 @@ export default function Landing() {
                   liquidations, 18 June to 22 September.
                 </p>
                 <SessionLegend className={s.legend} />
-                <SessionShares />
+                <SessionShares clock={SAMPLE_CLOCK} dollars={FACTS.dollarShares} />
               </div>
               <div className={s.chart}>
                 <h3>How far prices jump at the reopen</h3>
@@ -201,19 +205,19 @@ export default function Landing() {
                   <dt>When</dt>
                   <dd>Saturday 10 Oct, 14:02 New York</dd>
                   <dt>Call</dt>
-                  <dd>BallastGuard.restore(loan 2741, target LTV 58%)</dd>
+                  <dd>restore(2,400 USD1)</dd>
                   <dt>Result</dt>
-                  <dd className={s.rev}>Reverted: MarketClosed(next open Mon 12 Oct 09:30 ET)</dd>
+                  <dd>
+                    <span className={s.rev}>Reverted: RestoreRefused(NOT_REGULAR)</span>
+                    <span className={s.ctx}>next open Mon 12 Oct 09:30 ET</span>
+                  </dd>
                   <dt>Loan</dt>
                   <dd>Stays at 41% loan-to-value, ready for a 5.5% gap</dd>
                   <dt>Cost</dt>
                   <dd>0.00004 BNB in gas</dd>
                 </dl>
                 <div className={s.ft}>
-                  <span>tx 0x7f3a...c41e on BNB Chain testnet</span>
-                  <span className={s.txLink} title="Example only: there is no transaction to open">
-                    View transaction
-                  </span>
+                  <span>Example: no transaction yet</span>
                 </div>
               </div>
             </div>
@@ -234,8 +238,8 @@ export default function Landing() {
                   into one reference.
                 </li>
                 <li>
-                  <b>A band that grows with the dark</b>The band&apos;s width follows the measured gaps: 4.4% after a night, 5.5% after a weekend. It
-                  goes back to zero at the open.
+                  <b>A band that grows with the dark</b>At the close the band is the stock&apos;s measured p99 gap for the night, weekend or holiday
+                  ahead. It widens by that much again for every day the market stays shut, up to three times, and goes back to zero at the open.
                 </li>
                 <li>
                   <b>The age is shown, never hidden</b>Every reading carries the time since New York&apos;s last close. Ballast sizes your loan for the
@@ -247,10 +251,11 @@ export default function Landing() {
                 </li>
               </ol>
               <div>
-                <OracleBand className={s.band} />
+                <OracleBand examples={BAND} symbol={BAND_SYMBOL} mobile={false} className={`${s.band} ${s.bandDesk}`} />
+                <OracleBand examples={BAND} symbol={BAND_SYMBOL} mobile className={`${s.band} ${s.bandMob}`} />
                 <p className={`${s.note} ${s.bandNote}`}>
-                  Venue paths are illustrative. The band is Ballast&apos;s model, fitted through the measured p99 gaps (4.4% at 17.5 hours closed,
-                  5.5% at 65.5 hours).
+                  The band Ballast enforces on-chain: it starts at the measured p99 gap and widens for every day the market stays shut, up to 3x. Shown
+                  for {BAND_SYMBOL}; each stock carries its own measured gaps.
                 </p>
               </div>
             </div>
