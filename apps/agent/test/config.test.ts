@@ -32,6 +32,8 @@ describe("loadConfig", () => {
     expect(c.x402DailyCapUsd).toBe(0.5);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
+    expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);
+    expect(c.earningsFile.endsWith(path.join("config", "earnings.json"))).toBe(true);
     expect(Object.isFrozen(c)).toBe(true);
   });
 
@@ -45,6 +47,8 @@ describe("loadConfig", () => {
         X402_DAILY_CAP_USD: "0.25",
         DRY_RUN: "false",
         DEPLOYMENT_FILE: "deploy/fork.json",
+        DATA_DIR: "state",
+        EARNINGS_FILE: "/etc/ballast/earnings.json",
         BINANCE_WEB3_API_KEY: "binance-key",
         BINANCE_WEB3_API_SECRET: "binance-secret",
       },
@@ -55,6 +59,8 @@ describe("loadConfig", () => {
     expect(c.x402DailyCapUsd).toBe(0.25);
     expect(c.dryRun).toBe(false);
     expect(c.deploymentFile).toBe(path.join(cwd, "deploy", "fork.json"));
+    expect(c.dataDir).toBe(path.join(cwd, "state"));
+    expect(c.earningsFile).toBe(path.resolve("/etc/ballast/earnings.json"));
     expect(c.binance?.apiKey.reveal()).toBe("binance-key");
     expect(c.binance?.apiSecret.reveal()).toBe("binance-secret");
   });
@@ -187,7 +193,7 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");

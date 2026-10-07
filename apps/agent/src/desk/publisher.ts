@@ -1,0 +1,545 @@
+// Session Oracle overlay publisher. Every 10 min (and right after each regular open and close) it reads the
+// keyless Binance RWA status for each listed bStock and its Ondo token, builds the overlay the contract
+// accepts, and posts the symbols whose overlay changed or whose 5 h heartbeat is due, in one batched
+// postOverlays. Simulated first; a refused symbol is recorded and backed off for 30 min.
+import { readFile } from "node:fs/promises";
+import { nextClose, nextOpen, regularCloseAt } from "@ballast/risk";
+import {
+  OVERLAY_FLAGS,
+  bytes32ToSymbol,
+  isRevert,
+  sessionCalendarAbi,
+  sessionName,
+  sessionOracleAbi,
+  writes,
+  type Deployment,
+  type OracleParams,
+  type OverlayInput,
+  type ReadClient,
+  type SessionName,
+} from "@ballast/sdk";
+import type { AssetStatus, RwaDynamic } from "@ballast/binance";
+import { parseAbi, parseUnits, zeroAddress, type Address } from "viem";
+import type { Feed, FeedError, FeedSim } from "./feed";
+import { safeMessage, type TxSender } from "./tx";
+
+export const TICK_SEC = 600;
+/** Re-post an unchanged overlay after this long (validity is 5.5 h, so 30 min of slack). */
+export const HEARTBEAT_SEC = 5 * 3600;
+export const VALIDITY_SEC = 5.5 * 3600;
+export const BACKOFF_SEC = 30 * 60;
+/** During the regular session, refresh the reference of a ticker without Chainlink at least this often... */
+export const REF_REFRESH_SEC = 3600;
+/** ...or as soon as the print moved this far from the last one (a third of the oracle's convergence band). */
+export const REF_MOVE_BPS = 20;
+/** No reference this close to the regular close: the transaction could land after it and revert the batch. */
+export const REF_CLOSE_MARGIN_SEC = 300;
+/** Binance's chain id for the bStock and Ondo token addresses (also used on a fork of BSC). */
+const RWA_CHAIN = "56";
+
+// ------------------------------------------------------------------ flags
+
+const CORPORATE_ACTIONS = new Set(["cash_dividend", "stock_dividend", "stock_split", "merger", "acquisition", "spinoff", "corporate_action"]);
+const norm = (s: string | null | undefined) => (s ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+
+/**
+ * Overlay flag bits for one RWA asset status: ASSET_PAUSED / MARKET_PAUSED halt the symbol, a corporate
+ * action reason marks it, and ASSET_LIMITED is passed through (with EARNINGS_WINDOW when the reason is earnings).
+ */
+export function flagsFromStatus(s: AssetStatus | null | undefined): number {
+  if (!s) return 0;
+  const code = (s.reasonCode ?? "").trim().toUpperCase();
+  const msg = norm(s.reasonMsg);
+  let f = 0;
+  if (code === "ASSET_PAUSED" || code === "MARKET_PAUSED") f |= OVERLAY_FLAGS.HALTED;
+  if (CORPORATE_ACTIONS.has(msg)) f |= OVERLAY_FLAGS.CORPORATE_ACTION;
+  if (code === "ASSET_LIMITED") {
+    f |= OVERLAY_FLAGS.ASSET_LIMITED;
+    if (msg === "earnings") f |= OVERLAY_FLAGS.EARNINGS_WINDOW;
+  }
+  return f;
+}
+
+// --------------------------------------------------------------- earnings
+
+/** Per symbol, ascending: the regular-open timestamps at which an earnings gap is realised. */
+export type EarningsSchedule = ReadonlyMap<string, readonly number[]>;
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Regular open at which an announcement's gap is realised: before the open ("bmo") the same day's open,
+ * after the close ("amc") the next open after that day's close. Weekends and holidays roll forward.
+ */
+function realisedAtFor(sym: string, e: unknown): number {
+  if (!e || typeof e !== "object") throw new Error(`earnings ${sym}: entry must be an object`);
+  const { date, timing, realisedAt } = e as { date?: unknown; timing?: unknown; realisedAt?: unknown };
+  if (realisedAt !== undefined) {
+    if (typeof realisedAt !== "number" || !Number.isSafeInteger(realisedAt) || realisedAt <= 0) throw new Error(`earnings ${sym}: realisedAt must be a unix timestamp`);
+    return realisedAt;
+  }
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error(`earnings ${sym}: date must be YYYY-MM-DD`);
+  const day = Date.parse(`${date}T00:00:00Z`) / DAY_MS;
+  if (!Number.isInteger(day)) throw new Error(`earnings ${sym}: invalid date ${date}`);
+  const t = timing ?? "amc";
+  if (t !== "amc" && t !== "bmo") throw new Error(`earnings ${sym}: timing must be "bmo" or "amc"`);
+  // bmo: the first regular open at or after that local day starts; amc: the first open after its close.
+  const at = t === "bmo" ? nextOpen(regularCloseAt(day - 1)) : nextOpen(regularCloseAt(day));
+  if (!at) throw new Error(`earnings ${sym}: ${date} is outside the session calendar`);
+  return at;
+}
+
+/**
+ * Parses config/earnings.json: `{ "earnings": { "NVDA": [{ "date": "2026-11-18", "timing": "amc" }, ...] } }`
+ * (or `{ "realisedAt": <unix> }` entries). Throws on anything malformed.
+ */
+export function parseEarnings(json: unknown): EarningsSchedule {
+  if (!json || typeof json !== "object" || Array.isArray(json)) throw new Error("earnings: expected an object");
+  const book = (json as { earnings?: unknown }).earnings ?? {};
+  if (!book || typeof book !== "object" || Array.isArray(book)) throw new Error("earnings: `earnings` must map symbols to lists");
+  const out = new Map<string, number[]>();
+  for (const [sym, list] of Object.entries(book as Record<string, unknown>)) {
+    if (!Array.isArray(list)) throw new Error(`earnings ${sym}: expected a list`);
+    out.set(sym.toUpperCase(), list.map((e) => realisedAtFor(sym, e)).sort((a, b) => a - b));
+  }
+  return out;
+}
+
+export async function loadEarnings(file: string): Promise<EarningsSchedule> {
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+    throw err;
+  }
+  return parseEarnings(JSON.parse(text));
+}
+
+/** The next realised-at timestamp strictly after `now`, or 0 (which clears it on-chain). */
+export function nextEarningsFor(s: EarningsSchedule, symbol: string, now: number): number {
+  return s.get(symbol.toUpperCase())?.find((t) => t > now) ?? 0;
+}
+
+// ------------------------------------------------------------------ chain
+
+export interface OverlayOnChain {
+  validUntil: number;
+  nextEarnings: number;
+  flags: number;
+  ondoMultiplier: bigint;
+  referencePrice: bigint;
+  postedAt: number;
+}
+
+export interface TickerOnChain {
+  symbol: string;
+  bStock: Address;
+  /** Null when the ticker has no Ondo token. */
+  ondo: Address | null;
+  hasChainlink: boolean;
+  overlay: OverlayOnChain;
+  /** Ondo's on-chain sValue (1e18); null when unreadable or there is no Ondo token. */
+  ondoSValue: bigint | null;
+  /** SessionOracle.perSharePrice (1e8); null when unavailable. */
+  perShare: bigint | null;
+  /** Last accepted reference print (tickers without Chainlink). */
+  lastReference: { price: bigint; postedAt: number };
+}
+
+export interface PublisherSnapshot {
+  /** Head block timestamp. */
+  at: number;
+  session: SessionName;
+  params: OracleParams;
+  tickers: TickerOnChain[];
+}
+
+export interface PublisherReads {
+  snapshot(): Promise<PublisherSnapshot>;
+}
+
+async function orNullOnRevert<T>(read: Promise<T>): Promise<T | null> {
+  try {
+    return await read;
+  } catch (err) {
+    if (isRevert(err)) return null;
+    throw err;
+  }
+}
+
+const ondoSharesAbi = parseAbi(["function getSValue(address token) view returns (uint128 sValue, bool paused)"]);
+
+/** Reads every listed ticker's overlay inputs from the deployment, pinned to the head block. */
+export function chainPublisherReads(c: ReadClient, d: Deployment): PublisherReads {
+  return {
+    async snapshot() {
+      const head = await c.getBlock({ blockTag: "latest" });
+      const blockNumber = head.number as bigint;
+      const or = { address: d.sessionOracle, abi: sessionOracleAbi, blockNumber } as const;
+      const [session, p, count, ondoShares] = await Promise.all([
+        c.readContract({ address: d.calendar, abi: sessionCalendarAbi, blockNumber, functionName: "session", args: [head.timestamp] }),
+        c.readContract({ ...or, functionName: "params" }),
+        c.readContract({ ...or, functionName: "symbolCount" }),
+        c.readContract({ ...or, functionName: "ondoShares" }),
+      ]);
+      const syms = await Promise.all(Array.from({ length: Number(count) }, (_, i) => c.readContract({ ...or, functionName: "symbols", args: [BigInt(i)] })));
+      const tickers = await Promise.all(
+        syms.map(async (sym): Promise<TickerOnChain> => {
+          const [t, ov, ps, lr] = await Promise.all([
+            c.readContract({ ...or, functionName: "ticker", args: [sym] }),
+            c.readContract({ ...or, functionName: "overlay", args: [sym] }),
+            c.readContract({ ...or, functionName: "perSharePrice", args: [sym] }),
+            c.readContract({ ...or, functionName: "lastReference", args: [sym] }),
+          ]);
+          const ondo = t.ondo === zeroAddress ? null : t.ondo;
+          const sv = ondo
+            ? await orNullOnRevert(c.readContract({ address: ondoShares, abi: ondoSharesAbi, blockNumber, functionName: "getSValue", args: [ondo] }))
+            : null;
+          return {
+            symbol: bytes32ToSymbol(sym),
+            bStock: t.bStock,
+            ondo,
+            hasChainlink: t.chainlink !== zeroAddress,
+            overlay: {
+              validUntil: Number(ov.validUntil),
+              nextEarnings: Number(ov.nextEarnings),
+              flags: ov.flags,
+              ondoMultiplier: ov.ondoMultiplier,
+              referencePrice: ov.referencePrice,
+              postedAt: Number(ov.postedAt),
+            },
+            ondoSValue: sv && sv[0] > 0n ? sv[0] : null,
+            perShare: ps[1] ? ps[0] : null,
+            lastReference: { price: lr.price, postedAt: Number(lr.postedAt) },
+          };
+        }),
+      );
+      return {
+        at: Number(head.timestamp),
+        session: sessionName(session),
+        params: {
+          restoreDelay: p[0],
+          horizon: p[1],
+          convergenceBps: p[2],
+          maxRefAge: p[3],
+          maxOverlayTtl: p[4],
+          maxOndoDriftBps: p[5],
+          maxRefDeviationBps: p[6],
+        },
+        tickers,
+      };
+    },
+  };
+}
+
+/** The keyless RWA calls the publisher makes (PublicRwaClient satisfies it). */
+export interface RwaReads {
+  assetStatus(chainId: string, contractAddress: string): Promise<AssetStatus>;
+  dynamic(chainId: string, contractAddress: string): Promise<RwaDynamic>;
+}
+
+// ---------------------------------------------------------------- overlay
+
+const DECIMAL = /^\d+(\.\d+)?$/;
+
+/** A non-negative decimal string at `decimals` (extra digits are truncated), or null. */
+export function parseDecimal(s: unknown, decimals: number): bigint | null {
+  if (typeof s !== "string") return null;
+  const t = s.trim();
+  if (!DECIMAL.test(t)) return null;
+  const [int, frac = ""] = t.split(".");
+  return parseUnits(`${int}.${frac.slice(0, decimals) || "0"}`, decimals);
+}
+
+const devBps = (a: bigint, b: bigint) => (b === 0n ? Number.POSITIVE_INFINITY : Number(((a > b ? a - b : b - a) * 10_000n) / b));
+
+interface Finding {
+  type: string;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+interface Built {
+  overlay: OverlayInput & { validUntil: number; nextEarnings: number };
+  findings: Finding[];
+}
+
+function buildOverlay(t: TickerOnChain, status: AssetStatus, ondo: RwaDynamic | null, snap: PublisherSnapshot, earnings: EarningsSchedule): Built {
+  const findings: Finding[] = [];
+  const flags = flagsFromStatus(status) | flagsFromStatus(ondo?.statusInfo);
+
+  let ondoMultiplier = 0n;
+  if (t.ondo && ondo) {
+    const m = parseDecimal(ondo.tokenInfo?.sharesMultiplier, 18);
+    const sv = t.ondoSValue;
+    if (m === null || m === 0n) {
+      findings.push({ type: "ondo-multiplier", message: "stale Ondo multiplier: the RWA feed returned none, omitted" });
+    } else if (sv === null) {
+      findings.push({ type: "ondo-multiplier", message: "stale Ondo multiplier: the on-chain sValue is unreadable, omitted", data: { posted: m } });
+    } else if (m < sv || m > (sv * BigInt(10_000 + snap.params.maxOndoDriftBps)) / 10_000n) {
+      findings.push({
+        type: "ondo-multiplier",
+        message: `stale Ondo multiplier: ${m} is outside [sValue ${sv}, +${snap.params.maxOndoDriftBps} bps], omitted`,
+        data: { posted: m, sValue: sv },
+      });
+    } else {
+      ondoMultiplier = m;
+    }
+  }
+
+  // The contract accepts a reference only for tickers without Chainlink and only in the regular session;
+  // any other nonzero reference reverts the whole batch. Zero keeps the last stored print.
+  let referencePrice = 0n;
+  const closeIn = nextClose(snap.at) - snap.at;
+  if (!t.hasChainlink && snap.session === "REGULAR" && closeIn > REF_CLOSE_MARGIN_SEC && ondo) {
+    const p = parseDecimal(ondo.stockInfo?.price, 8);
+    if (p === null || p === 0n) {
+      findings.push({ type: "reference", message: "reference unavailable: the Ondo feed has no underlying price" });
+    } else if (t.perShare === null) {
+      findings.push({ type: "reference", message: "reference omitted: the on-chain per-share price is unavailable", data: { reference: p } });
+    } else if (devBps(p, t.perShare) > snap.params.maxRefDeviationBps) {
+      findings.push({
+        type: "reference",
+        message: `reference ${p} is more than ${snap.params.maxRefDeviationBps} bps from the per-share price ${t.perShare}, omitted`,
+        data: { reference: p, perShare: t.perShare },
+      });
+    } else {
+      referencePrice = p;
+    }
+  }
+
+  const validity = Math.min(VALIDITY_SEC, snap.params.maxOverlayTtl - 300);
+  return {
+    overlay: { validUntil: snap.at + validity, nextEarnings: nextEarningsFor(earnings, t.symbol, snap.at), flags, ondoMultiplier, referencePrice },
+    findings,
+  };
+}
+
+/** What a symbol last carried: the on-chain overlay, or this process's own newer post. */
+interface Last {
+  postedAt: number;
+  validUntil: number;
+  nextEarnings: number;
+  flags: number;
+  ondoMultiplier: bigint;
+  refPrice: bigint;
+  refAt: number;
+}
+
+function dueReason(last: Last, o: Built["overlay"], at: number): string | null {
+  if (last.postedAt === 0) return "first post";
+  if (o.flags !== last.flags) return `flags ${last.flags} -> ${o.flags}`;
+  if (o.nextEarnings !== last.nextEarnings) return `nextEarnings ${last.nextEarnings} -> ${o.nextEarnings}`;
+  if (o.ondoMultiplier !== last.ondoMultiplier) return "ondo multiplier changed";
+  if (o.referencePrice !== 0n) {
+    if (last.refPrice === 0n) return "first reference";
+    if (at - last.refAt >= REF_REFRESH_SEC) return "reference refresh";
+    if (devBps(o.referencePrice, last.refPrice) > REF_MOVE_BPS) return "reference moved";
+  }
+  if (at - last.postedAt >= HEARTBEAT_SEC) return "heartbeat";
+  if (last.validUntil - at < 1800) return "expiring";
+  return null;
+}
+
+// -------------------------------------------------------------- publisher
+
+export interface PublisherOptions {
+  deployment: Deployment;
+  reads: PublisherReads;
+  rwa: RwaReads;
+  sender: TxSender;
+  feed: Feed;
+  /** The current earnings schedule (read each tick so operator edits apply without a restart). */
+  earnings: () => Promise<EarningsSchedule>;
+  log?: (line: string) => void;
+}
+
+export interface PublishReport {
+  at: number;
+  posted: string[];
+  refused: string[];
+  /** Symbols skipped this tick, with why. */
+  skipped: Record<string, string>;
+  txHash?: string;
+}
+
+type Entry = { symbol: string; overlay: Built["overlay"]; reason: string };
+
+export class Publisher {
+  readonly #o: PublisherOptions;
+  readonly #backoff = new Map<string, number>();
+  readonly #last = new Map<string, Last>();
+  #findings = new Set<string>();
+  #earnings: EarningsSchedule = new Map();
+
+  constructor(o: PublisherOptions) {
+    this.#o = o;
+  }
+
+  async tick(): Promise<PublishReport> {
+    const { reads, sender } = this.#o;
+    const snap = await reads.snapshot();
+    const report: PublishReport = { at: snap.at, posted: [], refused: [], skipped: {} };
+    const seen = new Set<string>();
+    const finding = async (symbol: string, f: Finding) => {
+      const key = `${symbol}:${f.type}`;
+      seen.add(key);
+      if (this.#findings.has(key)) return;
+      await this.#o.feed.record({ kind: "finding", source: "publisher", symbol, reason: f.message, ...(f.data ? { data: f.data } : {}) });
+    };
+
+    try {
+      this.#earnings = await this.#o.earnings();
+    } catch (err) {
+      await finding("*", { type: "earnings", message: `earnings schedule unreadable, keeping the last good one: ${safeMessage(err)}` });
+    }
+
+    const due: Entry[] = [];
+    for (const t of snap.tickers) {
+      const until = this.#backoff.get(t.symbol) ?? 0;
+      if (until > snap.at) {
+        report.skipped[t.symbol] = `backing off until ${until}`;
+        continue;
+      }
+      let status: AssetStatus;
+      let ondo: RwaDynamic | null = null;
+      try {
+        [status, ondo] = await Promise.all([
+          this.#o.rwa.assetStatus(RWA_CHAIN, t.bStock),
+          t.ondo ? this.#o.rwa.dynamic(RWA_CHAIN, t.ondo) : Promise.resolve(null),
+        ]);
+      } catch (err) {
+        report.skipped[t.symbol] = "RWA status unavailable";
+        await finding(t.symbol, { type: "rwa", message: `RWA status unavailable, not posting: ${safeMessage(err)}` });
+        continue;
+      }
+      const built = buildOverlay(t, status, ondo, snap, this.#earnings);
+      for (const f of built.findings) await finding(t.symbol, f);
+      const reason = dueReason(this.#lastFor(t), built.overlay, snap.at);
+      if (reason) due.push({ symbol: t.symbol, overlay: built.overlay, reason });
+    }
+    this.#findings = seen;
+    if (due.length === 0) return report;
+
+    // Simulate the batch; if it reverts, find the symbols that revert alone and post the rest.
+    let batch = due;
+    let sim = await sender.simulate(writes.postOverlays(this.#o.deployment, batch));
+    if (!sim.ok) {
+      const ok: Entry[] = [];
+      for (const e of batch) {
+        const one = await sender.simulate(writes.postOverlays(this.#o.deployment, [e]));
+        if (one.ok) ok.push(e);
+        else await this.#refuse([e], snap.at, one, one.error, report);
+      }
+      if (ok.length === batch.length) {
+        await this.#refuse(batch, snap.at, sim, sim.error, report); // reverts only together: back off all of it
+        return report;
+      }
+      batch = ok;
+      if (batch.length === 0) return report;
+      sim = await sender.simulate(writes.postOverlays(this.#o.deployment, batch));
+      if (!sim.ok) {
+        await this.#refuse(batch, snap.at, sim, sim.error, report);
+        return report;
+      }
+    }
+
+    const data = {
+      reasons: Object.fromEntries(batch.map((e) => [e.symbol, e.reason])),
+      overlays: Object.fromEntries(batch.map((e) => [e.symbol, e.overlay])),
+    };
+    const symbols = batch.map((e) => e.symbol);
+    if (sender.dryRun) {
+      await this.#o.feed.record({ kind: "publish", source: "publisher", symbols, sim, dryRun: true, data });
+      this.#remember(batch, snap.at);
+      report.posted = symbols;
+      return report;
+    }
+
+    const sent = await sender.send(writes.postOverlays(this.#o.deployment, batch));
+    if (!sent.ok) {
+      await this.#refuse(batch, snap.at, sim, sent.error, report);
+      return report;
+    }
+    if (sent.status === "reverted") {
+      await this.#refuse(batch, snap.at, sim, { name: "Reverted", message: "postOverlays reverted on-chain" }, report, sent.txHash);
+      return report;
+    }
+    await this.#o.feed.record({
+      kind: "publish",
+      source: "publisher",
+      symbols,
+      sim,
+      txHash: sent.txHash,
+      ...(sent.status === "unknown" ? { reason: sent.note ?? "receipt pending" } : {}),
+      data: { ...data, via: sent.via, gasUsed: sent.gasUsed },
+    });
+    this.#remember(batch, snap.at);
+    for (const s of symbols) this.#backoff.delete(s);
+    report.posted = symbols;
+    report.txHash = sent.txHash;
+    this.#o.log?.(`published ${symbols.join(",")} in ${sent.txHash}`);
+    return report;
+  }
+
+  #lastFor(t: TickerOnChain): Last {
+    const chain: Last = {
+      postedAt: t.overlay.postedAt,
+      validUntil: t.overlay.validUntil,
+      nextEarnings: t.overlay.nextEarnings,
+      flags: t.overlay.flags,
+      ondoMultiplier: t.overlay.ondoMultiplier,
+      refPrice: t.lastReference.price,
+      refAt: t.lastReference.postedAt,
+    };
+    const mine = this.#last.get(t.symbol);
+    if (!mine) return chain;
+    const last = mine.postedAt >= chain.postedAt ? { ...mine } : { ...chain };
+    if (mine.refAt > chain.refAt) {
+      last.refPrice = mine.refPrice;
+      last.refAt = mine.refAt;
+    } else {
+      last.refPrice = chain.refPrice;
+      last.refAt = chain.refAt;
+    }
+    return last;
+  }
+
+  #remember(batch: Entry[], at: number) {
+    for (const e of batch) {
+      const prev = this.#last.get(e.symbol);
+      this.#last.set(e.symbol, {
+        postedAt: at,
+        validUntil: e.overlay.validUntil,
+        nextEarnings: e.overlay.nextEarnings,
+        flags: e.overlay.flags,
+        ondoMultiplier: e.overlay.ondoMultiplier,
+        refPrice: e.overlay.referencePrice !== 0n ? e.overlay.referencePrice : (prev?.refPrice ?? 0n),
+        refAt: e.overlay.referencePrice !== 0n ? at : (prev?.refAt ?? 0),
+      });
+    }
+  }
+
+  async #refuse(batch: Entry[], at: number, sim: FeedSim, error: FeedError | undefined, report: PublishReport, txHash?: `0x${string}`) {
+    for (const e of batch) {
+      this.#backoff.set(e.symbol, at + BACKOFF_SEC);
+      report.refused.push(e.symbol);
+      await this.#o.feed.record({
+        kind: "refused",
+        source: "publisher",
+        symbol: e.symbol,
+        sim,
+        ...(error ? { error, reason: error.message } : {}),
+        ...(txHash ? { txHash } : {}),
+        data: { overlay: e.overlay, due: e.reason, backoffUntil: at + BACKOFF_SEC },
+      });
+    }
+  }
+}
+
+/** Seconds until the next publisher run: every TICK_SEC, and 5 s after each regular open and close. */
+export function publisherDelaySec(now: number): number {
+  const boundaries = [nextOpen(now), nextClose(now)].filter((t) => t > now).map((t) => t - now + 5);
+  return Math.max(5, Math.min(TICK_SEC, ...boundaries));
+}

@@ -33,6 +33,9 @@ importers:
       '@ballast/risk':
         specifier: workspace:*
         version: link:../../packages/risk
+      '@ballast/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@bnbagent/sdk':
         specifier: 0.6.0
         version: 0.6.0(typescript@5.9.3)(zod@3.25.76)

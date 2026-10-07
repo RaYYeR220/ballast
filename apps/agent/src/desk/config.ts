@@ -44,6 +44,10 @@ export interface DeskConfig {
   /** Null means keyless: only the public Binance endpoints are used. */
   readonly binance: { apiKey: Secret; apiSecret: Secret } | null;
   readonly deploymentFile: string;
+  /** Desk state (audit feed JSONL, cursors). Outside git; the default apps/agent/var/ is gitignored. */
+  readonly dataDir: string;
+  /** Per-symbol earnings schedule the operator maintains (config/earnings.json by default). */
+  readonly earningsFile: string;
   /** Bind address and port of the Studio A2A/MCP faces (read by the Studio entrypoints). */
   readonly agentBindHost: string;
   readonly agentPort: number;
@@ -137,6 +141,8 @@ const envSchema = z.object({
   BINANCE_WEB3_API_KEY: optionalText,
   BINANCE_WEB3_API_SECRET: optionalText,
   DEPLOYMENT_FILE: optionalText,
+  DATA_DIR: optionalText,
+  EARNINGS_FILE: optionalText,
   AGENT_BIND_HOST: hostVar("127.0.0.1"),
   AGENT_PORT: portVar(9000),
   HTTP_HOST: hostVar("127.0.0.1"),
@@ -222,6 +228,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const deploymentFile = e.DEPLOYMENT_FILE
     ? path.resolve(cwd, e.DEPLOYMENT_FILE)
     : path.join(REPO_ROOT, "contracts", "deployments", `${chainId}.json`);
+  const dataDir = e.DATA_DIR ? path.resolve(cwd, e.DATA_DIR) : path.join(REPO_ROOT, "apps", "agent", "var");
+  const earningsFile = e.EARNINGS_FILE ? path.resolve(cwd, e.EARNINGS_FILE) : path.join(REPO_ROOT, "config", "earnings.json");
 
   const summary = [
     `chain=${chainId} (${DESK_CHAINS[chainId]})`,
@@ -229,6 +237,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `signer=${signer.kind === "keystore" ? `keystore ${signer.path}` : "private key"}`,
     `binance=${binance ? "keyed" : "keyless"}`,
     `deployment=${deploymentFile}`,
+    `data=${dataDir}`,
     `agent=${e.AGENT_BIND_HOST}:${e.AGENT_PORT}`,
     `http=${e.HTTP_HOST}:${e.HTTP_PORT}`,
     `x402Cap=$${e.X402_DAILY_CAP_USD}/day`,
@@ -241,6 +250,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     signer: Object.freeze(signer),
     binance: binance && Object.freeze(binance),
     deploymentFile,
+    dataDir,
+    earningsFile,
     agentBindHost: e.AGENT_BIND_HOST,
     agentPort: e.AGENT_PORT,
     httpHost: e.HTTP_HOST,
