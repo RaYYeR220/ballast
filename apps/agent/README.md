@@ -73,8 +73,10 @@ The same flag updates endpoints later. Running without `--agent-id` always mints
   closes the loan after a shield, the cycle ends and the desk borrows nothing back.
 - A liquidated account is no longer managed. The desk records the seizure on-chain with
   `recordLiquidation()` once and then leaves the account alone; the owner takes it from there.
-- A transaction that is not mined in time is recorded as `pending` and settled on a later tick; the
-  next send from the desk key replaces it at a higher gas price if it is still stuck.
+- A transaction that is not mined in time is recorded as `pending`, and the account is left alone until
+  it settles. A stuck shield is sped up at its own nonce (re-planned, re-simulated, re-signed for more
+  gas) before anything else is sent; other stuck sends are replaced or cancelled. Shield amounts for the
+  restore cycle come from the receipt's `Shielded` logs.
 
 ## Security posture
 
