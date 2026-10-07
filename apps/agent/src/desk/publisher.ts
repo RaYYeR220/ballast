@@ -538,8 +538,14 @@ export class Publisher {
   }
 }
 
-/** Seconds until the next publisher run: every TICK_SEC, and 5 s after each regular open and close. */
+/**
+ * Run after a regular open or close once Binance's two-minute session-transition pause (MARKET_PAUSED, which
+ * maps to HALTED) is over, so the boundary run does not post a halt for a scheduled transition.
+ */
+export const BOUNDARY_DELAY_SEC = 180;
+
+/** Seconds until the next publisher run: every TICK_SEC, and BOUNDARY_DELAY_SEC after each regular open and close. */
 export function publisherDelaySec(now: number): number {
-  const boundaries = [nextOpen(now), nextClose(now)].filter((t) => t > now).map((t) => t - now + 5);
+  const boundaries = [nextOpen(now), nextClose(now)].filter((t) => t > now).map((t) => t - now + BOUNDARY_DELAY_SEC);
   return Math.max(5, Math.min(TICK_SEC, ...boundaries));
 }

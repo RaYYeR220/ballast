@@ -411,9 +411,10 @@ describe("Publisher", () => {
 });
 
 describe("publisherDelaySec", () => {
-  it("runs every 10 min and right after a session boundary", () => {
+  it("runs every 10 min and 3 min after a regular open or close (after the transition pause)", () => {
     expect(publisherDelaySec(REGULAR_AT)).toBe(600);
-    expect(publisherDelaySec(regularCloseAt(WED) - 100)).toBe(105);
-    expect(publisherDelaySec(regularOpenAt(WED) - 1)).toBe(6);
+    expect(publisherDelaySec(regularCloseAt(WED) - 500)).toBe(600);
+    expect(publisherDelaySec(regularCloseAt(WED) - 100)).toBe(280);
+    expect(publisherDelaySec(regularOpenAt(WED) - 1)).toBe(181);
   });
 });
