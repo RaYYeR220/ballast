@@ -205,6 +205,16 @@ describe("earnings schedule", () => {
     expect((await loadEarnings(path.join(tmpdir(), "no-such-earnings.json"))).size).toBe(0);
   });
 
+  it("maps the shipped Q3 dates to the regular open where the gap lands, across the DST change", async () => {
+    const s = await loadEarnings(path.resolve(__dirname, "../../../config/earnings.json"));
+    const now = Date.UTC(2026, 9, 7) / 1000;
+    expect(nextEarningsFor(s, "TSLA", now)).toBe(1_792_675_800); // amc Oct 21 -> Oct 22 09:30 EDT
+    expect(nextEarningsFor(s, "AAPL", now)).toBe(1_793_367_000); // amc Oct 29 -> Oct 30 09:30 EDT
+    expect(nextEarningsFor(s, "NVDA", now)).toBe(1_795_098_600); // amc Nov 18 -> Nov 19 09:30 EST
+    expect(nextEarningsFor(s, "CRCL", now)).toBe(1_794_580_200); // bmo Nov 13 -> Nov 13 09:30 EST
+    expect(nextEarningsFor(s, "SPY", now)).toBe(0);
+  });
+
   it("rejects malformed files", () => {
     expect(() => parseEarnings({ earnings: { NVDA: [{ date: "07/10/2026" }] } })).toThrow(/NVDA/);
     expect(() => parseEarnings({ earnings: { NVDA: [{ date: "2026-10-07", timing: "noon" }] } })).toThrow(/timing/);
