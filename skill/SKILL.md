@@ -17,6 +17,16 @@ Ballast closes that hole in two parts:
 
 This skill reads that state and plans shields. It never signs and holds no keys.
 
+## Install
+
+Node 22 or newer and pnpm are required.
+
+```bash
+git clone <the Ballast repository URL>
+cd ballast
+pnpm install
+```
+
 ## Run the MCP server
 
 From the repository root:
@@ -25,19 +35,21 @@ From the repository root:
 BSC_RPC_URL=https://bsc-dataseed.bnbchain.org npx tsx packages/mcp/bin/ballast-mcp.ts
 ```
 
-That speaks MCP over stdio. To use it from an MCP client, register the command:
+That speaks MCP over stdio. To use it from an MCP client, register the command with the absolute path of your clone:
 
 ```json
-{ "mcpServers": { "ballast": { "command": "npx", "args": ["tsx", "packages/mcp/bin/ballast-mcp.ts"], "env": { "BSC_RPC_URL": "https://bsc-dataseed.bnbchain.org" } } } }
+{ "mcpServers": { "ballast": { "command": "npx", "args": ["tsx", "/absolute/path/to/ballast/packages/mcp/bin/ballast-mcp.ts"], "env": { "BSC_RPC_URL": "https://bsc-dataseed.bnbchain.org" } } } }
 ```
 
-For a remote client, serve Streamable HTTP (loopback by default) and point the client at `http://127.0.0.1:8787/mcp`:
+For a client that connects over HTTP, serve Streamable HTTP and point the client at `http://127.0.0.1:8787/mcp`:
 
 ```bash
 npx tsx packages/mcp/bin/ballast-mcp.ts --http --port 8787
 ```
 
-Environment: `BSC_RPC_URL` (RPC), `CHAIN_ID` (56 by default, 31337 for a local fork), `DEPLOYMENT_FILE` (path to a deployment JSON, default `contracts/deployments/<chainId>.json`).
+The HTTP endpoint binds to 127.0.0.1 and only answers requests addressed to that host. It has no authentication: a non-loopback `--host` is open to anyone who can reach it, so keep it on loopback or put auth in front.
+
+Environment: `BSC_RPC_URL` (RPC), `CHAIN_ID` (56 by default, 31337 for a local fork), `DEPLOYMENT_FILE` (path to a deployment JSON, default `contracts/deployments/<chainId>.json`), `RWA_CHAIN_ID` (chain id for the Binance status lookup). The Binance RWA status is keyless mainnet data, so on a fork `tokenized_stock_status` still describes chain 56.
 
 ## Tools
 
@@ -49,8 +61,8 @@ All tools are read or plan only.
 | `oracle_price` | Get a symbol's price, `canAddRisk` and why, and the gap buffer for the window ahead | `oracle_price { "symbol": "TSLA" }` |
 | `position_risk` | See an account's health now and after the coming gap, with the plan | `position_risk { "account": "0x..." }` |
 | `plan_shield` | Get the ordered calls that keep an account above a target health after the gap | `plan_shield { "account": "0x...", "targetHf": 1.1 }` |
-| `list_accounts` | Find Ballast accounts, all or by owner | `list_accounts { "owner": "0x..." }` |
-| `guardian_jobs` | See guardian jobs and their settlement status | `guardian_jobs { "account": "0x..." }` |
+| `list_accounts` | Find Ballast accounts, all or by owner, paged with `offset` and `limit` | `list_accounts { "owner": "0x..." }` |
+| `guardian_jobs` | See guardian jobs and their settlement status (`truncated` says if the scan missed older jobs) | `guardian_jobs { "account": "0x..." }` |
 | `tokenized_stock_status` | Ask the keyless Binance status whether a token is open, and why not | `tokenized_stock_status { "address": "0x..." }` |
 | `api_health` | Check recent Binance API probe results | `api_health {}` |
 
@@ -58,8 +70,8 @@ More detail and result fields are in `references/tools.md`.
 
 ## Rules
 
-1. **Never add risk while `canAddRisk` is false.** That means no new borrow, no restore, no raising leverage. `oracle_price` returns the reason (`NOT_REGULAR`, `TOO_SOON_AFTER_OPEN`, `WINDOW_AHEAD`, `OVERLAY_STALE`, `FLAGGED`, and so on). Wait for it to turn true; do not work around it.
-2. **Shields are always allowed.** Repaying debt or deleveraging before a closure is never blocked by `canAddRisk`. If `plan_shield` returns steps, they are safe to recommend at any time.
+1. **Do not recommend new borrowing while `canAddRisk` is false.** `oracle_price` returns the reason (`NOT_REGULAR`, `TOO_SOON_AFTER_OPEN`, `WINDOW_AHEAD`, `OVERLAY_STALE`, `FLAGGED`, and so on). Wait for it to turn true; do not work around it. On-chain, only `restore()` is gated by it, and it is bounded by the owner's `maxLtvBps` and the `autoRestore` switch.
+2. **Shields are always allowed, with one limit on sales.** Repaying from the cushion is always allowed. Collateral sales are allowed only on Lista with a deleverage path set, inside the pre-close window or when LTV is above the owner's cap. The plan's `canSellCollateral` and `warnings` say which applies.
 3. **Read the plan kind.** `noop` means the account already survives the gap. `repay` uses the cushion only. `repay+deleverage` also sells collateral. `insufficient` means the cushion and allowed sale cannot reach the target: say so, do not present it as safe.
 4. **Heed warnings** in the plan (unknown minimum loan, sale not allowed yet, over-deleverage). Report them with the plan.
 5. **You plan, owners and keepers sign.** Never ask for a private key or seed phrase. Hand the user the steps and let their wallet or the account keeper send them.

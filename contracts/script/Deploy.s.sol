@@ -15,8 +15,15 @@ import {
     IPriceSource, IOndoSharesOracle, IMoolah, IPcsV3SwapRouter, IComptroller, IVenusOracle, IIdentityRegistry, IReputationRegistry
 } from "../src/interfaces/External.sol";
 
+interface IJobCounter {
+    function jobCounter() external view returns (uint256);
+}
+
 contract Deploy is Script {
     using stdJson for string;
+
+    /// @dev Kernel job counter read just before the guardian deploys (a field, to keep run() off the stack limit).
+    uint256 internal guardianStartJobId;
 
     function run() external {
         string memory cfg = vm.readFile(string.concat(vm.projectRoot(), "/../config/bsc-mainnet.json"));
@@ -72,6 +79,8 @@ contract Deploy is Script {
             IComptroller(cfg.readAddress(".venus.comptroller")), IVenusOracle(cfg.readAddress(".venus.oracle"))
         );
         CushionVault vault = new CushionVault(oracle, IMoolah(cfg.readAddress(".lista.moolah")), 3 hours);
+        // Kernel job counter just before the guardian exists: no guardian job has a lower id.
+        guardianStartJobId = _jobCounter(cfg.readAddress(".erc8183.kernel"));
         BallastGuardian guardian = new BallastGuardian(
             IACP(cfg.readAddress(".erc8183.kernel")), factory, IIdentityRegistry(cfg.readAddress(".erc8004.identity")),
             IReputationRegistry(cfg.readAddress(".erc8004.reputation")), 0.01e18, 1 hours
@@ -88,6 +97,7 @@ contract Deploy is Script {
         o.serialize("venusImpl", factory.venusImpl());
         o.serialize("cushionVault", address(vault));
         o.serialize("guardian", address(guardian));
+        o.serialize("guardianStartJobId", guardianStartJobId);
         string memory json = o.serialize("block", block.number);
         // Only a real broadcast records addresses; a simulation must not leave a deployments file behind.
         if (vm.isContext(VmSafe.ForgeContext.ScriptBroadcast) || vm.isContext(VmSafe.ForgeContext.ScriptResume)) {
@@ -96,6 +106,10 @@ contract Deploy is Script {
             console2.log("simulation only: deployments file not written");
         }
         console2.log("sessionOracle", address(oracle));
+    }
+
+    function _jobCounter(address kernel) internal view returns (uint256) {
+        return kernel.code.length > 0 ? IJobCounter(kernel).jobCounter() : 0;
     }
 
     function _tickerCount(string memory cfg) internal view returns (uint256 n) {

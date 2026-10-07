@@ -65,4 +65,4 @@ That is why Ballast shields before a close and holds restores back until the ora
 2. Call `oracle_price` for the symbol: check `canAddRisk`, `reason` and `windowAhead.gapBps`.
 3. For a loan, call `position_risk`: compare `healthFactor.afterGap` with the target.
 4. If it is short, call `plan_shield` and hand the steps to the owner or keeper.
-5. Do not borrow more or restore while `canAddRisk` is false. Shields are always allowed.
+5. Do not recommend new borrowing or a restore while `canAddRisk` is false. Repaying from the cushion is always allowed; collateral sales follow the plan's `canSellCollateral`.
