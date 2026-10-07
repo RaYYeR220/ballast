@@ -262,8 +262,9 @@ describe("desk API, x402 and notes settings", () => {
 
   it("lists every secret value for scrubbing", () => {
     const c = loadConfig({ ...base, BINANCE_WEB3_API_KEY: "binance-key-1", BINANCE_WEB3_API_SECRET: "binance-secret-1" });
-    const s = deskSecrets(c, { PIEVERSE_LLM_API_KEY: "pv-llm-key-123", LLM_PROVIDER_API_KEY: "" });
-    expect(s).toEqual(expect.arrayContaining([RPC, "rpc-key-0123456789abcdef", "binance-key-1", "binance-secret-1", PK, PK.slice(2), "pv-llm-key-123"]));
+    const s = deskSecrets(c, { PIEVERSE_LLM_API_KEY: "pv-llm-key-123", OTHER_LLM_API_KEY: "", CLOUD_SESSION_TOKEN: "cloud-token-456", DATA_DIR: "/var/lib/ballast" });
+    expect(s).toEqual(expect.arrayContaining([RPC, "rpc-key-0123456789abcdef", "binance-key-1", "binance-secret-1", PK, PK.slice(2), "pv-llm-key-123", "cloud-token-456"]));
     expect(s).not.toContain("");
+    expect(s).not.toContain("/var/lib/ballast");
   });
 });

@@ -12,8 +12,11 @@ export type DeskChainId = keyof typeof DESK_CHAINS;
 const REDACTED = "[redacted]";
 /** Hard ceiling on one x402 data call. */
 export const MAX_X402_PRICE_USD = 0.05;
-/** Environment variables of the LLM providers Studio supports (desk notes): their values are secrets. */
-export const LLM_KEY_VARS = ["PIEVERSE_LLM_API_KEY", "OPENROUTER_API_KEY", "LLM_PROVIDER_API_KEY", "LLM_PROVIDER_B_API_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"] as const;
+/**
+ * Environment variable names whose values are secrets wherever they come from (LLM provider keys for the
+ * desk notes, cloud credentials): anything ending in _API_KEY, _SECRET, _SECRET_ACCESS_KEY, _TOKEN or _PASSWORD.
+ */
+export const SECRET_VAR = /(_API_KEY|_SECRET|_SECRET_ACCESS_KEY|_SESSION_TOKEN|_TOKEN|_PASSWORD|PRIVATE_KEY)$/;
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 /** A string that never prints itself: logs, JSON.stringify and util.inspect all see "[redacted]". */
@@ -341,7 +344,7 @@ export function studioEnv(config: Pick<DeskConfig, "agentBindHost" | "agentPort"
 /**
  * Every secret value the desk holds, for scrubbing the feed and API responses: the RPC URL (with its path
  * and query, whole and in long pieces, where providers put keys), the private key (with and without 0x) or
- * keystore password, the Binance credentials and the LLM provider keys found in `env`.
+ * keystore password, the Binance credentials and every other secret-named variable in `env` (SECRET_VAR).
  */
 export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "signer" | "binance">, env: Record<string, string | undefined> = process.env): string[] {
   const out = new Set<string>();
@@ -368,9 +371,9 @@ export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "signer" | "bina
     out.add(config.binance.apiKey.reveal());
     out.add(config.binance.apiSecret.reveal());
   }
-  for (const k of LLM_KEY_VARS) {
-    const v = env[k]?.trim();
-    if (v && v.length >= 8) out.add(v);
+  for (const [k, raw] of Object.entries(env)) {
+    const v = raw?.trim();
+    if (v && v.length >= 8 && SECRET_VAR.test(k)) out.add(v);
   }
   return [...out].filter((v) => v.length > 0);
 }
