@@ -13,7 +13,8 @@
     "backtest": "tsx packages/risk/scripts/backtest.ts",
     "typecheck": "pnpm -r exec tsc --noEmit",
     "desk": "pnpm --filter @ballast/agent desk",
-    "verify:onchain": "tsx scripts/verify-onchain.ts"
+    "verify:onchain": "tsx scripts/verify-onchain.ts",
+    "proof": "tsx scripts/proof.ts"
   },
   "devDependencies": {
     "@ballast/risk": "workspace:*",
