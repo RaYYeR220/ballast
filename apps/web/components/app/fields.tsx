@@ -2,6 +2,7 @@
 /* Form fields shared by the account, create and cover forms. */
 import { useId, type ReactNode } from "react";
 import { formatUnits } from "viem";
+import { exactAmount, parseAmount } from "@/lib/amount";
 import { MANDATE_HELP } from "@/lib/mandate";
 import s from "./app.module.css";
 
@@ -10,10 +11,13 @@ export function AmountField(p: {
   value: string;
   onChange: (v: string) => void;
   unit: string;
+  decimals: number;
   help?: ReactNode;
   max?: { raw: bigint; decimals: number; label: string } | null;
 }) {
   const id = useId();
+  // what the typed text will be taken as, shown before anything is simulated ("1,5" reads as 1.5, "1,500" as 1,500)
+  const parsed = p.value.trim() === "" ? null : parseAmount(p.value, p.decimals);
   return (
     <div className={s.field}>
       <label htmlFor={id}>{p.label}</label>
@@ -26,6 +30,11 @@ export function AmountField(p: {
           </button>
         ) : null}
       </div>
+      {p.value.trim() !== "" ? (
+        <span className={parsed === null ? s.problems : s.reads} aria-live="polite">
+          {parsed === null ? `Not an amount of ${p.unit}. Use digits with a dot or a comma for decimals.` : `Reads as ${exactAmount(parsed, p.decimals)} ${p.unit}`}
+        </span>
+      ) : null}
       {p.max ? (
         <span className={s.help}>
           {p.max.label}: {Number(formatUnits(p.max.raw, p.max.decimals)).toLocaleString("en-US", { maximumFractionDigits: 6 })} {p.unit}

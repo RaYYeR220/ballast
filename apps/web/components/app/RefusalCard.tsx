@@ -1,4 +1,4 @@
-/* The v09 refusal slip: what was called, what the contract answered, who checked it and what it cost. */
+/* The refusal slip: what was called, what the contract answered, who checked it and what it cost. */
 import type { ReactNode } from "react";
 import { nyDayTime } from "@/lib/format";
 import { SIMULATOR_NAME, type SimError, type SimResult } from "@/lib/sim";

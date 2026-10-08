@@ -11,6 +11,8 @@ export interface TxStep {
   /** the call as a person reads it, e.g. "depositCollateral(120 NVDAB)" */
   call: string;
   tx: TxRequest;
+  /** simulation ticket for a transaction the server built (a swap), see /api/simulate */
+  ticket?: string;
 }
 
 export const amountText = (x: bigint, decimals: number, symbol: string) =>

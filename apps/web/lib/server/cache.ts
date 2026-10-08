@@ -13,7 +13,7 @@ export interface TtlCacheOptions {
 }
 
 export function ttlCache<T>(ttlMs: number, opts: TtlCacheOptions = {}) {
-  const clock = opts.clock ?? Date.now;
+  const clock = opts.clock ?? (() => Date.now());
   const max = opts.max ?? 500;
   const errorTtlMs = opts.errorTtlMs ?? 0;
   const values = new Map<string, { at: number; v: T } | { at: number; err: unknown }>();

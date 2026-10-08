@@ -16,8 +16,8 @@ export const LIMITS = {
   queryChars: 512,
   /** bytes of request body accepted by /api/simulate */
   bodyBytes: 64 * 1024,
-  /** bytes of a desk answer read before giving up */
-  deskAnswerBytes: 2 * 1024 * 1024,
+  /** bytes of a desk answer read before giving up, per view */
+  deskAnswerBytes: { health: 64 * 1024, feed: 2 * 1024 * 1024, oracle: 512 * 1024, ledger: 1024 * 1024, evidence: 1024 * 1024 },
   /** one JSON-RPC request */
   rpcTimeoutMs: 8_000,
   /** one desk request */
@@ -30,4 +30,6 @@ export const LIMITS = {
   headTtlMs: 2_000,
   /** entries kept by the small per-process memo maps */
   memoEntries: 256,
+  /** accounts the simulate route remembers as confirmed by the factory */
+  knownAccounts: 5000,
 } as const;

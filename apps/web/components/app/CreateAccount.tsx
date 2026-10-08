@@ -44,7 +44,7 @@ export function CreateAccountForm({ deployment, owner, deskAgent, markets, onCre
 
   const m = toMandate(mandate);
   const problems = market ? mandateProblems(m, market.lltvBps, market.venue) : [];
-  if (!deskAgent) problems.push("No desk agent address is known, so there is no keeper to name. The site needs DESK_AGENT_ADDRESS, or a desk that answers.");
+  if (!deskAgent) problems.push("The address of the desk agent is not known right now, so there is no keeper to name. Try again when the desk is back.");
 
   function chooseMarket(id: string) {
     setMarketId(id);

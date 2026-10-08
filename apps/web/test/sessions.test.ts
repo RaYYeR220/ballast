@@ -31,7 +31,7 @@ function intlHour(ts: number) {
 }
 
 /* the generic week of the original wheel design: fixed hours, no holidays */
-function prototypeSession(h: number): SectorKind {
+function plainSession(h: number): SectorKind {
   const d = Math.floor(h / 24);
   const t = h % 24;
   if ((d === 4 && t >= 20) || d === 5 || (d === 6 && t < 20)) return "weekend";
@@ -76,10 +76,10 @@ describe("hour of the week from the @ballast/risk calendar", () => {
 });
 
 describe("session sectors", () => {
-  it("a plain week matches the prototype's generic week, quarter hour by quarter hour", () => {
+  it("a plain week matches the plain session rule, quarter hour by quarter hour", () => {
     const sectors = typicalWeekSectors();
     expectContiguousWeek(sectors);
-    for (let q = 0; q < 672; q++) expect(kindAt(sectors, q / 4 + 0.01)).toBe(prototypeSession(q / 4 + 0.01));
+    for (let q = 0; q < 672; q++) expect(kindAt(sectors, q / 4 + 0.01)).toBe(plainSession(q / 4 + 0.01));
     expect(runs(sectors, "regular")).toEqual([0, 1, 2, 3, 4].map((d) => [d * 24 + 9.5, d * 24 + 16]));
     expect(runs(sectors, "weekend")).toEqual([[116, 164]]);
     expect(runs(sectors, "overnight")[0]).toEqual([0, 4]);
@@ -140,7 +140,7 @@ describe("session sectors", () => {
     expect(w.sectors).toEqual(typicalWeekSectors());
   });
 
-  it("reads the meridian like the prototype", () => {
+  it("reads the meridian in words", () => {
     const plain = typicalWeekSectors();
     expect(meridianReadout(plain, 24 + 7 + 35 / 60)).toBe("Tuesday 07:35 New York, pre-market");
     expect(meridianReadout(plain, 10)).toBe("Monday 10:00 New York, market open");

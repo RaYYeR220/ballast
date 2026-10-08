@@ -15,7 +15,7 @@ import { handleSimulate, simulateDeps } from "../lib/server/handlers/simulate";
 import { LIMITS } from "../lib/server/limits";
 import { addressParam, intParam, query, SYMBOL, symbolParam } from "../lib/server/params";
 import { head, readAccounts, readCovers } from "../lib/server/reads";
-import { addr, cloneCode, DEPLOYMENT, fakeReads, NO_COVER, stubClient } from "./helpers";
+import { addr, ALLOW, cloneCode, DEPLOYMENT, fakeReads, jsonRequest, NO_COVER, stubClient } from "./helpers";
 
 const E18 = 10n ** 18n;
 const TUE_1100 = 1_791_298_800n;
@@ -393,26 +393,34 @@ describe("a caller cannot widen what is read", () => {
     expect(r.status).toBe("online");
     if (r.status === "online") expect(r.data.events).toHaveLength(LIMITS.feedEvents);
     const f = vi.fn(async () => new Response(JSON.stringify({ events: [] })));
-    await handleDesk(new Request("http://x/api/desk/feed?limit=9999"), "feed", { baseUrl: "http://desk", fetch: f as never });
+    await handleDesk(new Request(`http://x/api/desk/feed?limit=${LIMITS.feedEvents}`), "feed", { baseUrl: "http://desk", fetch: f as never });
     expect((f.mock.calls[0] as unknown as [string])[0]).toBe(`http://desk/feed?limit=${LIMITS.feedEvents}`);
-    expect((await handleDesk(new Request("http://x/api/desk/feed?limit=99999"), "feed", { baseUrl: "http://desk", fetch: f as never })).status).toBe(400);
+    // a limit over the maximum is refused, not passed on and not silently clamped
+    for (const over of [LIMITS.feedEvents + 1, 9999, 99999]) {
+      expect((await handleDesk(new Request(`http://x/api/desk/feed?limit=${over}`), "feed", { baseUrl: "http://desk", fetch: f as never })).status).toBe(400);
+    }
+    expect(f).toHaveBeenCalledTimes(1);
     const protocolList = Array.from({ length: 500 }, (_, i) => ({ defiProtocolId: `p${i}`, protocolTotalValue: "1" }));
     expect(summarizeDefi({ addressList: [{ protocolList }] })).toHaveLength(50);
   });
 
   it("does not read a desk answer past its size cap", async () => {
-    const huge = "x".repeat(LIMITS.deskAnswerBytes + 10);
+    const huge = "x".repeat(LIMITS.deskAnswerBytes.feed + 10);
     const r = await deskFeed({}, { baseUrl: "http://desk", fetch: (async () => new Response(`{"events":[],"pad":"${huge}"}`)) as never });
     expect(r).toMatchObject({ status: "offline", reason: "error", detail: "the desk's answer was too large to read" });
+    // each view has its own cap: a health answer is small
+    const fat = `{"ok":true,"pad":"${"x".repeat(LIMITS.deskAnswerBytes.health)}"}`;
+    const h = await handleDesk(new Request("http://x/api/desk/health"), "health", { baseUrl: "http://desk", fetch: (async () => new Response(fat)) as never });
+    expect(await h.json()).toMatchObject({ status: "offline", detail: "the desk's answer was too large to read" });
   });
 
   it("refuses an oversized simulate body with 413 and simulates nothing", async () => {
     const { client, calls } = stubClient(() => ({ ok: "0x" }));
     const deps = simulateDeps(serverEnv({}), client);
     const big = JSON.stringify({ from: OWNER, to: KEEPER, data: `0x${"00".repeat(LIMITS.bodyBytes)}` });
-    const res = await handleSimulate(new Request("http://x/api/simulate", { method: "POST", body: big }), deps);
+    const res = await handleSimulate(jsonRequest("http://x/api/simulate", big), deps, ALLOW);
     expect(res.status).toBe(413);
-    const declared = await handleSimulate(new Request("http://x/api/simulate", { method: "POST", body: "{}", headers: { "content-length": String(LIMITS.bodyBytes + 1) } }), deps);
+    const declared = await handleSimulate(jsonRequest("http://x/api/simulate", "{}", { "content-length": String(LIMITS.bodyBytes + 1) }), deps, ALLOW);
     expect(declared.status).toBe(413);
     expect(calls).toHaveLength(0);
   });

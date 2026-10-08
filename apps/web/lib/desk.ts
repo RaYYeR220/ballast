@@ -1,11 +1,16 @@
 /* The desk agent's read API as the web app sees it. The desk is optional: when it is not configured or
    cannot be reached, every view says so instead of showing anything made up. Safe for client bundles. */
 
-export type DeskView = "health" | "feed" | "accounts" | "oracle" | "ledger" | "api-health" | "evidence";
+/** The desk views the web app reads. The desk serves more (its own account list, API statistics); those stay off the site. */
+export type DeskView = "health" | "feed" | "oracle" | "ledger" | "evidence";
+
+export const DESK_FEED_KINDS = ["shield", "restore", "refused", "alert", "noop", "publish", "finding", "pending", "submit", "settle", "payment"] as const;
+export const DESK_FEED_SOURCES = ["keeper", "publisher", "guardian", "x402"] as const;
+export const DESK_LEDGER_KINDS = ["gas", "income", "x402"] as const;
 
 export type DeskOffline = {
   status: "offline";
-  /** not-configured: AGENT_API_URL is unset; unreachable: no answer; error: the desk answered with an error */
+  /** not-configured: no desk is set for this site; unreachable: no answer; error: the desk answered with an error */
   reason: "not-configured" | "unreachable" | "error";
   detail: string;
 };
@@ -44,6 +49,7 @@ export interface DeskEvent {
 }
 
 export interface DeskHealth {
+  /** false while the desk's sender is halted: it signs nothing until the cause clears */
   ok?: boolean;
   chainId?: number;
   agent?: string;
@@ -52,6 +58,35 @@ export interface DeskHealth {
   uptimeSec?: number;
   feedSeq?: number;
   notes?: string;
+  sender?: {
+    sales?: string;
+    halted?: { reason?: string; message?: string; nonce?: number; since?: number } | null;
+    inFlight?: { nonce?: number; kind?: string; rounds?: number; gasPriceGwei?: string; hashes?: string[] } | null;
+    feeSpentLastHourBnb?: string;
+  } | null;
+}
+
+export interface DeskLedgerSummary {
+  incomeUsd: number;
+  x402Usd: number;
+  gasWei: string;
+  gasBnb: string;
+  transactions: number;
+  jobsPaid: number;
+}
+
+export interface DeskLedger {
+  x402: { capUsd: number; spentTodayUsd: number };
+  total: DeskLedgerSummary;
+  today: DeskLedgerSummary;
+  /** gas, income and x402 entries, newest first; fields differ by kind */
+  entries: Record<string, unknown>[];
+}
+
+/** The desk's own reading of the Session Oracle: the session and one snapshot (or an error) per ticker. */
+export interface DeskOracle {
+  session: Record<string, unknown>;
+  symbols: Record<string, unknown>[];
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);

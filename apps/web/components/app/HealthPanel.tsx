@@ -6,27 +6,34 @@ import { sameAddr } from "@/lib/desk";
 import { collateralValue, windowWord } from "@/lib/feed-rows";
 import { nyWeekdayClock, shortHex, units, usd } from "@/lib/format";
 import type { AccountView } from "@/lib/views";
-import { WalletControl } from "./AppBar";
+import { WalletControl } from "./WalletControl";
 import { Gauge, type GaugeMark } from "./Gauge";
 import s from "./app.module.css";
 
 export type HealthContent =
   | { kind: "disconnected" }
   | { kind: "wrong-chain"; chainName: string }
-  | { kind: "not-deployed"; detail: string }
+  | { kind: "not-deployed"; broken: boolean }
   | { kind: "loading" }
   | { kind: "unavailable"; detail: string }
   | { kind: "none" }
-  | { kind: "account"; view: AccountView; deskAgent: Address | null };
+  | { kind: "account"; view: AccountView; deskAgent: Address | null; shielded: boolean };
 
 const after = (ltv: number, gapBps: number) => ltv / (1 - gapBps / 10_000);
 
-export function healthStatus(v: AccountView): { text: string; tone: "ok" | "no" | "" } {
+/**
+ * `shielded`: the desk's last transaction on this loan was a shield (and no restore since). Only then does the
+ * tag say "Shielded"; a loan that survives the gap without one is "Ready for the gap".
+ */
+export function healthStatus(v: AccountView, shielded = false): { text: string; tone: "ok" | "no" | "" } {
   if (v.liquidated) return { text: "Liquidated", tone: "no" };
   if (BigInt(v.debt) === 0n) return { text: "No debt", tone: "" };
   if (v.ltvBps === null) return { text: v.ltvUnbounded ? "Collateral worthless" : "Price unavailable", tone: "no" };
   if (!v.plan) return { text: "No plan", tone: "" };
-  if (v.plan.kind === "noop") return v.plan.reason?.startsWith("survives") ? { text: "Shielded", tone: "ok" } : { text: "Watching", tone: "" };
+  if (v.plan.kind === "noop") {
+    if (!v.plan.reason?.startsWith("survives")) return { text: "Watching", tone: "" };
+    return { text: shielded ? "Shielded" : "Ready for the gap", tone: "ok" };
+  }
   if (v.plan.kind === "insufficient") return { text: "Cushion too small", tone: "no" };
   return { text: v.coming?.inProgress ? "Under target" : "Shield due", tone: "no" };
 }
@@ -91,8 +98,8 @@ export function ComingClosure({ now }: { now: number | null }) {
   );
 }
 
-function AccountHealth({ v, deskAgent }: { v: AccountView; deskAgent: Address | null }) {
-  const st = healthStatus(v);
+function AccountHealth({ v, deskAgent, shielded }: { v: AccountView; deskAgent: Address | null; shielded: boolean }) {
+  const st = healthStatus(v, shielded);
   const ltv = v.ltvBps === null ? null : v.ltvBps / 100;
   const lltv = v.lltvBps / 100;
   const c = v.coming;
@@ -198,7 +205,7 @@ export function HealthPanel({ content, chainName, now }: { content: HealthConten
   return (
     <section className={`${s.panel} ${s.span7}`} aria-label="Loan health">
       {content.kind === "account" ? (
-        <AccountHealth v={content.view} deskAgent={content.deskAgent} />
+        <AccountHealth v={content.view} deskAgent={content.deskAgent} shielded={content.shielded} />
       ) : (
         <>
           <div className={s.ph}>
@@ -221,9 +228,13 @@ export function HealthPanel({ content, chainName, now }: { content: HealthConten
             </Empty>
           )}
           {content.kind === "not-deployed" && (
-            <Empty title="Ballast contracts are not deployed yet">
-              <p>{content.detail}.</p>
-              <p>The wheel, the market calendar and the desk log work without them. Credit lines and covers open here once the contracts are live on {chainName}.</p>
+            <Empty title={content.broken ? "The deployment record could not be read" : "Ballast contracts are not deployed yet"}>
+              <p>
+                {content.broken
+                  ? `This site cannot tell which Ballast contracts to use on ${chainName}, so it reads and sends nothing for them.`
+                  : `Credit lines and covers open here once the contracts are live on ${chainName}.`}
+              </p>
+              <p>The wheel, the market calendar and the desk log work without them.</p>
             </Empty>
           )}
           {content.kind === "loading" && (

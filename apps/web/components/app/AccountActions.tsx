@@ -40,7 +40,7 @@ const ACTIONS: ActionDef[] = [
   { id: "withdraw-cushion", label: "Withdraw cushion", amount: "loan", help: () => "Takes cushion back to your wallet. The agent then has less to repay with before the next close." },
   { id: "repay-all", label: "Repay all", help: () => "Repays the whole loan from the cushion. When the cushion is smaller than the debt, add to it first." },
   { id: "withdraw-collateral", label: "Withdraw collateral", amount: "collateral", help: () => "Takes collateral back to your wallet. The venue refuses it when the loan would become unhealthy." },
-  { id: "set-mandate", label: "Mandate", help: () => "The limits the contract enforces on you and on the agent." },
+  { id: "set-mandate", label: "Mandate", help: () => "The limits the contract enforces on the agent." },
   { id: "set-path", label: "Sale route", help: () => "The one PancakeSwap route the keeper may sell collateral through, fixed by you." },
 ];
 
@@ -96,7 +96,7 @@ export function AccountActions({ view, owner, onDone }: { view: AccountView; own
       let allowance: bigint | undefined;
       if (deposit && token && x !== undefined) {
         const t = await fetchToken(token, owner, view.address);
-        if (BigInt(t.balance) < x) throw new Error(`Your wallet holds ${t.balance === "0" ? "no" : "less"} ${unit} than that.`);
+        if (BigInt(t.balance) < x) throw new Error(t.balance === "0" ? `Your wallet holds no ${unit}.` : `Your wallet holds less ${unit} than that.`);
         allowance = BigInt(t.allowance ?? "0");
       }
       setFlow(accountSteps(view, { action, owner, amount: x, allowance, mandate: m, path: path ?? undefined }));
@@ -138,7 +138,7 @@ export function AccountActions({ view, owner, onDone }: { view: AccountView; own
         ))}
       </div>
       <p className={s.muted}>{def.help(view)}</p>
-      {def.amount ? <AmountField label="Amount" value={amount} onChange={setAmount} unit={unit} max={max} /> : null}
+      {def.amount ? <AmountField label="Amount" value={amount} onChange={setAmount} unit={unit} decimals={decimals} max={max} /> : null}
       {action === "set-mandate" ? <MandateFields value={mandate} onChange={setMandate} /> : null}
       {action === "set-path" ? (
         <p className={s.keeper}>

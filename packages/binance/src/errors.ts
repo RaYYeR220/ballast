@@ -6,7 +6,7 @@ export class Web3ApiError extends Error {
     readonly serverMessage: string,
     readonly retryable: boolean,
   ) {
-    super(`${endpoint} → HTTP ${httpStatus} code ${code}: ${serverMessage}`);
+    super(`${endpoint} -> HTTP ${httpStatus} code ${code}: ${serverMessage}`);
     this.name = "Web3ApiError";
   }
 }

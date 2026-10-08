@@ -10,6 +10,7 @@ import { DeskPill } from "../components/app/AppBar";
 import { DeskNotes, RefusalLog, WatchLog } from "../components/app/DeskPanels";
 import { comingSentence, healthStatus, HealthPanel } from "../components/app/HealthPanel";
 import { gaugeScale, layoutBelow } from "../components/app/Gauge";
+import { AmountField } from "../components/app/fields";
 import { errorSignature, RefusalCard } from "../components/app/RefusalCard";
 import type { AppConfig } from "../lib/app-config";
 import { bsc } from "../lib/chains";
@@ -18,7 +19,7 @@ import { plannedRows } from "../lib/feed-rows";
 import { E18, KEEPER, TUE_1100, VIEW } from "./fixtures";
 
 const TX = `0x${"ab".repeat(32)}`;
-const OFF_UNSET: DeskResult<{ events: DeskEvent[] }> = { status: "offline", reason: "not-configured", detail: "the desk agent is not configured (AGENT_API_URL is unset)" };
+const OFF_UNSET: DeskResult<{ events: DeskEvent[] }> = { status: "offline", reason: "not-configured", detail: "no desk agent is set up for this site" };
 const OFF_DOWN: DeskResult<{ events: DeskEvent[] }> = { status: "offline", reason: "unreachable", detail: "the desk did not answer in time" };
 const online = (events: DeskEvent[]): DeskResult<{ events: DeskEvent[] }> => ({ status: "online", data: { events }, fetchedAt: TUE_1100 });
 const EVENTS: DeskEvent[] = [
@@ -134,6 +135,9 @@ describe("refusal log and desk notes", () => {
     render(<DeskPill health={{ status: "offline", reason: "unreachable", detail: "x" }} />);
     expect(screen.getByRole("status").textContent).toBe("Desk offline");
     cleanup();
+    render(<DeskPill health={{ status: "online", data: { ok: false, sender: { halted: { reason: "nonce-gap" } } }, fetchedAt: 0 }} />);
+    expect(screen.getByRole("status").textContent).toBe("Desk halted");
+    cleanup();
     render(<DeskPill health={undefined} />);
     expect(screen.getByRole("status").textContent).toBe("Checking the desk");
   });
@@ -155,9 +159,14 @@ describe("loan health", () => {
   });
 
   it("says the contracts are not deployed", () => {
-    render(<HealthPanel content={{ kind: "not-deployed", detail: "no deployment file for chain 56 (contracts/deployments/56.json)" }} chainName="BNB Chain" now={null} />);
+    render(<HealthPanel content={{ kind: "not-deployed", broken: false }} chainName="BNB Chain" now={null} />);
     expect(screen.getByText("Ballast contracts are not deployed yet")).toBeTruthy();
-    expect(screen.getByText(/no deployment file for chain 56/)).toBeTruthy();
+    expect(screen.getByText("Credit lines and covers open here once the contracts are live on BNB Chain.")).toBeTruthy();
+    cleanup();
+    // a record that exists but cannot be used is said plainly, without file names or settings
+    render(<HealthPanel content={{ kind: "not-deployed", broken: true }} chainName="BNB Chain" now={null} />);
+    expect(screen.getByText("The deployment record could not be read")).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\.json|DEPLOYMENT|_URL|_ADDRESS/);
   });
 
   it("says when the chain could not be read and when there is no credit line", () => {
@@ -177,7 +186,7 @@ describe("loan health", () => {
   });
 
   it("draws the account from chain figures: now, after the gap, room left", () => {
-    render(<HealthPanel content={{ kind: "account", view: VIEW, deskAgent: KEEPER }} chainName="BNB Chain" now={TUE_1100} />);
+    render(<HealthPanel content={{ kind: "account", view: VIEW, deskAgent: KEEPER, shielded: false }} chainName="BNB Chain" now={TUE_1100} />);
     expect(screen.getByText("Tonight is an overnight window. Ballast sizes the loan for its worst 1% gap: 4.2%.")).toBeTruthy();
     expect(screen.getByText("54.0%")).toBeTruthy();
     expect(screen.getByText("If NVDAB opens 4.2% lower")).toBeTruthy();
@@ -194,7 +203,7 @@ describe("loan health", () => {
 
   it("draws an account without debt as an empty gauge", () => {
     const empty = { ...VIEW, debt: "0", ltvBps: 0, ltvAfterGapBps: 0, plan: { ...VIEW.plan!, kind: "noop", steps: [], reason: "no debt to shield" } };
-    render(<HealthPanel content={{ kind: "account", view: empty, deskAgent: KEEPER }} chainName="BNB Chain" now={TUE_1100} />);
+    render(<HealthPanel content={{ kind: "account", view: empty, deskAgent: KEEPER, shielded: false }} chainName="BNB Chain" now={TUE_1100} />);
     expect(screen.getByText("No debt")).toBeTruthy();
     expect(screen.getByText("75.0 pts")).toBeTruthy();
     const label = screen.getAllByRole("img")[0]!.getAttribute("aria-label")!;
@@ -205,7 +214,7 @@ describe("loan health", () => {
 
   it("does not guess when the venue cannot price the collateral or the oracle is unreadable", () => {
     const blind = { ...VIEW, ltvBps: null, priceUsd: null, ltvAfterGapBps: null, coming: null, plan: null, oracle: null, oracleError: "the Session Oracle could not be read for NVDA" };
-    render(<HealthPanel content={{ kind: "account", view: blind, deskAgent: null }} chainName="BNB Chain" now={TUE_1100} />);
+    render(<HealthPanel content={{ kind: "account", view: blind, deskAgent: null, shielded: false }} chainName="BNB Chain" now={TUE_1100} />);
     expect(screen.getAllByText("n/a")).toHaveLength(3);
     expect(screen.getByText("The Session Oracle could not be read, so the coming gap is unknown.")).toBeTruthy();
     expect(screen.getByText(/The venue cannot price the collateral right now/)).toBeTruthy();
@@ -216,7 +225,13 @@ describe("loan health", () => {
 
   it("names the state of the loan", () => {
     expect(healthStatus(VIEW)).toEqual({ text: "Shield due", tone: "no" });
-    expect(healthStatus({ ...VIEW, plan: { ...VIEW.plan!, kind: "noop", reason: "survives a 417 bps gap at HF 1.33" } })).toEqual({ text: "Shielded", tone: "ok" });
+    const calm = { ...VIEW, plan: { ...VIEW.plan!, kind: "noop", reason: "survives a 417 bps gap at HF 1.33" } };
+    // "Shielded" only when the desk actually shielded this loan; a loan that needs no shield is not called that
+    expect(healthStatus(calm)).toEqual({ text: "Ready for the gap", tone: "ok" });
+    expect(healthStatus(calm, false)).toEqual({ text: "Ready for the gap", tone: "ok" });
+    expect(healthStatus(calm, true)).toEqual({ text: "Shielded", tone: "ok" });
+    // a shield in the past does not hide that another one is due
+    expect(healthStatus(VIEW, true)).toEqual({ text: "Shield due", tone: "no" });
     expect(healthStatus({ ...VIEW, plan: { ...VIEW.plan!, kind: "noop", reason: "no closure window known" } }).text).toBe("Watching");
     expect(healthStatus({ ...VIEW, plan: { ...VIEW.plan!, kind: "insufficient" } }).text).toBe("Cushion too small");
     expect(healthStatus({ ...VIEW, liquidated: true }).text).toBe("Liquidated");
@@ -329,5 +344,31 @@ describe("/app without a wallet, a deployment or a desk", () => {
     expect(fetchSpy.mock.calls.every(([u]) => String(u).startsWith("/api/desk/"))).toBe(true);
     expect(screen.queryByText("Loan to value now")).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
+  });
+});
+
+describe("amount fields say how they read the input", () => {
+  const field = (value: string) => render(<AmountField label="Amount" value={value} onChange={() => {}} unit="NVDAB" decimals={18} />);
+
+  it("shows the parsed amount before anything is simulated", () => {
+    field("1,5");
+    expect(screen.getByText("Reads as 1.5 NVDAB")).toBeTruthy();
+    cleanup();
+    field("1,500");
+    expect(screen.getByText("Reads as 1,500 NVDAB")).toBeTruthy();
+    cleanup();
+    field("1,500.25");
+    expect(screen.getByText("Reads as 1,500.25 NVDAB")).toBeTruthy();
+    cleanup();
+    field("0.000001");
+    expect(screen.getByText("Reads as 0.000001 NVDAB")).toBeTruthy();
+  });
+
+  it("says when the input is not an amount, and nothing when it is empty", () => {
+    field("1.500,25");
+    expect(screen.getByText(/Not an amount of NVDAB/)).toBeTruthy();
+    cleanup();
+    field("");
+    expect(screen.queryByText(/Reads as|Not an amount/)).toBeNull();
   });
 });

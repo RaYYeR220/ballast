@@ -131,7 +131,7 @@ export function GapBars() {
 
 /* ---------- one close as a sky path ---------- */
 
-/* deterministic decoration, same generator as the prototype */
+/* deterministic decoration: a fixed seed, so the stars never move between renders */
 function lcg(seed: number) {
   let s = seed;
   return () => (s = (s * 16807) % 2147483647) / 2147483647;
@@ -165,7 +165,7 @@ export function DayArc({ mobile, className }: { mobile: boolean; className?: str
     return { cx: r2(x(t)), cy: r2(cy), r: r2(rnd() * 1.2 + 0.4) };
   });
   const stations = [
-    { t: 15.5, y: yDay(15.5), n: "1", label: "3:30 PM" },
+    { t: 15, y: yDay(15), n: "1", label: "3:00 PM" },
     { t: 24.75, y: hz + 100, n: "2", label: "closed" },
     { t: 35, y: yDay(35), n: "3", label: "11:00 AM" },
   ];
@@ -175,7 +175,7 @@ export function DayArc({ mobile, className }: { mobile: boolean; className?: str
       viewBox={`0 0 ${W} ${mobile ? 300 : 250}`}
       preserveAspectRatio="xMidYMid meet"
       role="img"
-      aria-label="One close drawn as a sky path. Afternoon on the left, the night as a dip below the horizon in the middle, the next morning on the right. Step 1 at 3:30 PM, step 2 through the night, step 3 at 11:00 AM."
+      aria-label="One close drawn as a sky path. Afternoon on the left, the night as a dip below the horizon in the middle, the next morning on the right. Step 1 at 3:00 PM, step 2 through the night, step 3 at 11:00 AM."
     >
       <line x1={20} x2={W - 20} y1={hz} y2={hz} stroke={ink} strokeWidth={1} />
       <path d={trace(t0, 16, yDay)} fill="none" stroke={ink} strokeWidth={2.2} />

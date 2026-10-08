@@ -1,5 +1,5 @@
 "use client";
-/* /app: the user's week (v09 dashboard). Loan figures come from the chain through the app's routes, the
+/* /app: the user's week. Loan figures come from the chain through the app's routes, the
    watch log, refusals and notes from the desk agent's feed, the clock and countdown from the NYSE calendar.
    When a source is missing the panel says so; nothing is filled in. */
 import { session } from "@ballast/risk";
@@ -32,7 +32,16 @@ export function Dashboard({ config }: { config: AppConfig }) {
   const queries = useQueryClient();
   const now = useMinuteClock();
   const chainName = CHAIN_NAME[config.chainId];
-  const deployment = useMemo(() => (config.deployment.status === "ok" ? parseDeployment(config.chainId, config.deployment.json) : null), [config]);
+  // a record the server accepted is parsed again here; if that ever fails the page says so instead of crashing
+  const deployment = useMemo(() => {
+    if (config.deployment.status !== "ok") return null;
+    try {
+      return parseDeployment(config.chainId, config.deployment.json);
+    } catch {
+      return null;
+    }
+  }, [config]);
+  const deploymentBroken = config.deployment.status === "invalid" || (config.deployment.status === "ok" && deployment === null);
 
   const health = useDeskHealth();
   const deskAgent = config.deskAgent ?? (health.data?.status === "online" ? checksum(health.data.data.agent) : null);
@@ -54,14 +63,17 @@ export function Dashboard({ config }: { config: AppConfig }) {
   const planned = useMemo(() => (view && now !== null ? plannedRows(view, now, events) : []), [view, now, events]);
   const wheelRows = useMemo(() => (view ? [...planned, ...events.map((e) => eventRow(e, units))] : []), [view, planned, events, units]);
 
+  // the last transaction the desk sent for this loan: a shield with no restore after it means it is shielded now
+  const shielded = events.find((e) => e.txHash && !e.cover && (e.kind === "shield" || e.kind === "restore"))?.kind === "shield";
+
   let content: HealthContent;
   if (!isConnected) content = { kind: "disconnected" };
   else if (!onChain) content = { kind: "wrong-chain", chainName };
-  else if (config.deployment.status !== "ok") content = { kind: "not-deployed", detail: config.deployment.detail };
+  else if (!deployment) content = { kind: "not-deployed", broken: deploymentBroken };
   else if (accounts.isLoading) content = { kind: "loading" };
   else if (accounts.isError) content = { kind: "unavailable", detail: (accounts.error as Error).message };
-  else if (body && body.status !== "ok") content = body.status === "not-deployed" ? { kind: "not-deployed", detail: body.detail } : { kind: "unavailable", detail: body.detail };
-  else if (view) content = { kind: "account", view, deskAgent };
+  else if (body && body.status !== "ok") content = body.status === "not-deployed" ? { kind: "not-deployed", broken: false } : { kind: "unavailable", detail: body.detail };
+  else if (view) content = { kind: "account", view, deskAgent, shielded };
   else content = { kind: "none" };
 
   const refresh = () => {
@@ -94,10 +106,25 @@ export function Dashboard({ config }: { config: AppConfig }) {
           </span>
         </div>
 
-        {config.deployment.status !== "ok" ? (
+        {!deployment ? (
           <div className={s.banner} role="status">
             <span>
-              <b>Contracts not deployed yet.</b> Credit lines and covers open here once Ballast is live on {chainName}.
+              {deploymentBroken ? (
+                <>
+                  <b>The deployment record could not be read.</b> Nothing is read or sent for Ballast contracts until it is fixed.
+                </>
+              ) : (
+                <>
+                  <b>Contracts not deployed yet.</b> Credit lines and covers open here once Ballast is live on {chainName}.
+                </>
+              )}
+            </span>
+          </div>
+        ) : null}
+        {body?.status === "ok" && body.stale ? (
+          <div className={s.banner} role="status">
+            <span>
+              <b>The chain did not answer just now.</b> These loan figures were read {body.stale.ageSec} s ago, at block {body.blockNumber}.
             </span>
           </div>
         ) : null}
@@ -163,10 +190,11 @@ export function Dashboard({ config }: { config: AppConfig }) {
             ) : !deployment ? (
               <p className={s.offline}>The Ballast contracts are not deployed yet, so nothing can be opened.</p>
             ) : view && !creating && address && sameAddr(view.owner, address) ? (
-              <AccountActions key={view.address} view={view} owner={address} onDone={refresh} />
+              <AccountActions key={`${address}-${view.address}`} view={view} owner={address} onDone={refresh} />
             ) : creating || (body?.status === "ok" && list.length === 0) ? (
               markets.data?.status === "ok" && address ? (
                 <CreateAccountForm
+                  key={address}
                   deployment={deployment}
                   owner={address}
                   deskAgent={deskAgent}
@@ -188,6 +216,7 @@ export function Dashboard({ config }: { config: AppConfig }) {
             )}
           </section>
           <CoversPanel
+            key={address ?? "no-wallet"}
             deployment={deployment}
             owner={address}
             covers={body?.status === "ok" ? body.covers : null}

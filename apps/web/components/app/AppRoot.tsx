@@ -29,11 +29,15 @@ function WalletRunner({ chainId, children }: { chainId: number; children: React.
   const runner = useMemo<TxRunner>(
     () => ({
       chainId,
-      simulate: (tx, from: Address) => requestSimulation({ from, to: tx.to, data: tx.data, value: tx.value.toString() }),
-      send: (tx) => sendTransaction(config, { to: tx.to, data: tx.data, value: tx.value, chainId }),
+      simulate: (tx, from: Address, ticket) => requestSimulation({ from, to: tx.to, data: tx.data, value: tx.value.toString(), ...(ticket ? { ticket } : {}) }),
+      // `account` pins the sender: if the wallet has moved to another account since the form was filled,
+      // wagmi refuses instead of sending the same call from a different address
+      send: (tx, from) => sendTransaction(config, { account: from, to: tx.to, data: tx.data, value: tx.value, chainId }),
       wait: async (hash) => {
-        const r = await waitForTransactionReceipt(config, { hash, chainId, timeout: 180_000 });
-        return { hash, status: r.status, logs: r.logs };
+        let replaced: "repriced" | "cancelled" | "replaced" | undefined;
+        const r = await waitForTransactionReceipt(config, { hash, chainId, timeout: 180_000, onReplaced: (x) => (replaced = x.reason) });
+        // a wallet may replace the transaction (speed up, cancel): the receipt is the replacement's, with its own hash
+        return { hash: r.transactionHash, status: r.status, logs: r.logs, ...(replaced ? { replaced } : {}) };
       },
     }),
     [config, chainId],

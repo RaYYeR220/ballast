@@ -45,8 +45,19 @@ export function resolveDeployment(o: ResolveOptions): DeploymentStatus {
       return { ok: false, chainId, reason: "invalid", detail: `${source} could not be read` };
     }
   }
+  let json: unknown;
   try {
-    return { ok: true, chainId, deployment: parseDeployment(chainId, JSON.parse(raw)), source };
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, chainId, reason: "invalid", detail: `${source} is not valid JSON` };
+  }
+  // a record that names its chain must name this one: a mainnet file is never used on a fork or the reverse
+  const named = json && typeof json === "object" ? (json as { chainId?: unknown }).chainId : undefined;
+  if (named !== undefined && Number(named) !== chainId) {
+    return { ok: false, chainId, reason: "invalid", detail: `${source} is for chain ${Number(named)}, this site runs on chain ${chainId}` };
+  }
+  try {
+    return { ok: true, chainId, deployment: parseDeployment(chainId, json), source };
   } catch (err) {
     return { ok: false, chainId, reason: "invalid", detail: `${source}: ${(err as Error).message}` };
   }

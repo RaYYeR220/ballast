@@ -146,7 +146,16 @@ export type ReadBody<T> =
   | { status: "unavailable"; detail: string };
 
 /** `accounts` is one page, newest first; `total` counts all of the owner's credit lines and `more` says older ones exist. */
-export type AccountsBody = ReadBody<{ accounts: AccountView[]; total: number; offset: number; more: boolean; covers: CoverView[]; errors: string[] }>;
+export type AccountsBody = ReadBody<{
+  accounts: AccountView[];
+  total: number;
+  offset: number;
+  more: boolean;
+  covers: CoverView[];
+  errors: string[];
+  /** set when the chain did not answer just now and these are the last figures read (at most a minute old) */
+  stale?: { ageSec: number; detail: string };
+}>;
 export type LoansBody = ReadBody<{ loans: LoanView[]; errors: string[] }>;
 
 export interface MarketView {
@@ -166,7 +175,7 @@ export interface MarketView {
   error?: string;
 }
 
-export type MarketsBody = { status: "ok"; markets: MarketView[] } | { status: "unavailable"; detail: string };
+export type MarketsBody = { status: "ok"; markets: MarketView[]; partial?: boolean } | { status: "unavailable"; detail: string };
 
 export interface TokenView {
   token: Address;

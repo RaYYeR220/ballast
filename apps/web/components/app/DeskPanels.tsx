@@ -108,7 +108,7 @@ export function RefusalLog({ feed, units, chainId }: { feed: DeskResult<{ events
       <div className={s.ph}>
         <div>
           <h2>Refusal log</h2>
-          <p className={s.sub}>Every call the contract turned down, with its reason.</p>
+          <p className={s.sub}>Calls by the desk agent that the contract turned down, with the reason.</p>
         </div>
       </div>
       {rows.length > 0 ? (

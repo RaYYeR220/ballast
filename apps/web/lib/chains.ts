@@ -7,7 +7,7 @@ export const bsc = defineChain({
   id: 56,
   name: "BNB Chain",
   nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-  rpcUrls: { default: { http: ["https://bsc-dataseed.bnbchain.org"] } },
+  rpcUrls: { default: { http: ["https://bsc-rpc.publicnode.com"] } },
   blockExplorers: { default: { name: "BscScan", url: "https://bscscan.com" } },
   contracts: { multicall3: MULTICALL3 },
 });

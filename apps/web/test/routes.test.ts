@@ -3,7 +3,8 @@ import { getAddress, stringToHex, zeroHash } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import { ttlCache } from "../lib/server/cache";
 import { deploymentInfo, resolveDeployment, type DeploymentStatus } from "../lib/server/deployment";
-import { serverEnv } from "../lib/server/env";
+import { describeEnv, envProblems, MAINNET, serverEnv } from "../lib/server/env";
+import { assertStartup, StartupError, startupProblems } from "../lib/server/startup";
 import { handleOracle, readOracle } from "../lib/server/handlers/oracle";
 import { handleAccounts, handleLoans, handleMarkets, handleToken, summarizeDefi } from "../lib/server/handlers/reads";
 import { handleRwaStatus, readRwaStatus } from "../lib/server/handlers/rwa";
@@ -34,8 +35,12 @@ const RAW = {
 };
 
 describe("serverEnv", () => {
-  it("defaults to BNB Chain with the public RPC, keyless and without a desk", () => {
-    expect(serverEnv({})).toEqual({ chainId: 56, rpcUrl: "https://bsc-dataseed.bnbchain.org", agentApiUrl: null, binance: null, deskAgent: null, localRpcUrl: null });
+  it("defaults to BNB Chain with the public RPC, keyless, no desk URL and the mainnet desk agent as keeper", () => {
+    expect(serverEnv({})).toEqual({ chainId: 56, rpcUrl: "https://bsc-rpc.publicnode.com", agentApiUrl: null, binance: null, deskAgent: MAINNET.deskAgent, localRpcUrl: null });
+    expect(MAINNET).toEqual({ deskAgent: "0xccD7f069275549793b2A8804A5691fCa6665D152", deskAgentId: 368122n, owner: "0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf" });
+    // a fork has no default keeper: it comes from the environment or from the desk itself
+    expect(serverEnv({ NEXT_PUBLIC_CHAIN_ID: "31337" }).deskAgent).toBeNull();
+    expect(serverEnv({ DESK_AGENT_ADDRESS: addr(0xd1) }).deskAgent).toBe(addr(0xd1));
   });
 
   it("reads the fork setup", () => {
@@ -47,6 +52,58 @@ describe("serverEnv", () => {
     expect(serverEnv({ BINANCE_WEB3_API_KEY: "k" }).binance).toBeNull();
     expect(serverEnv({ BINANCE_WEB3_API_KEY: "k", BINANCE_WEB3_API_SECRET: "s" }).binance).toEqual({ apiKey: "k", apiSecret: "s" });
     expect(serverEnv({ AGENT_API_URL: "ftp://desk" }).agentApiUrl).toBeNull();
+  });
+});
+
+describe("startup checks", () => {
+  const none = () => {
+    throw Object.assign(new Error("no such file"), { code: "ENOENT" });
+  };
+
+  it("accepts an empty environment: every setting has a default or an explicit state", () => {
+    expect(envProblems({})).toEqual([]);
+    expect(startupProblems({}, none)).toEqual([]);
+    expect(startupProblems({ NEXT_PUBLIC_CHAIN_ID: "31337", BSC_RPC_URL: "http://127.0.0.1:8545", DESK_AGENT_ADDRESS: addr(0xd1), DEPLOYMENT_JSON: JSON.stringify(RAW) }, none)).toEqual([]);
+  });
+
+  it("names each malformed setting without repeating its value", () => {
+    const env = {
+      NEXT_PUBLIC_CHAIN_ID: "97",
+      BSC_RPC_URL: "wss://user:hunter2@node.example",
+      AGENT_API_URL: "desk.internal:8787",
+      DESK_AGENT_ADDRESS: "0xnot-an-address",
+      BINANCE_WEB3_API_KEY: "key-123456",
+    };
+    const problems = envProblems(env);
+    expect(problems).toEqual([
+      "NEXT_PUBLIC_CHAIN_ID: must be 56 (BNB Chain) or 31337 (a local fork)",
+      "BSC_RPC_URL: must be an http(s) URL",
+      "AGENT_API_URL: must be an http(s) URL",
+      "DESK_AGENT_ADDRESS: must be a 0x address of 40 hex characters",
+      "BINANCE_WEB3_API_KEY and BINANCE_WEB3_API_SECRET: set both or neither",
+    ]);
+    const text = problems.join(" ");
+    for (const secret of ["hunter2", "node.example", "desk.internal", "key-123456", "0xnot"]) expect(text).not.toContain(secret);
+  });
+
+  it("refuses to start on a deployment that is named but missing, broken or for another chain", () => {
+    expect(startupProblems({ DEPLOYMENT_FILE: "var/nope.json" }, none)).toEqual(["deployment: no deployment file for chain 56 (DEPLOYMENT_FILE)"]);
+    expect(startupProblems({ DEPLOYMENT_JSON: "{oops" }, none)).toEqual(["deployment: DEPLOYMENT_JSON is not valid JSON"]);
+    expect(startupProblems({ DEPLOYMENT_JSON: JSON.stringify({ ...RAW, chainId: 31337 }) }, none)).toEqual(["deployment: DEPLOYMENT_JSON is for chain 31337, this site runs on chain 56"]);
+    expect(startupProblems({ DEPLOYMENT_JSON: JSON.stringify(RAW), DEPLOYMENT_FILE: "x.json" }, none)).toContain("DEPLOYMENT_JSON and DEPLOYMENT_FILE: set one, not both");
+    // the repository file may be absent (not deployed yet), but a broken one stops the server
+    expect(startupProblems({}, () => "{broken")).toEqual(["deployment: contracts/deployments/56.json is not valid JSON"]);
+  });
+
+  it("throws one readable error, or logs one line that carries no value", () => {
+    expect(() => assertStartup({ BSC_RPC_URL: "nope", DESK_AGENT_ADDRESS: "nope" }, () => {})).toThrow(StartupError);
+    try {
+      assertStartup({ BSC_RPC_URL: "nope", DESK_AGENT_ADDRESS: "nope" }, () => {});
+    } catch (err) {
+      expect((err as Error).message).toBe("Ballast web cannot start, the configuration is invalid:\n  BSC_RPC_URL: must be an http(s) URL\n  DESK_AGENT_ADDRESS: must be a 0x address of 40 hex characters");
+    }
+    const line = describeEnv({ BSC_RPC_URL: "https://rpc.example/v1/SECRETKEY", AGENT_API_URL: "https://desk.example", BINANCE_WEB3_API_KEY: "k", BINANCE_WEB3_API_SECRET: "s" });
+    expect(line).toBe("chain=56 rpc=configured desk=configured deskAgent=mainnet default binance=keyed deployment=repository file");
   });
 });
 
@@ -77,6 +134,13 @@ describe("resolveDeployment", () => {
     const file = resolveDeployment({ chainId: 31337, env: { DEPLOYMENT_FILE: "var/fork.json" }, readFile, repoRoot: "/repo" });
     expect(file).toMatchObject({ ok: true, source: "DEPLOYMENT_FILE" });
     expect(readFile.mock.calls[0]![0].replace(/\\/g, "/")).toMatch(/\/repo\/var\/fork\.json$/);
+  });
+
+  it("rejects a record made for another chain", () => {
+    expect(resolveDeployment({ chainId: 56, env: { DEPLOYMENT_JSON: JSON.stringify({ ...RAW, chainId: 31337 }) } })).toMatchObject({ ok: false, reason: "invalid", detail: "DEPLOYMENT_JSON is for chain 31337, this site runs on chain 56" });
+    expect(resolveDeployment({ chainId: 31337, env: { DEPLOYMENT_JSON: JSON.stringify({ ...RAW, chainId: 31337 }) } }).ok).toBe(true);
+    // a record without a chain id (as the deploy script writes it) is taken for the configured chain
+    expect(resolveDeployment({ chainId: 56, env: { DEPLOYMENT_JSON: JSON.stringify(RAW) } }).ok).toBe(true);
   });
 
   it("reports a broken file as invalid", () => {
@@ -273,6 +337,49 @@ describe("GET /api/accounts", () => {
     expect(body.accounts[0].oracleError).toContain("Session Oracle could not be read for NVDA");
   });
 
+  it("keeps showing the last figures for up to a minute when the chain stops answering", async () => {
+    const owner = addr(0xb7);
+    const { client, chain } = fakeReads({ ...accountAnswers(), owner }, { timestamp: TUE_1100, code: { [ACCOUNT.toLowerCase()]: cloneCode(DEPLOYMENT.listaImpl) } });
+    const url = `http://x/api/accounts?owner=${owner}`;
+    let t = 5_000_000;
+    const clock = () => t;
+    const good = await (await handleAccounts(new Request(url), OK, client, clock)).json();
+    expect(good.status).toBe("ok");
+    expect(good.stale).toBeUndefined();
+
+    // the chain goes away
+    const dead = { ...(client as object), getBlock: async () => { throw new Error("connection reset"); } } as never;
+    void chain;
+    t += 30_000;
+    const stale = await (await handleAccounts(new Request(url), OK, dead, clock)).json();
+    // a different client object has its own memory, so use the same one with a failing head
+    expect(stale.status).toBe("unavailable");
+
+    const flaky = client as unknown as { getBlock: () => Promise<unknown> };
+    const original = flaky.getBlock;
+    flaky.getBlock = async () => {
+      throw new Error("connection reset");
+    };
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 10_000); // past the head TTL, so the head is read again and fails
+      const kept = await (await handleAccounts(new Request(url), OK, client, clock)).json();
+      expect(kept.status).toBe("ok");
+      expect(kept.accounts).toEqual(good.accounts);
+      expect(kept.stale).toMatchObject({ ageSec: 30, detail: expect.stringContaining("connection reset") });
+      // older than a minute: no longer shown as if it were current
+      t += 31_000;
+      const gone = await (await handleAccounts(new Request(url), OK, client, clock)).json();
+      expect(gone.status).toBe("unavailable");
+      // another wallet never sees this one's figures
+      const other = await (await handleAccounts(new Request(`http://x/api/accounts?owner=${addr(0xb8)}`), OK, client, clock)).json();
+      expect(other.status).toBe("unavailable");
+    } finally {
+      flaky.getBlock = original;
+      vi.useRealTimers();
+    }
+  });
+
   it("reports a chain failure as unavailable, never as an empty list", async () => {
     const res = await handleAccounts(new Request(`http://x/api/accounts?owner=${OWNER}`), OK, fakeReads({}).client);
     expect(await res.json()).toMatchObject({ status: "unavailable" });
@@ -329,8 +436,12 @@ describe("GET /api/markets and /api/token", () => {
       markets: [true, 60n * 10n ** 16n, false, 65n * 10n ** 16n],
       underlying: NVDAB,
     });
-    const body = await (await handleMarkets(serverEnv({ NEXT_PUBLIC_CHAIN_ID: "31337" }), client)).json();
+    const res = await handleMarkets(serverEnv({ NEXT_PUBLIC_CHAIN_ID: "31337" }), client);
+    const body = await res.json();
     expect(body.status).toBe("ok");
+    // one market could not be confirmed, so this list is marked partial and is not kept
+    expect(body.partial).toBe(true);
+    expect(res.headers.get("cache-control")).toBe("no-store");
     const nvda = body.markets.find((m: { id: string }) => m.id === "lista:NVDAB_USD1");
     expect(nvda).toMatchObject({ venue: "lista", symbol: "NVDA", lltvBps: 7500, marketParams: { lltv: (75n * 10n ** 16n).toString() } });
     expect(nvda.path.label).toBe("NVDAB to USDT (0.25% pool) to USD1 (0.01% pool)");
@@ -340,6 +451,44 @@ describe("GET /api/markets and /api/token", () => {
     expect(body.markets.find((m: { id: string }) => m.id === "venus:vNVDAB")).toMatchObject({ venue: "venus", lltvBps: 6500, path: null });
     // the TSLA market's underlying does not match the stubbed NVDAB: flagged, not trusted
     expect(body.markets.find((m: { id: string }) => m.id === "venus:vTSLAB").error).toContain("underlying");
+  });
+
+  it("keeps a complete list for the long TTL but never a list with a failed market", async () => {
+    const env = serverEnv({ NEXT_PUBLIC_CHAIN_ID: "31337" });
+    let fail = true;
+    const underlying = ({ address }: { address: string }) => {
+      const m = bscConfig.venus as Record<string, string>;
+      if (fail && address.toLowerCase() === m.vTSLAB!.toLowerCase()) return new Error("rpc timeout");
+      const t = bscConfig.tickers.find((x) => `v${x.symbol}B` === Object.keys(m).find((k) => m[k]!.toLowerCase() === address.toLowerCase()));
+      return getAddress(t!.bStock);
+    };
+    const { client, reads } = fakeReads({ idToMarketParams: paramsFor, markets: [true, 60n * 10n ** 16n, false, 65n * 10n ** 16n], underlying });
+    const count = () => reads.filter((r) => r.functionName === "underlying").length;
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(2_000_000);
+      const first = await (await handleMarkets(env, client)).json();
+      expect(first.partial).toBe(true);
+      expect(first.markets.find((m: { id: string }) => m.id === "venus:vTSLAB").error).toContain("could not be read");
+      const afterFirst = count();
+      // the failure is replayed for a few seconds, then read again: not remembered for ten minutes
+      vi.setSystemTime(2_000_000 + 6_000);
+      fail = false;
+      const second = await handleMarkets(env, client);
+      const body = await second.json();
+      expect(count()).toBeGreaterThan(afterFirst);
+      expect(body.partial).toBeUndefined();
+      expect(body.markets.every((m: { error?: string }) => !m.error)).toBe(true);
+      expect(second.headers.get("cache-control")).toContain("s-maxage=300");
+      // complete: kept
+      const afterSecond = count();
+      vi.setSystemTime(2_000_000 + 5 * 60_000);
+      await handleMarkets(env, client);
+      expect(count()).toBe(afterSecond);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a token's balance and allowance", async () => {

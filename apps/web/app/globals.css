@@ -1,5 +1,5 @@
 /* Tailwind v4 theme and utilities. Preflight is left out on purpose: the design ships its own
-   minimal reset, and the port has to match the prototype's defaults. */
+   minimal reset, and the pages are drawn against those defaults. */
 @layer theme, base, components, utilities;
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);

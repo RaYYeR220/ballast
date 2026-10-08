@@ -32,7 +32,7 @@ const JOBS = [
 
 const LIMITS = [
   ["It sizes for the 99th percentile, not the worst case", "One closure in a hundred gaps further than the band. Earnings gaps reach 17.9%, and a loan shielded for 4.4% won't survive one if the earnings date is missed."],
-  ["It doesn't stop Lista or Venus", "The contract limits what the agent and you can do with your loan. Liquidations are still run by the lending market's own rules and prices."],
+  ["It doesn't stop Lista or Venus", "The contract limits what the agent can do with your loan. It does not limit you, and liquidations are still run by the lending market's own rules and prices."],
   ["Shielding has a cost", "A smaller loan overnight means less borrowed for those hours. Restoring needs a transaction after the open, and prices may have moved by then."],
   ["The evidence is young", `Three months of one lending market: ${FACTS.total} liquidations, ${FACTS.organic} of them from real borrowers. Venus seized no bStock collateral in the same period. We will keep publishing as the sample grows.`],
   ["The oracle band is a rule, not a forecast", "It starts from p99 gaps measured over 6.3 years of the underlying stocks and widens on a fixed schedule. It is not a guarantee, and it says so on every reading."],
@@ -153,8 +153,8 @@ export default function Landing() {
                   <i>1</i>Shield before the close
                 </h3>
                 <p>
-                  From 3:30 PM New York time the agent repays part of the loan or adds collateral, until it would survive the worst 1% gap for the
-                  window ahead: 4.4% overnight, 5.5% over a weekend, 17.9% before earnings.
+                  From 3:00 PM New York time the agent repays part of the loan, until it would survive the worst 1% gap for the window ahead: 4.4%
+                  overnight, 5.5% over a weekend, 17.9% before earnings.
                 </p>
                 <p className={s.who}>The agent acts. The contract checks that each move lowers risk.</p>
               </div>
@@ -163,18 +163,18 @@ export default function Landing() {
                   <i>2</i>Refuse while closed
                 </h3>
                 <p>
-                  From 4:00 PM until the next open, the contract rejects anything that adds risk: borrowing more, pulling collateral, or restoring
-                  the loan early. Repaying and adding collateral still go through.
+                  From 4:00 PM until the next open, the contract rejects every attempt by the agent to add risk: it cannot restore the loan early,
+                  and it can never borrow to itself or move collateral out. Repaying from your cushion still goes through.
                 </p>
-                <p className={s.who}>Enforced on-chain, for the agent and for you.</p>
+                <p className={s.who}>Enforced on-chain for the agent. Your own wallet keeps full control of the loan.</p>
               </div>
               <div className={s.step}>
                 <h3>
                   <i>3</i>Restore after the open settles
                 </h3>
                 <p>
-                  At 11:00 AM, after the first 90 minutes when most of the money is lost, the agent restores the loan to the size you chose, if the
-                  reference price has caught up.
+                  At 11:00 AM, after the first 90 minutes when most of the money is lost, the agent restores the loan to its size before the
+                  shield, if the reference price has caught up.
                 </p>
                 <p className={s.who}>Only after the session opens. Never during the dark hours.</p>
               </div>
@@ -188,11 +188,11 @@ export default function Landing() {
               <div>
                 <h2>What a refusal looks like</h2>
                 <p className={s.lede}>
-                  Say someone tries to restore the full loan on a Saturday afternoon. It might be you, an app with your key, or an agent that has
-                  gone wrong. The transaction reverts and your loan stays at its weekend size. You pay a little gas, and that is all.
+                  Say the agent, or anyone holding its key, tries to restore the full loan on a Saturday afternoon. The transaction reverts and
+                  your loan stays at its weekend size; the only cost is the caller&apos;s gas.
                 </p>
                 <p className={`${s.lede} ${s.ledeSm}`}>
-                  Every refusal is written to the chain and to the refusal log in your dashboard, with a link to the transaction.
+                  Refusals the agent runs into are listed in your dashboard; one that was actually sent links to its reverted transaction.
                 </p>
               </div>
               <div className={s.slip} aria-label="Example of a reverted restore transaction" role="group">
@@ -335,7 +335,7 @@ export default function Landing() {
           <ClosingSky className={s.closeSky} />
           <div className={s.wrap}>
             <h2>Borrow through the dark hours</h2>
-            <p>Pick a stock, set the size you want by day, and let the agent take the watch at every close.</p>
+            <p>Pick a stock, open a credit line, and let the agent take the watch at every close.</p>
             <Link className={s.cta} href={APP}>
               Open a credit line
             </Link>

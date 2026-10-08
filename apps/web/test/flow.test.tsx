@@ -10,7 +10,7 @@ import { CreateAccountForm } from "../components/app/CreateAccount";
 import { TxRunnerContext, type TxRunner } from "../components/app/TxFlow";
 import { deleveragePathFor } from "../lib/markets";
 import { serverEnv } from "../lib/server/env";
-import { handleSimulate, simulateDeps } from "../lib/server/handlers/simulate";
+import { handleSimulate, simulateDeps, simulateGuard } from "../lib/server/handlers/simulate";
 import { requestSimulation } from "../lib/sim";
 import type { MarketView } from "../lib/views";
 import { KEEPER, nvda, OWNER, VIEW } from "./fixtures";
@@ -39,7 +39,13 @@ const TX2: Hex = `0x${"a2".repeat(32)}`;
 function harness(answer: (call: { to: string; data: Hex }) => CallAnswer) {
   const { client, calls } = stubClient(answer);
   const deps = simulateDeps(serverEnv({ NEXT_PUBLIC_CHAIN_ID: "31337" }), client);
-  const route = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => handleSimulate(new Request("http://app.test/api/simulate", init), deps));
+  // the real allowlist: the factory by address, the new account because the factory vouches for it
+  const isAccount = vi.fn(async ({ args }: { args: readonly unknown[] }) => args[0] === NEW_ACCOUNT);
+  const guard = simulateGuard({ chainId: 31337, deployment: DEPLOYMENT, client: { readContract: isAccount } as never, ticketSecret: null });
+  // a page of the site makes the request: the browser adds Origin
+  const route = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) =>
+    handleSimulate(new Request("http://app.test/api/simulate", { ...init, headers: { ...(init?.headers as Record<string, string>), origin: "http://app.test" } }), deps, guard),
+  );
   const created: Log = {
     address: DEPLOYMENT.factory,
     topics: encodeEventTopics({ abi: ballastFactoryAbi, eventName: "AccountCreated", args: { owner: OWNER, account: NEW_ACCOUNT } }) as Log["topics"],
@@ -52,13 +58,14 @@ function harness(answer: (call: { to: string; data: Hex }) => CallAnswer) {
     removed: false,
   };
   const send = vi.fn<TxRunner["send"]>(async (tx) => (tx.to === DEPLOYMENT.factory ? TX1 : TX2));
+  const wait = vi.fn<TxRunner["wait"]>(async (hash) => ({ hash, status: "success", logs: hash === TX1 ? [created] : [] }));
   const runner: TxRunner = {
     chainId: 31337,
     simulate: (tx, from) => requestSimulation({ from, to: tx.to, data: tx.data, value: tx.value.toString() }, route as unknown as typeof fetch),
     send,
-    wait: async (hash) => ({ hash, status: "success", logs: hash === TX1 ? [created] : [] }),
+    wait,
   };
-  return { runner, send, route, calls };
+  return { runner, send, wait, route, calls, created };
 }
 
 function renderForm(runner: TxRunner, props: Partial<Parameters<typeof CreateAccountForm>[0]> = {}) {
@@ -133,6 +140,8 @@ describe("create account -> simulate -> refusal decoded", () => {
     await screen.findByText("Fix the deleverage route");
     expect(h.send).toHaveBeenCalledTimes(1);
     expect(h.send.mock.calls[0]![0].to).toBe(DEPLOYMENT.factory);
+    // the sender is pinned to the account the form was filled for
+    expect(h.send.mock.calls[0]![1]).toBe(OWNER);
     expect(onCreated).not.toHaveBeenCalled();
 
     // the second transaction targets the new account from the AccountCreated log and is simulated before it is offered
@@ -153,7 +162,8 @@ describe("create account -> simulate -> refusal decoded", () => {
     renderForm(h.runner);
     fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
     fireEvent.click(await screen.findByRole("button", { name: "Send from wallet" }));
-    await screen.findByText("You declined the request in your wallet.");
+    await screen.findByText("You declined the request in your wallet. Nothing was sent.");
+    // no hash came back, so nothing was sent and sending again is safe
     expect(screen.getByRole("button", { name: "Send from wallet" })).toBeTruthy();
   });
 
@@ -169,7 +179,7 @@ describe("create account -> simulate -> refusal decoded", () => {
   it("refuses to open an account without a keeper to name", () => {
     const h = harness(() => ({ ok: "0x" }));
     renderForm(h.runner, { deskAgent: null });
-    expect(screen.getByText(/No desk agent address is known/)).toBeTruthy();
+    expect(screen.getByText(/address of the desk agent is not known right now/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Review and simulate" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -177,5 +187,89 @@ describe("create account -> simulate -> refusal decoded", () => {
     const h = harness(() => ({ ok: "0x" }));
     renderForm(h.runner, { markets: [{ ...MARKET, marketParams: null, error: "could not be read" }] });
     expect(screen.getByText(/No market can be read right now/)).toBeTruthy();
+  });
+});
+
+describe("a transaction that was sent is never offered again", () => {
+  const TX1R: Hex = `0x${"b7".repeat(32)}`;
+
+  it("keeps the hash when no receipt arrives, and can only look for it again", async () => {
+    const h = harness(() => ({ ok: "0x" }));
+    h.wait.mockRejectedValueOnce(Object.assign(new Error("Timed out while waiting for transaction"), { name: "WaitForTransactionReceiptTimeoutError", shortMessage: "Timed out while waiting for the transaction" }));
+    renderForm(h.runner);
+    fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send from wallet" }));
+
+    await screen.findByText(/its receipt has not been found yet/);
+    expect(screen.getByText(/it is not offered for sending again/)).toBeTruthy();
+    // the only actions: look again (and the hash to check elsewhere); no way to send a second time
+    expect(screen.queryByRole("button", { name: "Send from wallet" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Simulate again" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to the form" })).toBeNull();
+    expect(screen.getByText(/0xa1a1...a1a1/)).toBeTruthy();
+
+    // still missing: stays put, with the same hash
+    h.wait.mockRejectedValueOnce(new Error("still nothing"));
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() => expect(h.wait).toHaveBeenCalledTimes(2));
+    await screen.findByRole("button", { name: "Check again" });
+    expect(h.wait.mock.calls[1]![0]).toBe(TX1);
+
+    // found: the flow goes on to the next step from the receipt, having sent exactly once
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await screen.findByText("Fix the deleverage route");
+    expect(h.wait.mock.calls[2]![0]).toBe(TX1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows a sped-up transaction by its new hash", async () => {
+    const h = harness(() => ({ ok: "0x" }));
+    h.wait.mockResolvedValueOnce({ hash: TX1R, status: "success", logs: [h.created], replaced: "repriced" });
+    renderForm(h.runner);
+    fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send from wallet" }));
+    // the account from the replacement's receipt is used for the next step
+    await screen.findByText("Fix the deleverage route");
+    await waitFor(() => expect(h.calls).toHaveLength(2));
+    expect(h.calls[1]!.to.toLowerCase()).toBe(NEW_ACCOUNT.toLowerCase());
+  });
+
+  it("does not count a cancelled transaction as done", async () => {
+    const h = harness(() => ({ ok: "0x" }));
+    h.wait.mockResolvedValueOnce({ hash: TX1R, status: "success", logs: [], replaced: "cancelled" });
+    const { onCreated } = renderForm(h.runner);
+    fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send from wallet" }));
+    await screen.findByText(/You cancelled this transaction in your wallet/);
+    expect(screen.getByText(/0xb7b7...b7b7/)).toBeTruthy();
+    expect(screen.queryByText("Fix the deleverage route")).toBeNull();
+    expect(onCreated).not.toHaveBeenCalled();
+    // the nonce is spent by the cancellation, so starting over (with a fresh simulation) is safe
+    expect(screen.getByRole("button", { name: "Simulate again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send from wallet" })).toBeNull();
+  });
+
+  it("does not count a different transaction in its place as done", async () => {
+    const h = harness(() => ({ ok: "0x" }));
+    h.wait.mockResolvedValueOnce({ hash: TX1R, status: "success", logs: [], replaced: "replaced" });
+    renderForm(h.runner);
+    fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send from wallet" }));
+    await screen.findByText(/Your wallet replaced this transaction with a different one/);
+    expect(screen.queryByText("Fix the deleverage route")).toBeNull();
+  });
+
+  it("refuses a target the server does not vouch for before simulating it", async () => {
+    const h = harness(() => ({ ok: "0x" }));
+    const stranger = { ...MARKET };
+    render(
+      <TxRunnerContext.Provider value={h.runner}>
+        <CreateAccountForm deployment={{ ...DEPLOYMENT, factory: addr(0x5eed) }} owner={OWNER} deskAgent={KEEPER} markets={[stranger]} />
+      </TxRunnerContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review and simulate" }));
+    await screen.findByText(/The simulator did not answer: this address is not a Ballast contract/);
+    expect(h.calls).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Send from wallet" })).toBeNull();
   });
 });

@@ -49,8 +49,16 @@ export function stubClient(answer: (call: { from?: string; to: string; data: Hex
   return { client, calls };
 }
 
-export const jsonRequest = (url: string, body: unknown) =>
-  new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) });
+/** A JSON POST as a page of the same site sends it (the browser adds Origin). */
+export const jsonRequest = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+  new Request(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: new URL(url).origin, ...headers },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
+
+/** A simulate guard that lets every target through, for tests about something else. */
+export const ALLOW = { refuse: async () => null };
 
 type Answer = unknown | ((o: { address: string; args: readonly unknown[] }) => unknown);
 

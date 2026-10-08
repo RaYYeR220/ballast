@@ -71,6 +71,7 @@ function CoverForm(p: { form: Form; deployment: Deployment; owner: Address; desk
         value={amount}
         onChange={setAmount}
         unit={unit}
+        decimals={decimals}
         max={form.kind === "withdraw" ? { raw: BigInt(form.cover.balance), decimals, label: "In the cover" } : null}
       />
       {form.kind === "open" ? (
@@ -79,6 +80,7 @@ function CoverForm(p: { form: Form; deployment: Deployment; owner: Address; desk
           value={cap}
           onChange={setCap}
           unit={unit}
+          decimals={decimals}
           help="The most the agent may repay from the cover in one day. Empty means the whole amount."
         />
       ) : null}
@@ -192,8 +194,9 @@ export function CoversPanel(p: {
                   </div>
                   <span className={s.faint}>
                     {units(l.debt, l.loanDecimals)} {l.loanSymbol} borrowed against {units(l.collateral, l.collateralDecimals, 4)} {l.collateralSymbol}
-                    {l.ltvBps !== null ? `, ${pctBps(l.ltvBps)} loan to value` : ""}
-                    {l.lltvBps !== null ? `, liquidation at ${pctBps(l.lltvBps, 0)}` : ""}
+                    {/* Venus pools every collateral behind one debt: this figure counts this collateral only */}
+                    {l.ltvBps !== null ? (l.venue === "venus" ? `, ${pctBps(l.ltvBps)} of the value of this collateral alone` : `, ${pctBps(l.ltvBps)} loan to value`) : ""}
+                    {l.lltvBps !== null ? (l.venue === "venus" ? `, liquidation threshold ${pctBps(l.lltvBps, 0)}` : `, liquidation at ${pctBps(l.lltvBps, 0)}`) : ""}
                   </span>
                 </li>
               ))}

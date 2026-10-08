@@ -1,7 +1,8 @@
 import { ballastAccountBaseAbi, ballastFactoryAbi, cushionVaultAbi, listaAccountAbi } from "@ballast/sdk";
 import { decodeFunctionData, erc20Abi, keccak256 } from "viem";
 import { describe, expect, it } from "vitest";
-import { parseAmount } from "../lib/amount";
+import { exactAmount, normalizeAmount, parseAmount } from "../lib/amount";
+import { balanceChangeText } from "../lib/sim";
 import type { DeskEvent } from "../lib/desk";
 import { eventRow, plannedRows, refusalRows } from "../lib/feed-rows";
 import { countdown, nyDayTime, nyWeekdayClock, pctBps, shortHex, units } from "../lib/format";
@@ -39,6 +40,46 @@ describe("format", () => {
     expect(parseAmount("1,000", 18)).toBe(1000n * E18);
     for (const bad of ["", ".", "0", "-1", "1e3", "abc", "1.2.3"]) expect(parseAmount(bad, 18)).toBeNull();
     expect(parseAmount("0.1234567", 6)).toBeNull();
+  });
+
+  it("never turns a decimal comma into a thousand times more", () => {
+    // one comma, no dot: the decimal separator of many keyboards
+    expect(parseAmount("1,5", 18)).toBe(15n * 10n ** 17n);
+    expect(parseAmount("0,25", 18)).toBe(25n * 10n ** 16n);
+    expect(parseAmount("1000,5", 18)).toBe(10005n * 10n ** 17n);
+    // commas in strict groups of three are thousands separators
+    expect(parseAmount("1,500", 18)).toBe(1500n * E18);
+    expect(parseAmount("1,500.25", 18)).toBe(150025n * 10n ** 16n);
+    expect(parseAmount("12,345,678", 18)).toBe(12_345_678n * E18);
+    // anything else is refused, never guessed
+    for (const bad of ["1.500,25", "1,5,0", "1,50,000", ",5", "5,", "1,,5", "1.5,0", "1,5.25", "1 500,2,5"]) expect(parseAmount(bad, 18), bad).toBeNull();
+    expect(normalizeAmount("1,5")).toBe("1.5");
+    expect(normalizeAmount("1,500")).toBe("1500");
+    expect(normalizeAmount(" 1 500 ")).toBe("1500");
+  });
+
+  it("writes an amount back exactly", () => {
+    expect(exactAmount(15n * 10n ** 17n, 18)).toBe("1.5");
+    expect(exactAmount(1500n * E18, 18)).toBe("1,500");
+    expect(exactAmount(150025n * 10n ** 16n, 18)).toBe("1,500.25");
+    expect(exactAmount(1n, 18)).toBe("0.000000000000000001");
+    expect(exactAmount(1_234_567n * 10n ** 6n, 6)).toBe("1,234,567");
+  });
+
+  it("reads the simulator's balance changes for the sender", () => {
+    const usdt = "0x55d398326f99059fF775485246999027B3197955";
+    const sim = {
+      balanceChanges: [
+        { contractAddress: usdt, tokenType: "ERC20", change: (-55n * 10n ** 17n).toString(), owner: OWNER.toLowerCase() },
+        { contractAddress: nvda.collateralToken, tokenType: "ERC20", change: "14900000000000000", owner: OWNER },
+        { contractAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", tokenType: "Native", change: "-1", owner: OWNER },
+        { contractAddress: usdt, tokenType: "ERC20", change: "5500000000000000000", owner: addr(0x99) },
+        { contractAddress: addr(0x1234), tokenType: "ERC20", change: "7", owner: OWNER },
+      ],
+    };
+    expect(balanceChangeText(sim, OWNER)).toBe("Your wallet: -5.5 USDT, +0.0149 NVDAB");
+    expect(balanceChangeText({ balanceChanges: [] }, OWNER)).toBe("");
+    expect(balanceChangeText({}, OWNER)).toBe("");
   });
 });
 

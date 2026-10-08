@@ -1,4 +1,6 @@
 /* The /api/simulate contract, shared by the route handler and the app. */
+import { formatUnits } from "viem";
+import { tokenSymbol } from "./markets";
 
 export interface SimError {
   name: string;
@@ -22,12 +24,38 @@ export interface SimRequest {
   to: string;
   data: string;
   value?: string;
+  /** for a transaction the server built itself (a swap): the ticket it came with */
+  ticket?: string;
 }
 
 export const SIMULATOR_NAME: Record<SimResult["via"], string> = {
   binance: "Binance Transaction API",
   rpc: "eth_call on BNB Chain",
 };
+
+const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+/**
+ * What the Binance simulation says the sender's balances change by, e.g. "Your wallet: -5.5 USDT, +0.0149 TSLAB".
+ * Only tokens this app knows are named (all 18 decimals on BNB Chain, like BNB itself); the simulator reports
+ * raw token units. Empty when the simulator gave no balance changes (eth_call gives none).
+ */
+export function balanceChangeText(sim: Pick<SimResult, "balanceChanges">, owner: string): string {
+  const parts: string[] = [];
+  for (const c of sim.balanceChanges ?? []) {
+    if (c.owner?.toLowerCase() !== owner.toLowerCase()) continue;
+    const symbol = c.contractAddress?.toLowerCase() === NATIVE ? "BNB" : tokenSymbol(c.contractAddress ?? "");
+    if (!symbol || !/^-?\d+$/.test(c.change ?? "")) continue;
+    const raw = BigInt(c.change);
+    if (raw === 0n) continue;
+    const n = Number(formatUnits(raw < 0n ? -raw : raw, 18));
+    const amount = n.toLocaleString("en-US", { maximumFractionDigits: n < 1 ? 6 : 4 });
+    if (amount === "0") continue; // dust below a millionth of a token is not worth a line
+    parts.push(`${raw < 0n ? "-" : "+"}${amount} ${symbol}`);
+    if (parts.length === 4) break;
+  }
+  return parts.length > 0 ? `Your wallet: ${parts.join(", ")}` : "";
+}
 
 /** POSTs one transaction to /api/simulate. Throws when the simulator itself is unavailable. */
 export async function requestSimulation(req: SimRequest, f: typeof fetch = fetch): Promise<SimResult> {
