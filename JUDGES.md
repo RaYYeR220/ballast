@@ -1,28 +1,28 @@
 # Review in five minutes
 
-<!-- TODO-AT-DEPLOY: fill the five values in this table. Nothing else in this file needs editing. -->
+<!-- TODO-AT-DEPLOY: every row still marked TODO-AT-DEPLOY in this table. Nothing else in this file needs editing. -->
 
-| Name | Value |
-|---|---|
-| `APP_URL` | TODO-AT-DEPLOY |
-| `REPLAY_URL` | TODO-AT-DEPLOY |
-| `DESK_API_URL` | TODO-AT-DEPLOY |
-| `VIDEO_URL` | TODO-AT-DEPLOY |
-| `REPO_URL` | TODO-AT-DEPLOY |
+| Name | Value | Status |
+|---|---|---|
+| `APP_URL` | https://ballast-desk.vercel.app | TODO-AT-DEPLOY: not deployed yet |
+| `REPLAY_URL` | | TODO-AT-DEPLOY |
+| `DESK_API_URL` | https://34-185-146-173.sslip.io | live |
+| `VIDEO_URL` | | TODO-AT-DEPLOY |
+| `REPO_URL` | https://github.com/RaYYeR220/ballast | TODO-AT-DEPLOY: not public yet |
 
-The steps below use these names. A value that still reads TODO-AT-DEPLOY is not live yet: skip that step, the others do not depend on it. Mainnet addresses and transactions are not in this table. They are in [PROOF.md](PROOF.md), which is rendered from the deployment file and cannot list what is not there.
+The steps below use these names. A row still marked TODO-AT-DEPLOY is not live yet: skip that step, the others do not depend on it. Mainnet addresses and transactions are not in this table. They are in [PROOF.md](PROOF.md), which is rendered from the deployment file and cannot list what is not there.
 
 ## Minute 1: what is on mainnet
 
 Open [PROOF.md](PROOF.md).
 
-- **Section 1** lists the eight contracts with BscScan links. If it says "Mainnet deployment pending", nothing is deployed yet: go to minute 3.
-- **Section 2** lists the transactions in time order. The one to open first is the refused restore: a `restore` sent while the US market was closed. It is a failed transaction on purpose. Its revert data starts with `0x399ce621`, the selector of `RestoreRefused(uint8)`, and ends with the reason code. `3` is `NOT_REGULAR`.
+- **Section 1** lists the eight contracts with BscScan and Sourcify links.
+- **Section 2** lists the transactions in time order: the desk's ERC-8004 registration, the deployment, the first overlay the desk posted. Once it is listed, the one to open first is the refused restore: a `restore` sent while the US market was closed. It is a failed transaction on purpose. Its revert data starts with `0x399ce621`, the selector of `RestoreRefused(uint8)`, and ends with the reason code. `3` is `NOT_REGULAR`.
 
-You can ask the oracle the same question yourself at any time, with the `SessionOracle` address from section 1:
+You can ask the oracle the same question yourself at any time (the address is the `SessionOracle` of section 1):
 
 ```bash
-cast call <SessionOracle> "canAddRisk(bytes32)(bool,uint8)" \
+cast call 0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388 "canAddRisk(bytes32)(bool,uint8)" \
   $(cast format-bytes32-string TSLA) --rpc-url https://bsc-dataseed.bnbchain.org
 ```
 
@@ -48,7 +48,7 @@ Outside 11:00 to 13:00 New York time on a trading day the answer is `false`. Tha
 The desk's read API is GET only. Set the base URL once:
 
 ```bash
-export DESK_API_URL=<the value from the table>
+export DESK_API_URL=https://34-185-146-173.sslip.io
 curl -s "$DESK_API_URL/health"                      # dryRun, the loops, their last run and last error
 curl -s "$DESK_API_URL/feed?kind=refused&limit=5"   # what the desk tried and was refused, with the decoded reason
 curl -s "$DESK_API_URL/feed?kind=shield&limit=5"    # shields, each with its simulation and transaction hash
@@ -64,7 +64,7 @@ Every transaction hash in the feed can be opened on BscScan. `dryRun: true` in `
 Node 22 or newer, pnpm 9, Foundry.
 
 ```bash
-git clone --recurse-submodules <REPO_URL> ballast && cd ballast
+git clone --recurse-submodules https://github.com/RaYYeR220/ballast && cd ballast
 pnpm install
 pnpm test                                          # TypeScript suite
 cd contracts

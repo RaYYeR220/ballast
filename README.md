@@ -13,7 +13,7 @@ It is built for BNB Chain: bStock collateral on Lista Lending and Venus.
 | What is real and what is mocked | [MOCKS.md](MOCKS.md) |
 | To use the Session Oracle in your own protocol | [docs/session-oracle.md](docs/session-oracle.md) |
 
-Nothing in this README is a statement about BSC mainnet unless PROOF.md lists the address or the transaction. If PROOF.md says "Mainnet deployment pending", it is pending.
+The contracts are deployed on BSC mainnet and the desk is running against them. Nothing in this README is a statement about mainnet beyond what PROOF.md lists as an address or a transaction.
 
 ## The measurement
 
@@ -166,7 +166,8 @@ flowchart LR
   CLIENT --> TOOLS
 
   LISTA -.->|"peek: not adopted by Lista"| FEED
-  KEEPER -.->|"simulate, MEV-protected broadcast: not yet run live"| TXAPI
+  KEEPER -->|"simulate"| TXAPI
+  KEEPER -.->|"MEV-protected broadcast: no sale yet"| TXAPI
   PUB -.->|"buy earnings dates: off by default"| X402
   NOTES -.->|"after the fact, optional"| LLM
 
@@ -179,7 +180,7 @@ Solid arrows are call paths that exist in the code and are executed by the test 
 Dashed arrows and dashed boxes are in the repository but not wired, off by default, or not yet run against the live service:
 
 - **Lista to SessionAwareFeed.** No lender reads the feed. It is shown on a market created inside a fork test.
-- **Keeper to the Transaction API.** Wired in `apps/agent/src/desk/tx.ts`, used only on chain 56 with a key. It has not been run against the live API yet.
+- **Keeper to the Transaction API, broadcast.** `simulate` is live: the mainnet desk simulates its writes through it. The MEV-protected `broadcast` is wired in `apps/agent/src/desk/tx.ts` for collateral sales only, and no sale has happened yet.
 - **Publisher to an x402 endpoint.** The buyer exists (`apps/agent/src/desk/x402.ts`, `earnings.ts`) and is off until `X402_EARNINGS_URL` is set. It has never paid a live merchant.
 - **Desk notes to an LLM.** On only when the Agent Studio project's LLM provider has a key. Notes are written after the event and never read by a decision.
 - **Market, Trading, Wallet, DeFi, b402, keyed RWA Data.** Typed clients with unit tests in `packages/binance`. Nothing calls them.
@@ -214,8 +215,8 @@ Two of these are wired into the product. The rest is client code with tests and 
 
 | Module | Endpoints | Called from | What it does there | Without it | Live status |
 |---|---|---|---|---|---|
-| RWA status, keyless | `assetStatus`, `dynamic` | `apps/agent/src/desk/publisher.ts` (`Publisher`), `packages/mcp/src/tools.ts` (`tokenized_stock_status`) | Per bStock: halt, corporate action, limited-asset and earnings reasons become overlay flags. Per Ondo token: the live shares multiplier, and the underlying price that serves as the reference for tickers without a Chainlink feed. | No overlay is posted for that symbol. The last one expires within 6 hours, `canAddRisk` answers `OVERLAY_STALE`, and restores stop. Shields keep working. | Answers without a key (checked 2026-10-08). Recorded responses in `packages/binance/test/fixtures`. |
-| Transaction, keyed | `simulate`, `broadcast` | `apps/agent/src/desk/tx.ts` (`ChainSender`) | Every desk write is simulated here first when a key is set on chain 56. For a restore, a disagreement between this simulator and `eth_call` stops the send. Collateral sales are broadcast here with MEV protection, with the RPC as the fallback. | The desk simulates with `eth_call` and broadcasts through its RPC. It loses the second simulator and the protected route for sales. | Keyed, not verified live. Request shapes and signing are unit-tested; no key was available when this was written. |
+| RWA status, keyless | `assetStatus`, `dynamic` | `apps/agent/src/desk/publisher.ts` (`Publisher`), `packages/mcp/src/tools.ts` (`tokenized_stock_status`) | Per bStock: halt, corporate action, limited-asset and earnings reasons become overlay flags. Per Ondo token: the live shares multiplier, and the underlying price that serves as the reference for tickers without a Chainlink feed. | No overlay is posted for that symbol. The last one expires within 6 hours, `canAddRisk` answers `OVERLAY_STALE`, and restores stop. Shields keep working. | Live. The mainnet desk had called each endpoint 288 times without an error when we looked on 2026-10-08; its `/api-health` shows the current count. |
+| Transaction, keyed | `simulate`, `broadcast` | `apps/agent/src/desk/tx.ts` (`ChainSender`) | Every desk write is simulated here first when a key is set on chain 56. For a restore, a disagreement between this simulator and `eth_call` stops the send. Collateral sales are broadcast here with MEV protection, with the RPC as the fallback. | The desk simulates with `eth_call` and broadcasts through its RPC. It loses the second simulator and the protected route for sales. | `simulate` is live: 11 calls, no error, in the mainnet desk's `/api-health` on 2026-10-08. `broadcast` has not been used: no sale yet. |
 | RWA status, keyless | `stockList`, `meta`, `marketStatus`, `klines` | nothing | | | Client and tests only. |
 | Transaction, keyed | `gasPrice`, `orders` | nothing | | | Client and tests only. |
 | RWA Data, keyed | `platforms`, `price`, `search`, `tokens`, `underlyingProfile`, `underlyingMarket` | nothing (`price` is in the live test) | | | Client and tests only. |
@@ -224,6 +225,8 @@ Two of these are wired into the product. The rest is client code with tests and 
 | Wallet, keyed | `allTokenBalances`, `txDetail` | nothing | | | Client and tests only. |
 | DeFi, keyed | `positions`, `protocols`, `investments`, `deposit`, `redeem` | nothing | | | Client and tests only. |
 | b402, keyed | `supported`, `verify`, `settle` | nothing | | | Client and tests only. The desk's x402 buyer signs EIP-3009 payments itself and does not call these. |
+
+**TODO-AT-MERGE: web app.** The web app's calls to Wallet, DeFi, Trading and Market are not in this tree. This table lists only what the code here calls; those rows change when the web app lands.
 
 The client also handles what the API asks of a caller: three different success codes, a limit of 5 requests per second per endpoint, retries on 429 that honour `Retry-After`, no retry of a state-changing POST after a timeout, and the geo-block code `40304`, which is recognised and never retried.
 
@@ -248,7 +251,7 @@ It does not use Studio's ERC-8183 seller rail. That rail is switched off in `stu
 Node 22 or newer, pnpm 9, and Foundry for the contracts.
 
 ```bash
-git clone --recurse-submodules <repository-url> ballast
+git clone --recurse-submodules https://github.com/RaYYeR220/ballast
 cd ballast
 pnpm install
 pnpm test                                        # TypeScript: SDK, risk model, Binance client, MCP, desk
@@ -305,7 +308,7 @@ BSC_RPC_URL=https://bsc-dataseed.bnbchain.org npx tsx packages/mcp/bin/ballast-m
 BSC_RPC_URL=https://bsc-dataseed.bnbchain.org npx tsx packages/mcp/bin/ballast-mcp.ts --http     # http://127.0.0.1:8787/mcp
 ```
 
-It reads `contracts/deployments/<CHAIN_ID>.json` and stops with "no deployment for chain 56" while the mainnet deployment is pending. Against the fork above, set `CHAIN_ID=31337 BSC_RPC_URL=http://127.0.0.1:8545`, and pass `--port` in HTTP mode, because the desk's read API already holds 8787.
+It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against the fork above, set `CHAIN_ID=31337 BSC_RPC_URL=http://127.0.0.1:8545`, and pass `--port` in HTTP mode, because the desk's read API already holds 8787.
 
 **The skill.** `skill/SKILL.md` teaches an agent when to call those tools and what not to recommend while `canAddRisk` is false. Copy the `skill` directory into your agent's skills directory and register the MCP server as shown in the file.
 
@@ -342,7 +345,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json` and stops with "no deployment f
 
 ## Honest limits
 
-- **Mainnet.** Nothing is on mainnet unless PROOF.md lists it. The mainnet cycle is planned on a small Venus position. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
+- **Mainnet.** The contracts and the desk are live; an account, a shield, a restore and a guard job are on mainnet only once PROOF.md lists their transactions. The mainnet cycle is planned on a small Venus position. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
 - **The damage so far is small.** The 120 liquidations repaid $31.6k in total and left no bad debt. Ballast is built for where the data says the risk concentrates, not in answer to a loss that has already happened.
 - **The measurement is small and uses a proxy.** Three and a half months, $31.6k of liquidations, and Binance spot prices standing in for the lending oracle. Re-running the scans needs an archive node. `research/README.md` lists the caveats.
 - **Gap buffers are statistics.** A p99 is exceeded one time in a hundred. In the backtest two shielded positions were still liquidated, both on earnings nights that the dataset does not flag.
@@ -354,7 +357,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json` and stops with "no deployment f
 - **After a sale the owner acts.** There is no automatic buy-back, and the keeper cannot restore until the owner turns `autoRestore` back on.
 - **The owner is not gated.** The owner's own `borrow` works at any hour. The session rules bind the keeper and the `restore` path.
 - **One desk, one hot key.** If the process is down, nothing is shielded. The owner can still do everything by hand. An open guard job is then never submitted, and the client claims the refund from the kernel at expiry.
-- **Binance keyed API.** Not yet run live from this code. Market, Trading, Wallet, DeFi and b402 have no caller. Binance Agentic Wallet and Wallet Skills are not used.
+- **Binance keyed API.** The desk uses one keyed call live, `simulate`. `broadcast` waits for the first collateral sale. Market, Trading, Wallet, DeFi and b402 have no caller in this tree. Binance Agentic Wallet and Wallet Skills are not used.
 - **No audit.** The contracts have tests, not an external review.
 
 ## License

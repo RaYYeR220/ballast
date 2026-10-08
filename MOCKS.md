@@ -80,7 +80,7 @@ What this means for the headline tests:
 | The language model | a function that returns a fixed string |
 | Clocks | injected |
 
-The two live tests in `packages/binance/test/live.test.ts` use nothing fake. They are skipped unless a key is set, and we have not run them.
+The two live tests in `packages/binance/test/live.test.ts` use nothing fake. They are skipped unless a key is set.
 
 ## 4. The fork demo
 
