@@ -131,6 +131,40 @@ describe("desk read API", () => {
   });
 });
 
+describe("evidence files", () => {
+  it("are served byte for byte, and refused when they hold a desk secret", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "desk-api-ev-"));
+    await mkdir(path.join(dir, "evidence"), { recursive: true });
+    const clean = '{\n "note": "tab\\there, unicode \\u00e9, trailing spaces  "\n}\n\n';
+    await writeFile(path.join(dir, "evidence", "7.json"), clean);
+    await writeFile(path.join(dir, "evidence", "8.json"), `{"leak":"${ENV.BINANCE_WEB3_API_SECRET}"}\n`);
+    const logs: string[] = [];
+    const server = createDeskApi({
+      feed: new Feed({ dir, secrets: [] }),
+      ledger: new Ledger({ dir, x402DailyCapUsd: 0.5 }),
+      dataDir: dir,
+      webOrigin: null,
+      secrets: deskSecrets(loadConfig(ENV), ENV),
+      ratePerMin: 100,
+      health: () => ({}),
+      accounts: async () => ({}),
+      oracle: async () => ({}),
+      apiHealth: () => ({}),
+      log: (l) => logs.push(l),
+    });
+    servers.push(server);
+    const { port } = await listen(server, "127.0.0.1", 0);
+    const ok = await fetch(`http://127.0.0.1:${port}/evidence/7`);
+    expect(ok.status).toBe(200);
+    expect(Buffer.from(await ok.arrayBuffer()).toString("utf8")).toBe(clean);
+    const bad = await fetch(`http://127.0.0.1:${port}/evidence/8`);
+    expect(bad.status).toBe(500);
+    expect(await bad.text()).not.toContain(ENV.BINANCE_WEB3_API_SECRET);
+    expect(logs.join()).toMatch(/evidence at \/evidence\/8 contains a desk secret/);
+    expect(logs.join()).not.toContain(ENV.BINANCE_WEB3_API_SECRET);
+  });
+});
+
 describe("cached", () => {
   it("shares one in-flight read and caches successes only", async () => {
     let now = 0;

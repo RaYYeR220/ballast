@@ -3,6 +3,7 @@
 // the API or the other loops down. SIGTERM stops scheduling, lets in-flight work (a send waiting for its
 // receipt) finish, closes the API and flushes the ledger and guardian state.
 import { realpathSync } from "node:fs";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PublicRwaClient, Web3Client, createProbe, type ProbeRecord } from "@ballast/binance";
@@ -133,6 +134,21 @@ export class Loop {
   }
 }
 
+/**
+ * Proves the data dir can be written before anything depends on it: the feed, the ledger, the guardian
+ * cursor and the evidence files all live there, and a desk that cannot persist them must not start.
+ */
+export async function assertWritable(dir: string): Promise<void> {
+  const probe = path.join(dir, `.write-test-${process.pid}`);
+  try {
+    await mkdir(path.join(dir, "evidence"), { recursive: true });
+    await writeFile(probe, "ok\n", "utf8");
+    await rm(probe);
+  } catch (err) {
+    throw new Error(`DATA_DIR ${dir} is not writable (${(err as NodeJS.ErrnoException).code ?? "error"}): set DATA_DIR to a directory the desk user owns, e.g. /var/lib/ballast`);
+  }
+}
+
 // -------------------------------------------------------------- read views
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -210,6 +226,7 @@ export interface Desk {
 export async function startDesk(env: Record<string, string | undefined> = process.env, log: (line: string) => void = (l) => console.log(`${new Date().toISOString()} ${l}`)): Promise<Desk> {
   const config = loadConfig(env);
   log(`desk config: ${config.describe()}`);
+  await assertWritable(config.dataDir);
   const account = await loadAccount(config.signer);
   const client = deskPublicClient(config);
   const deployment = loadDeployment(config.chainId, { file: config.deploymentFile });
@@ -222,7 +239,7 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   await ledger.load();
   const notesStore = new NotesStore(config.dataDir);
   await notesStore.load();
-  const guardianState = new GuardianState(config.dataDir, onError);
+  const guardianState = new GuardianState({ dir: config.dataDir, chainId: deployment.chainId, guardian: deployment.guardian, onError });
   await guardianState.load();
 
   const probe = new ApiProbe();
@@ -270,7 +287,7 @@ export async function startDesk(env: Record<string, string | undefined> = proces
         })
       : null;
   const model = config.notes === "auto" ? await studioNoteModel(config.studioToml, log) : null;
-  const notes = model ? new NotesWorker({ feed, store: notesStore, model, secrets, log }) : null;
+  const notes = model ? new NotesWorker({ feed, store: notesStore, model, secrets, dailyMax: config.notesDailyMax, log }) : null;
 
   const fork = config.forkTickSec;
   const every = (sec: number) => () => fork ?? sec;

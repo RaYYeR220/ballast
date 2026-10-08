@@ -1,7 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { Loop, backoffSec } from "../src/desk/main";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Loop, assertWritable, backoffSec, startDesk } from "../src/desk/main";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("data dir", () => {
+  it("passes a writable directory and leaves no probe behind", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "desk-main-")), "state");
+    await assertWritable(dir);
+    expect(await readdir(dir)).toEqual(["evidence"]);
+  });
+
+  it("fails the start when DATA_DIR cannot be written", async () => {
+    const base = await mkdtemp(path.join(tmpdir(), "desk-main-"));
+    const file = path.join(base, "not-a-dir");
+    await writeFile(file, "x");
+    await expect(assertWritable(path.join(file, "state"))).rejects.toThrow(/DATA_DIR .* is not writable/);
+    // the desk refuses to start before it opens the API or touches the chain
+    await expect(
+      startDesk({ CHAIN_ID: "31337", BSC_RPC_URL: "http://127.0.0.1:1", AGENT_PRIVATE_KEY: `0x${"4f".repeat(32)}`, DATA_DIR: path.join(file, "state") }, () => undefined),
+    ).rejects.toThrow(/DATA_DIR .* is not writable/);
+  });
+});
 
 describe("Loop", () => {
   it("backs off 30 s doubling to 15 min while failures last", () => {

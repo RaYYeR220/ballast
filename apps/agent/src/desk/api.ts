@@ -274,8 +274,14 @@ export function createDeskApi(o: DeskApiOptions): http.Server {
       }
       const url = new URL(req.url ?? "/", "http://desk.local");
       const r = await route(url);
-      if (r.raw !== undefined) send(r.status, scrub(r.raw));
-      else json(r.status, r.body);
+      if (r.raw !== undefined) {
+        // Evidence is served byte for byte (its keccak256 is the on-chain deliverable). The feed it was built
+        // from is scrubbed already; if a secret is in there anyway, refuse rather than leak or alter it.
+        if (scrub(r.raw) !== r.raw) {
+          o.log?.(`api: evidence at ${url.pathname} contains a desk secret, not served`);
+          json(500, { error: "evidence cannot be served" });
+        } else send(r.status, r.raw);
+      } else json(r.status, r.body);
     } catch (err) {
       if (err instanceof HttpError) {
         json(err.status, { error: err.message });

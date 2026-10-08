@@ -31,6 +31,7 @@ export const MAX_SCAN_PAGES = 5;
 export const REFUSAL_BACKOFF_SEC = 30 * 60;
 /** A repeated identical wait (e.g. CannotEvaluateNow every loop) is re-recorded in the feed at most this often. */
 export const REPEAT_EVENT_SEC = 3600;
+const FINAL: ReadonlySet<GuardianJob["status"]> = new Set(["Completed", "Rejected", "Expired"]);
 
 // ------------------------------------------------------------------ reads
 
@@ -138,6 +139,9 @@ export function buildEvidence(i: EvidenceInput): { json: string; hash: Hex } {
 
 export const evidenceFile = (dir: string, jobId: bigint | string) => path.join(dir, "evidence", `${jobId.toString()}.json`);
 
+/** A stored evidence file that does not belong to the job being submitted. */
+export class EvidenceMismatch extends Error {}
+
 // ------------------------------------------------------------------ state
 
 interface JobRecord {
@@ -148,44 +152,69 @@ interface JobRecord {
 }
 
 interface StateFile {
+  /** The deployment the cursor and the job ids belong to. */
+  chainId: number;
+  guardian: Address;
   cursor: string;
   jobs: Record<string, JobRecord>;
 }
 
-/** The scan cursor and the open jobs, in <dataDir>/guardian.json. */
+export interface GuardianStateOptions {
+  dir: string;
+  chainId: number;
+  guardian: Address;
+  onError?: (m: string) => void;
+}
+
+/**
+ * The scan cursor and the open jobs, in <dataDir>/guardian.json, stamped with the chain id and the guardian
+ * address they belong to. A file from another deployment (or one that does not say) is never loaded: job ids
+ * and the cursor would point at the wrong kernel history.
+ */
 export class GuardianState {
   readonly file: string;
   cursor: bigint | null = null;
   jobs = new Map<string, JobRecord>();
+  readonly #chainId: number;
+  readonly #guardian: Address;
   readonly #onError: (m: string) => void;
   #writes: Promise<void> = Promise.resolve();
 
-  constructor(dir: string, onError: (m: string) => void = (m) => console.error(m)) {
-    this.file = path.join(dir, "guardian.json");
-    this.#onError = onError;
+  constructor(o: GuardianStateOptions) {
+    this.file = path.join(o.dir, "guardian.json");
+    this.#chainId = o.chainId;
+    this.#guardian = o.guardian;
+    this.#onError = o.onError ?? ((m) => console.error(m));
   }
 
+  /** Throws when the file exists but belongs to another deployment; a missing file is a fresh start. */
   async load(): Promise<void> {
     let text: string;
     try {
       text = await readFile(this.file, "utf8");
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") this.#onError(`guardian state load failed: ${(err as Error).message}`);
-      return;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new Error(`guardian state ${this.file} cannot be read: ${(err as Error).message}`);
     }
+    let j: Partial<StateFile>;
     try {
-      const j = JSON.parse(text) as StateFile;
-      if (typeof j.cursor === "string" && /^\d+$/.test(j.cursor)) this.cursor = BigInt(j.cursor);
-      this.jobs = new Map(Object.entries(j.jobs ?? {}).filter(([k]) => /^\d+$/.test(k)));
+      j = JSON.parse(text) as Partial<StateFile>;
     } catch (err) {
-      // Never silently restart the scan from the deployment: keep the bad file and start from it on purpose.
+      // Never silently restart the scan from the deployment: keep the bad file aside and say so.
       this.#onError(`guardian state unreadable, kept as guardian.json.bad: ${(err as Error).message}`);
       await rename(this.file, `${this.file}.bad`).catch(() => undefined);
+      return;
     }
+    const hint = "move the file away to rescan from the start job of the deployment";
+    if (typeof j.chainId !== "number" || typeof j.guardian !== "string") throw new Error(`guardian state ${this.file} does not say which deployment it belongs to; ${hint}`);
+    if (j.chainId !== this.#chainId) throw new Error(`guardian state ${this.file} is for chain ${j.chainId}, the desk runs on ${this.#chainId}; ${hint}`);
+    if (!same(j.guardian, this.#guardian)) throw new Error(`guardian state ${this.file} is for another guardian (${j.guardian}); ${hint}`);
+    if (typeof j.cursor === "string" && /^\d+$/.test(j.cursor)) this.cursor = BigInt(j.cursor);
+    this.jobs = new Map(Object.entries(j.jobs ?? {}).filter(([k]) => /^\d+$/.test(k)));
   }
 
   save(): Promise<void> {
-    const body: StateFile = { cursor: (this.cursor ?? 0n).toString(), jobs: Object.fromEntries(this.jobs) };
+    const body: StateFile = { chainId: this.#chainId, guardian: this.#guardian, cursor: (this.cursor ?? 0n).toString(), jobs: Object.fromEntries(this.jobs) };
     const write = this.#writes.then(async () => {
       try {
         await mkdir(path.dirname(this.file), { recursive: true });
@@ -246,7 +275,9 @@ export class Guardian {
       const p = await reads.scan(cursor, this.#me, SCAN_LIMIT);
       for (const j of p.jobs) {
         const k = j.jobId.toString();
-        if (!state.jobs.has(k)) state.jobs.set(k, { firstSeen: at });
+        // A job that is already final when first seen (a rescan after lost state) was dealt with before:
+        // never track or book it again.
+        if (!state.jobs.has(k) && !FINAL.has(j.status)) state.jobs.set(k, { firstSeen: at });
       }
       const moved = p.nextCursor !== cursor;
       cursor = p.nextCursor;
@@ -335,7 +366,14 @@ export class Guardian {
   async #submit(job: GuardianJob, at: number, report: GuardianReport): Promise<boolean> {
     const { sender, deployment, state } = this.#o;
     const k = job.jobId.toString();
-    const ev = await this.#evidence(job);
+    let ev: { hash: Hex; events: number };
+    try {
+      ev = await this.#evidence(job);
+    } catch (err) {
+      if (!(err instanceof EvidenceMismatch)) throw err;
+      await this.#refused(job, at, "submit", undefined, { name: "EvidenceMismatch", message: err.message });
+      return false;
+    }
     const tx = writes.submit(deployment, job.jobId, ev.hash);
     const data = { deliverable: ev.hash, evidence: `/evidence/${k}`, events: ev.events };
     const sim = await sender.simulate(tx);
@@ -358,35 +396,55 @@ export class Guardian {
     return true;
   }
 
-  /** The evidence for a job: written once, so a retried submit carries the same hash. */
+  /**
+   * The evidence for a job: written once (temp file, then rename), so a retried submit carries the same hash.
+   * A stored file is used only if it names this chain, guardian, job and account.
+   */
   async #evidence(job: GuardianJob): Promise<{ hash: Hex; events: number }> {
     const t = job.terms as NonNullable<GuardianJob["terms"]>;
+    const { deployment, feed } = this.#o;
     const file = evidenceFile(this.#o.dataDir, job.jobId);
+    let stored: string | null = null;
     try {
-      const json = await readFile(file, "utf8");
-      return { hash: keccak256(stringToBytes(json)), events: (JSON.parse(json) as { events?: unknown[] }).events?.length ?? 0 };
+      stored = await readFile(file, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    const { deployment, feed } = this.#o;
-    const events = feed.list({ account: t.account });
-    const ev = buildEvidence({
-      chainId: deployment.chainId,
-      kernel: deployment.external.kernel,
-      guardian: deployment.guardian,
-      agent: this.#me,
-      jobId: job.jobId,
-      account: t.account,
-      start: t.start,
-      end: t.end,
-      events,
-    });
-    await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, ev.json, { encoding: "utf8", flag: "wx" }).catch(async (err: NodeJS.ErrnoException) => {
-      if (err.code !== "EEXIST") throw err;
-    });
-    const stored = await readFile(file, "utf8");
-    return { hash: keccak256(stringToBytes(stored)), events: (JSON.parse(stored) as { events?: unknown[] }).events?.length ?? 0 };
+    if (stored === null) {
+      const ev = buildEvidence({
+        chainId: deployment.chainId,
+        kernel: deployment.external.kernel,
+        guardian: deployment.guardian,
+        agent: this.#me,
+        jobId: job.jobId,
+        account: t.account,
+        start: t.start,
+        end: t.end,
+        events: feed.list({ account: t.account }),
+      });
+      await mkdir(path.dirname(file), { recursive: true });
+      const tmp = `${file}.${process.pid}.tmp`;
+      await writeFile(tmp, ev.json, "utf8");
+      await rename(tmp, file);
+      stored = ev.json;
+    }
+    let doc: { chainId?: unknown; guardian?: unknown; jobId?: unknown; account?: unknown; events?: unknown[] };
+    try {
+      doc = JSON.parse(stored) as typeof doc;
+    } catch {
+      throw new EvidenceMismatch(`the stored evidence for job ${job.jobId} is not readable JSON`);
+    }
+    if (
+      doc.chainId !== deployment.chainId ||
+      typeof doc.guardian !== "string" ||
+      !same(doc.guardian, deployment.guardian) ||
+      doc.jobId !== job.jobId.toString() ||
+      typeof doc.account !== "string" ||
+      !same(doc.account, t.account)
+    ) {
+      throw new EvidenceMismatch(`the stored evidence for job ${job.jobId} belongs to another deployment, job or account: not submitting it`);
+    }
+    return { hash: keccak256(stringToBytes(stored)), events: doc.events?.length ?? 0 };
   }
 
   // ------------------------------------------------------------------ settle
@@ -530,12 +588,12 @@ export class Guardian {
     this.#waits.delete(k);
   }
 
-  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim, error: FeedError | undefined, txHash?: Hex, backoffSec = REFUSAL_BACKOFF_SEC) {
+  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim | undefined, error: FeedError | undefined, txHash?: Hex, backoffSec = REFUSAL_BACKOFF_SEC) {
     const k = job.jobId.toString();
     this.#backoff.set(k, at + backoffSec);
     this.#waits.delete(k);
     const e = error ?? { name: "SimulationFailed", message: `${step} simulation failed` };
-    await this.#event({ kind: "refused", job, sim, error: e, reason: `${step}: ${e.message}`, ...(txHash ? { txHash } : {}), data: { step, backoffUntil: at + backoffSec } });
+    await this.#event({ kind: "refused", job, ...(sim ? { sim } : {}), error: e, reason: `${step}: ${e.message}`, ...(txHash ? { txHash } : {}), data: { step, backoffUntil: at + backoffSec } });
   }
 
   /** Records a waiting event, re-recording an identical one at most every REPEAT_EVENT_SEC. */

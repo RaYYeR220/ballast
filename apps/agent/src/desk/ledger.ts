@@ -130,8 +130,15 @@ export class Ledger {
     }
   }
 
-  /** Appends an entry and persists the book. Returns the stored entry. */
+  /**
+   * Appends an entry and persists the book. Returns the stored entry. A guardian job is booked once: a second
+   * income entry for the same jobId (a rescan after lost state, a retry) returns the first and adds nothing.
+   */
   async record(input: LedgerInput): Promise<LedgerEntry> {
+    if (input.kind === "income") {
+      const booked = this.#entries.find((e) => e.kind === "income" && e.jobId === input.jobId);
+      if (booked) return booked;
+    }
     const entry = { id: this.#nextId++, ts: this.#clock(), ...input } as LedgerEntry;
     this.#entries.push(entry);
     if (this.#entries.length > MAX_ENTRIES) this.#entries.splice(0, this.#entries.length - MAX_ENTRIES);

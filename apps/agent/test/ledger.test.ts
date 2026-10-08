@@ -58,6 +58,20 @@ describe("Ledger", () => {
     expect(JSON.parse(await readFile(path.join(dir, "ledger.json"), "utf8")).entries).toHaveLength(3);
   });
 
+  it("books a guardian job's income once, also after a reload", async () => {
+    const dir = await tmp();
+    const income = { kind: "income" as const, source: "guardian" as const, jobId: "7", token: addr(3), symbol: "USD1", amount: "1000000000000000000", decimals: 18, usd: 1, outcome: "complete" as const };
+    const a = new Ledger({ dir, x402DailyCapUsd: 0.5, clock: () => T0 });
+    const first = await a.record(income);
+    expect(await a.record({ ...income, estimated: true })).toBe(first);
+    const b = new Ledger({ dir, x402DailyCapUsd: 0.5, clock: () => T0 });
+    await b.load();
+    await b.record({ ...income, amount: "5" });
+    await b.record({ ...income, jobId: "8" });
+    expect(b.list({ kind: "income" }).map((e) => (e.kind === "income" ? `${e.jobId}:${e.amount}` : ""))).toEqual(["8:1000000000000000000", "7:1000000000000000000"]);
+    expect(b.summary().incomeUsd).toBe(2);
+  });
+
   it("keeps an unreadable file aside instead of overwriting it", async () => {
     const dir = await tmp();
     await writeFile(path.join(dir, "ledger.json"), "{not json");

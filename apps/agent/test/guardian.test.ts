@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -112,7 +112,7 @@ async function setup(w: Partial<World> = {}, dir?: string) {
   };
   const feed = new Feed({ dir: dataDir, secrets: [], clock: () => world.at });
   const ledger = new Ledger({ dir: dataDir, x402DailyCapUsd: 0.5, clock: () => world.at });
-  const state = new GuardianState(dataDir);
+  const state = new GuardianState({ dir: dataDir, chainId: d.chainId, guardian: d.guardian });
   await state.load();
   const reads: GuardianReads = {
     now: async () => world.at,
@@ -158,7 +158,7 @@ describe("Guardian", () => {
     await guardian.tick();
     expect(world.scans[0]).toBe(100n);
     expect(state.cursor).toBe(105n);
-    const reloaded = new GuardianState(dataDir);
+    const reloaded = new GuardianState({ dir: dataDir, chainId: d.chainId, guardian: d.guardian });
     await reloaded.load();
     expect(reloaded.cursor).toBe(105n);
     // a restart continues from the stored cursor
@@ -269,12 +269,18 @@ describe("Guardian", () => {
     expect(state.jobs.has("101")).toBe(false);
   });
 
-  it("books a job someone else settled from its budget, marked as estimated", async () => {
-    const { world, guardian, ledger, sender } = await setup();
-    world.jobs.set(101n, job(101n, { status: "Completed" }));
+  it("books a tracked job someone else settled from its budget, marked as estimated", async () => {
+    const { world, guardian, ledger, sender } = await setup({ at: END - 60 });
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    await guardian.tick(); // seen while its window runs: tracked
+    world.at = END + 60;
+    world.jobs.set(101n, job(101n, { status: "Completed" })); // settle is permissionless
+    await guardian.tick();
     await guardian.tick();
     expect(sender.sims).toEqual([]);
-    expect(ledger.list({ kind: "income" })[0]).toMatchObject({ amount: E18.toString(), estimated: true, outcome: "complete" });
+    const income = ledger.list({ kind: "income" });
+    expect(income).toHaveLength(1);
+    expect(income[0]).toMatchObject({ amount: E18.toString(), estimated: true, outcome: "complete" });
   });
 
   it("ignores jobs of other providers and drops unfunded jobs after expiry", async () => {
@@ -339,6 +345,49 @@ describe("Guardian", () => {
     await guardian.tick();
     const names = feed.list({ kind: "refused" }).map((e) => e.error?.name).reverse();
     expect(names).toEqual(["Dropped", "BroadcastFailed", "Reverted"]);
+  });
+
+  it("does not track or book jobs that are already final when first seen", async () => {
+    const { world, guardian, ledger, feed, state } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Completed" }));
+    world.jobs.set(102n, job(102n, { status: "Rejected" }));
+    world.jobs.set(103n, job(103n, { status: "Expired" }));
+    world.jobs.set(104n, job(104n, { status: "Submitted" }));
+    const r = await guardian.tick();
+    expect(r.settled).toEqual(["104"]);
+    expect(ledger.list({ kind: "income" }).map((e) => (e.kind === "income" ? e.jobId : ""))).toEqual(["104"]);
+    expect(feed.list({ source: "guardian" }).every((e) => e.jobId === "104")).toBe(true);
+    expect(state.jobs.size).toBe(0);
+  });
+
+  it("refuses state written for another chain or guardian, and state that does not say", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "desk-guardian-"));
+    const mine = new GuardianState({ dir, chainId: 31337, guardian: d.guardian });
+    mine.cursor = 150n;
+    await mine.save();
+    const stored = JSON.parse(await readFile(path.join(dir, "guardian.json"), "utf8"));
+    expect(stored).toMatchObject({ chainId: 31337, guardian: d.guardian, cursor: "150" });
+    const same = new GuardianState({ dir, chainId: 31337, guardian: d.guardian.toLowerCase() as Address });
+    await same.load();
+    expect(same.cursor).toBe(150n);
+    await expect(new GuardianState({ dir, chainId: 56, guardian: d.guardian }).load()).rejects.toThrow(/chain 31337/);
+    await expect(new GuardianState({ dir, chainId: 31337, guardian: addr(0x77) }).load()).rejects.toThrow(/another guardian/);
+    await writeFile(path.join(dir, "guardian.json"), JSON.stringify({ cursor: "150", jobs: {} }));
+    await expect(new GuardianState({ dir, chainId: 31337, guardian: d.guardian }).load()).rejects.toThrow(/does not say/);
+  });
+
+  it("writes evidence through a temp file and refuses evidence stored for another deployment or job", async () => {
+    const { world, sender, guardian, feed, dataDir } = await setup();
+    world.jobs.set(101n, job(101n));
+    world.jobs.set(102n, job(102n));
+    await mkdir(path.join(dataDir, "evidence"), { recursive: true });
+    const foreign = buildEvidence({ chainId: 56, kernel: d.external.kernel, guardian: d.guardian, agent: AGENT, jobId: 102n, account: ACCOUNT, start: START, end: END, events: [] });
+    await writeFile(evidenceFile(dataDir, 102n), foreign.json);
+    const r = await guardian.tick();
+    expect(r.settled).toEqual(["101"]);
+    expect((await readdir(path.join(dataDir, "evidence"))).sort()).toEqual(["101.json", "102.json"]);
+    expect(sender.sims.filter((c) => c.fn === "submit").map((c) => c.args[0])).toEqual([101n]);
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ jobId: "102", error: { name: "EvidenceMismatch" }, data: { step: "submit" } });
   });
 
   it("isolates a failing job from the others", async () => {
