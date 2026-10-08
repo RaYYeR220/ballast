@@ -11,10 +11,15 @@
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
+    "@ballast/binance": "workspace:*",
     "@ballast/risk": "workspace:*",
+    "@ballast/sdk": "workspace:*",
+    "@tanstack/react-query": "^5.104.1",
     "next": "15.5.27",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "viem": "^2.57.3",
+    "wagmi": "^2.19.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.3",
