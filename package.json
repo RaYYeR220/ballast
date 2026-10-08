@@ -6,8 +6,8 @@
   "pnpm": { "overrides": { "rollup": "<4.62.4", "abitype>zod": "^3.25.76" } },
   "scripts": {
     "contracts:build": "cd contracts && forge build",
-    "contracts:test": "cd contracts && forge test --no-match-path 'test/fork/*'",
-    "contracts:test:fork": "cd contracts && forge test --match-path 'test/fork/*' -vv",
+    "contracts:test": "cd contracts && forge test --no-match-path \"test/fork/*\"",
+    "contracts:test:fork": "cd contracts && forge test --match-path \"test/fork/*\" -vv",
     "abis": "cd contracts && forge build && cd .. && tsx scripts/export-abis.ts",
     "test": "vitest run",
     "backtest": "tsx packages/risk/scripts/backtest.ts",
