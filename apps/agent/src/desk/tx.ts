@@ -67,11 +67,12 @@ export interface SenderLimits {
   maxFeeWeiPerHour: bigint;
 }
 
+/** Sized for BSC: blocks are sub-second and gas costs a small fraction of a gwei. */
 export const DEFAULT_LIMITS: SenderLimits = {
-  maxGasPriceWei: parseGwei("5"),
-  receiptTimeoutMs: 45_000,
+  maxGasPriceWei: parseGwei("1"),
+  receiptTimeoutMs: 20_000,
   maxBumps: 4,
-  maxFeeWeiPerHour: parseEther("0.01"),
+  maxFeeWeiPerHour: parseEther("0.003"),
 };
 
 /** Limits from the desk config (MAX_GAS_PRICE_GWEI, RECEIPT_TIMEOUT_SEC, MAX_BUMPS, MAX_FEE_BNB_PER_HOUR). */
@@ -267,6 +268,11 @@ export interface Confirmation {
 }
 
 export interface SenderState {
+  /**
+   * How collateral sales leave: through the protected endpoint, publicly (off mainnet, where there is no public
+   * mempool to fear), or not at all (mainnet without a Binance key: their cushion repay goes instead).
+   */
+  sales: "protected" | "public" | "disabled";
   halted: HaltInfo | null;
   outstanding: { nonce: number; hashes: Hex[]; gasPrice: bigint; rounds: number; kind: TxKind } | null;
   /** gasLimit x gasPrice signed within the last hour, wei. */
@@ -284,7 +290,9 @@ export interface TxSender {
   confirm?(txHash: Hex, nonce?: number): Promise<Confirmation>;
   /** BNB balance of the desk key, wei. */
   balance?(): Promise<bigint>;
-  /** Halt and outstanding-nonce status, for alerts and the read API. No I/O. */
+  /** Settles what is in flight and lifts a halt that has cleared, without sending anything new. */
+  recover?(): Promise<unknown>;
+  /** Halt and outstanding-nonce status, for alerts and the read API. No I/O (call recover() first for a fresh view). */
   state?(): SenderState;
 }
 
@@ -326,6 +334,8 @@ interface Outstanding {
   gasPrice: bigint;
   rounds: number;
   buildFailures: number;
+  /** Re-sends of a sale through the protected endpoint so far (at most one). */
+  privateResends: number;
   /** What a timeout rebuilds; null when unknown (adopted at startup): a cancel. */
   intent: Intent | null;
   fallback: TxBuilder | null;
@@ -362,6 +372,8 @@ export class ChainSender implements TxSender {
   #out: Outstanding | null = null;
   #halt: Halt | null = null;
   #adopted = false;
+  /** The highest "latest" nonce any read has shown: a lagging backend cannot un-mine a transaction. */
+  #seenLatest = 0;
   #spends: { at: number; wei: bigint }[] = [];
   /** Every hash signed for a resolved nonce, by nonce. */
   readonly #history = new Map<number, FamilyEntry[]>();
@@ -388,6 +400,7 @@ export class ChainSender implements TxSender {
   state(): SenderState {
     const o = this.#out;
     return {
+      sales: this.#chainId !== 56 ? "public" : this.#binance ? "protected" : "disabled",
       halted: this.#halt ? this.#publicHalt() : null,
       outstanding: o ? { nonce: o.nonce, hashes: o.family.map((e) => e.hash), gasPrice: o.gasPrice, rounds: o.rounds, kind: o.intent?.kind ?? "cancel" } : null,
       spentLastHourWei: this.#spent(),
@@ -467,12 +480,14 @@ export class ChainSender implements TxSender {
     return job;
   }
 
-  #latest() {
-    return this.#client.getTransactionCount({ address: this.address, blockTag: "latest" });
+  async #latest(): Promise<number> {
+    const n = await this.#client.getTransactionCount({ address: this.address, blockTag: "latest" });
+    if (n > this.#seenLatest) this.#seenLatest = n;
+    return this.#seenLatest;
   }
 
-  #pending() {
-    return this.#client.getTransactionCount({ address: this.address, blockTag: "pending" });
+  async #pending(): Promise<number> {
+    return Math.max(await this.#client.getTransactionCount({ address: this.address, blockTag: "pending" }), this.#seenLatest);
   }
 
   /** Before any new signature: adopt what a restart left, lift a halt that has cleared, settle the outstanding nonce. */
@@ -490,26 +505,34 @@ export class ChainSender implements TxSender {
     await this.#catchUp();
     if (this.#halt) return { ok: false, stage: "halted", halt: this.#publicHalt() };
     // Nothing of ours is outstanding here. Anything pending at the key is not ours: never sign behind it.
-    const [latest, pending] = await Promise.all([this.#latest(), this.#pending()]);
+    let [latest, pending] = await Promise.all([this.#latest(), this.#pending()]);
+    if (pending > latest) {
+      // One read can come from a backend a block behind: look once more before calling it a blocker.
+      await this.#sleep(this.#pollMs);
+      [latest, pending] = await Promise.all([this.#latest(), this.#pending()]);
+    }
     if (pending > latest) {
       this.#doHalt("FOREIGN_BLOCKER", `a transaction this sender did not sign is pending at nonce ${latest}; one sender per key`, latest);
       return { ok: false, stage: "halted", halt: this.#publicHalt() };
     }
     const nonce = latest;
     const notes: string[] = [];
-    let build: TxBuilder = typeof input === "function" ? input : async () => input;
+    const build: TxBuilder = typeof input === "function" ? input : async () => input;
     let kind: TxKind = "intent";
     let mev = opts.mevProtect === true && this.#chainId === 56;
+    let tx = await build({ round: 0 });
+    if (!tx) return { ok: false, stage: "aborted" };
+    let intent: Intent = { build, kind, mev };
     if (mev && !this.#binance) {
-      // No protected endpoint: the sale is not sent at all; its cushion repay goes instead.
-      if (!opts.fallback) return { ok: false, stage: "aborted" };
-      build = opts.fallback;
+      // No protected endpoint: the sale was planned (the caller knows what it wanted) but is not sent at all;
+      // its cushion repay goes instead, or nothing.
+      tx = opts.fallback ? await opts.fallback({ round: 0 }) : null;
+      if (!tx || !opts.fallback) return { ok: false, stage: "aborted" };
       kind = "fallback";
       mev = false;
+      intent = { build: opts.fallback, kind, mev };
       notes.push("no Binance key: a sale is never broadcast publicly, its cushion repay is sent instead");
     }
-    const tx = await build({ round: 0 });
-    if (!tx) return { ok: false, stage: "aborted" };
     let gas: bigint;
     try {
       gas = await this.#gasFor(tx);
@@ -519,7 +542,7 @@ export class ChainSender implements TxSender {
       return { ok: false, stage: "estimate", error };
     }
     const price = small((await this.#client.getGasPrice()) * NETWORK_PREMIUM_PCT / 100n, this.#limits.maxGasPriceWei);
-    const out: Outstanding = { nonce, family: [], gasPrice: 0n, rounds: 0, buildFailures: 0, intent: { build, kind, mev }, fallback: opts.fallback ?? null, notes };
+    const out: Outstanding = { nonce, family: [], gasPrice: 0n, rounds: 0, buildFailures: 0, privateResends: 0, intent, fallback: opts.fallback ?? null, notes };
     this.#out = out;
     let pushed: Pushed;
     try {
@@ -543,9 +566,7 @@ export class ChainSender implements TxSender {
   /** Waits for the outstanding nonce to be mined, replacing it round by round. Never throws. */
   async #resolve(out: Outstanding): Promise<SendResult> {
     for (;;) {
-      const waited = await this.#waitMined(out.nonce);
-      if (waited === "mined") return this.#finish(out);
-      if (waited === "blocked") return this.#pendingResult(out);
+      if (await this.#waitMined(out.nonce)) return this.#finish(out);
       if (out.rounds >= this.#limits.maxBumps) {
         const failing = out.buildFailures >= this.#limits.maxBumps && out.buildFailures === out.rounds;
         this.#doHalt(
@@ -561,23 +582,19 @@ export class ChainSender implements TxSender {
     }
   }
 
-  /** "mined" once the latest nonce passed `nonce`, "blocked" by a lower nonce that is not ours, else "timeout". */
-  async #waitMined(nonce: number): Promise<"mined" | "timeout" | "blocked"> {
+  /**
+   * True once the latest nonce passed `nonce`, false on a timeout. Our nonce is always the latest one we have
+   * seen (and that never counts backwards), so nothing can sit below it.
+   */
+  async #waitMined(nonce: number): Promise<boolean> {
     const end = this.#now() + this.#limits.receiptTimeoutMs;
     for (;;) {
-      let latest: number | null = null;
       try {
-        latest = await this.#latest();
+        if ((await this.#latest()) > nonce) return true;
       } catch {
         // the read failed: keep waiting until the deadline
       }
-      if (latest !== null && latest > nonce) return "mined";
-      if (latest !== null && latest < nonce) {
-        // Only one nonce of ours is ever outstanding, so the one at `latest` is someone else's.
-        this.#doHalt("FOREIGN_BLOCKER", `a transaction this sender did not sign is pending at nonce ${latest}, below ours at ${nonce}; one sender per key`, latest);
-        return "blocked";
-      }
-      if (this.#now() >= end) return "timeout";
+      if (this.#now() >= end) return false;
       await this.#sleep(this.#pollMs);
     }
   }
@@ -589,13 +606,22 @@ export class ChainSender implements TxSender {
       const it = out.intent;
       if (!it) return await this.#replace(out, null, "cancel"); // found at startup: cancel it
       if (!it.mev) return await this.#replace(out, it.build, it.kind);
-      // A sale goes out again only through the protected endpoint; when it is no longer valid, its stand-in.
-      const tx = await it.build({ round: out.rounds });
-      const gas = tx && this.#binance ? await this.#gasOrNull(tx) : null;
-      if (!tx || gas === null) return await this.#replace(out, out.fallback, "fallback");
-      const price = await this.#replacementPrice(out);
-      if (price === null) return this.#capHit(out);
-      return await this.#push(out, tx, gas, price, "intent", true);
+      // A sale gets ONE more try through the protected endpoint. After that (or when it is no longer valid, or
+      // would need more than the cap) its nonce is settled in public, by its cushion repay or a cancel: a
+      // private transaction that never lands must not hold the key.
+      if (out.privateResends === 0) {
+        const tx = await it.build({ round: out.rounds });
+        const gas = tx && this.#binance ? await this.#gasOrNull(tx) : null;
+        const price = tx && gas !== null ? await this.#replacementPrice(out) : null;
+        if (tx && gas !== null && price !== null) {
+          out.privateResends++;
+          return await this.#push(out, tx, gas, price, "intent", true);
+        }
+        out.notes.push(`round ${out.rounds}: the sale cannot go out again, settling nonce ${out.nonce} in public`);
+      } else {
+        out.notes.push(`the sale was not mined after a private re-send: its cushion repay settles nonce ${out.nonce} in public`);
+      }
+      return await this.#replace(out, out.fallback, "fallback");
     } catch (err) {
       // A read or the builder failed before anything new was signed: the outstanding transaction stays.
       out.buildFailures++;
@@ -808,14 +834,15 @@ export class ChainSender implements TxSender {
   async #checkResume() {
     const h = this.#halt;
     if (!h) return;
-    const mined = h.nonce !== null && (await this.#latest()) > h.nonce;
+    const latest = await this.#latest();
+    const mined = h.nonce !== null && latest > h.nonce;
     let clear = false;
     switch (h.reason) {
       case "STUCK":
       case "GAS_CAP":
       case "BUILD_FAILED":
       case "FOREIGN_BLOCKER":
-        clear = mined;
+        clear = mined || (await this.#vanished(latest));
         break;
       case "INSUFFICIENT_FUNDS":
         clear = mined || (await this.balance()) >= (h.needWei ?? 0n);
@@ -825,6 +852,22 @@ export class ChainSender implements TxSender {
         break;
     }
     if (clear) this.#halt = null;
+  }
+
+  /**
+   * True when nothing of the key is pending and no node knows any hash signed for the outstanding nonce (the
+   * rule confirm() uses for "dropped"): the mempool let go of it, so the nonce is free and the halt is moot.
+   * The outstanding nonce is given up with it.
+   */
+  async #vanished(latest: number): Promise<boolean> {
+    if ((await this.#pending()) !== latest) return false;
+    const out = this.#out;
+    if (!out) return true;
+    for (const e of out.family) if (await this.#known(e.hash)) return false;
+    this.#out = null;
+    this.#history.set(out.nonce, out.family);
+    await this.#save();
+    return true;
   }
 
   #spent(): bigint {
@@ -849,6 +892,7 @@ export class ChainSender implements TxSender {
         gasPrice: family.reduce((m, e) => big(m, e.gasPrice), 0n),
         rounds: 0,
         buildFailures: 0,
+        privateResends: 0,
         intent: null,
         fallback: null,
         notes: [`nonce ${latest} was pending at startup: cancelled unless it is mined first`],

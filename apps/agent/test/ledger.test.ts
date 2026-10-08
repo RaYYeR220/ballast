@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { getAddress, toHex, type Address } from "viem";
 import type { TxRequest } from "@ballast/sdk";
 import { GasBook, Ledger, ledgerSender, stableUsd } from "../src/desk/ledger";
-import type { SendResult, TxSender } from "../src/desk/tx";
+import type { Confirmation, SendResult, TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const DAY = 86_400;
@@ -178,7 +178,7 @@ describe("ledgerSender", () => {
   it("passes the whole sender through: options, confirm, balance, state", async () => {
     const { b } = await book();
     const seen: unknown[] = [];
-    const state = { halted: null, outstanding: { nonce: 4, hashes: [H("aa")], gasPrice: 1n, rounds: 1, kind: "intent" as const }, spentLastHourWei: 9n };
+    const state = { sales: "protected" as const, halted: null, outstanding: { nonce: 4, hashes: [H("aa")], gasPrice: 1n, rounds: 1, kind: "intent" as const }, spentLastHourWei: 9n };
     const inner: TxSender = {
       address: addr(0xee),
       dryRun: true,
@@ -203,6 +203,67 @@ describe("ledgerSender", () => {
     expect(await w.confirm!(H("aa"), 4)).toEqual({ status: "pending" });
     // a sender without the optional calls stays without them
     const bare = ledgerSender(sender({ ok: false, stage: "aborted" }), b, "keeper");
-    expect([bare.confirm, bare.balance, bare.state]).toEqual([undefined, undefined, undefined]);
+    expect([bare.confirm, bare.balance, bare.state, bare.recover]).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it("books what recover() settled, under the loop that sent it", async () => {
+    const { l, b } = await book();
+    // the publisher's send halted the sender; the keeper's recover() later finds it mined (a replacement)
+    const inner = sender({ ok: true, txHash: H("aa"), via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
+    await ledgerSender(inner, b, "publisher").send(tx);
+    inner.recover = async () => mined({ nonce: 3, txHash: H("ab") });
+    await ledgerSender(inner, b, "keeper").recover!();
+    await ledgerSender(inner, b, "keeper").recover!();
+    expect(l.list()).toHaveLength(1);
+    expect(l.list()[0]).toMatchObject({ source: "publisher", nonce: 3, txHash: H("ab") });
+    // nothing in flight: recover() answers null and nothing is booked
+    inner.recover = async () => null;
+    await ledgerSender(inner, b, "keeper").recover!();
+    expect(l.list()).toHaveLength(1);
+  });
+
+  it("follows a send that ended pending until its nonce is mined, even when no loop asks about it again", async () => {
+    const { l, b } = await book();
+    // the publisher never confirms its pending posts; the sender settles the nonce inside a later send
+    let confirmation: Confirmation = { status: "pending" };
+    const asked: [string, number | undefined][] = [];
+    const inner = sender({ ok: true, txHash: H("aa"), via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
+    inner.confirm = async (h, n) => {
+      asked.push([h, n]);
+      return confirmation;
+    };
+    const publisher = ledgerSender(inner, b, "publisher");
+    await publisher.send(tx);
+    const keeper = ledgerSender(sender(mined({ nonce: 4, txHash: H("b4") })), b, "keeper");
+    // still pending: asked, nothing booked for nonce 3
+    await ledgerSender({ ...inner, send: async () => mined({ nonce: 4, txHash: H("b4") }) }, b, "keeper").send(tx);
+    expect(asked).toEqual([[H("aa"), 3]]);
+    expect(l.list().map((e) => (e.kind === "gas" ? e.nonce : -1))).toEqual([4]);
+    // mined meanwhile as a bumped replacement
+    confirmation = { status: "success", txHash: H("ab"), minedAs: "intent", gasUsed: 21_000n, effectiveGasPrice: 3n * 10n ** 9n };
+    await ledgerSender({ ...inner, send: async () => mined({ nonce: 5, txHash: H("b5") }) }, b, "guardian").send(tx);
+    await ledgerSender({ ...inner, send: async () => mined({ nonce: 6, txHash: H("b6") }) }, b, "guardian").send(tx);
+    const three = l.list().find((e) => e.kind === "gas" && e.nonce === 3);
+    expect(three).toMatchObject({ source: "publisher", txHash: H("ab"), feeWei: (21_000n * 3n * 10n ** 9n).toString() });
+    expect(l.list().filter((e) => e.kind === "gas" && e.nonce === 3)).toHaveLength(1);
+    expect(asked).toHaveLength(2); // settled: not asked about again
+    void keeper;
+  });
+
+  it("stops following a pending send whose nonce went to a transaction that is not ours", async () => {
+    const { l, b } = await book();
+    const inner = sender({ ok: true, txHash: H("aa"), via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
+    let calls = 0;
+    inner.confirm = async () => {
+      calls++;
+      return { status: "dropped" };
+    };
+    const w = ledgerSender(inner, b, "publisher");
+    await w.send(tx);
+    inner.send = async () => ({ ok: false, stage: "aborted" });
+    await w.send(tx);
+    await w.send(tx);
+    expect(calls).toBe(1);
+    expect(l.list()).toEqual([]);
   });
 });

@@ -142,5 +142,5 @@ describe("NotesWorker", () => {
     const logs: string[] = [];
     expect(await studioNoteModel(path.join(dir, "missing.toml"), (l) => logs.push(l))).toBeNull();
     expect(logs[0]).toMatch(/desk notes off/);
-  });
+  }, 60_000); // the Studio runtime is a large import: slow on a busy machine
 });

@@ -80,8 +80,9 @@ plain http on chain 56, and when `guardian.json` in `DATA_DIR` was written for a
 **Binance Web3 API keys are required on mainnet for collateral sales.** A sale (`shieldDeleverage`) is only
 ever broadcast through the Binance MEV-protected endpoint, never to the public mempool. Without
 `BINANCE_WEB3_API_KEY` / `BINANCE_WEB3_API_SECRET` the desk never signs a sale: it still shields with the
-cushion, posts overlays and settles guardian jobs over the RPC, and it warns at startup, records an alert in
-the feed and shows `collateralSales: "off: no Binance key"` in `/health`.
+cushion (the keeper plans the cushion repay only and alerts once per account and closure that it is not
+enough), posts overlays and settles guardian jobs over the RPC, and it warns at startup, records an alert in
+the feed and shows `sender.sales: "disabled"` in `/health` (`"protected"` with the keys).
 
 The desk key needs BNB for gas; the feed raises an alert below `MIN_BNB_BALANCE`. Paid earnings data is
 off until `X402_EARNINGS_URL` is set; the key then also needs the stablecoin the endpoint is paid in, on
@@ -101,12 +102,16 @@ curl -s http://127.0.0.1:8787/health
 `Restart=always` brings the process back after a crash; each loop already isolates its own failures and
 backs off, and the API stays up through RPC or Binance outages.
 
-The desk sends one transaction at a time. `/health` shows the sender: the transaction in flight (nonce and
-every hash signed for it) and, when it has halted, why (`STUCK`, `GAS_CAP`, `INSUFFICIENT_FUNDS`,
-`FEE_BUDGET`, `FOREIGN_BLOCKER`, `BUILD_FAILED`). While halted `/health` answers HTTP 503 with `ok: false`
-and the desk signs nothing; it resumes by itself once the cause clears (the nonce is mined, the key is
-topped up, the hour has moved on). Point an uptime check at `/health` to be paged for it. Nothing else may
-sign with the desk key while the desk runs. `systemctl stop` sends SIGTERM: the desk
+The desk sends one transaction at a time. `/health` shows the sender: how sales leave (`sales`), the
+transaction in flight (nonce and every hash signed for it) and, when it has halted, why (`STUCK`, `GAS_CAP`,
+`INSUFFICIENT_FUNDS`, `FEE_BUDGET`, `FOREIGN_BLOCKER`, `BUILD_FAILED`). While halted `/health` answers HTTP
+503 with `ok: false` and the desk signs nothing; it resumes by itself once the cause clears (the nonce is
+mined, the key is topped up, the hour has moved on). Point an uptime check at `/health` to be paged for it.
+
+If a halt alert does not clear, restart the desk (`systemctl restart ballast-agent`): at startup it takes
+over whatever is pending for the key and cancels it. For a `GAS_CAP` halt that does not clear, raise
+`MAX_GAS_PRICE_GWEI` in `agent.env` first, then restart. Nothing else may sign with the desk key while the
+desk runs. `systemctl stop` sends SIGTERM: the desk
 stops scheduling, lets a transaction waiting for its receipt finish (up to `TimeoutStopSec`), then flushes
 the ledger and the guardian cursor.
 

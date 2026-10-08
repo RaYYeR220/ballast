@@ -599,6 +599,8 @@ interface PendingTx {
 
 /** Shields stop backing off this long before the close. */
 const LAST_ATTEMPT_SEC = 6 * 60;
+/** Inside this long before the close a planned shield counts as busy even while it is backed off. */
+export const SHIELD_BUSY_NEAR_SEC = 30 * 60;
 /** A repeated recordLiquidation refusal for the same reason is recorded once a day. */
 const LIQUIDATION_REFUSAL_EVERY_SEC = 86_400;
 
@@ -633,6 +635,7 @@ export class Keeper {
   readonly #planned = new Map<string, number>();
   readonly #haltRefusals = new Set<string>();
   #haltAlerted: number | null = null;
+  #salesAlerted = false;
   /** Last recordLiquidation refusal event per account and reason. */
   readonly #liquidationRefusals = new Map<string, number>();
   readonly #disagreements: DisagreementWatch;
@@ -684,8 +687,19 @@ export class Keeper {
     });
     await guard("pending", async () => this.#loadPending());
     await guard("sender", async () => {
-      const halted = this.#o.sender.state?.().halted;
-      if (halted) await this.#haltAlert(halted);
+      // Settle what the sender has in flight first, so its state (and any halt) is the current one.
+      await this.#o.sender.recover?.();
+      const st = this.#o.sender.state?.();
+      if (st?.halted) await this.#haltAlert(st.halted);
+      if (st?.sales === "disabled" && !this.#salesAlerted) {
+        this.#salesAlerted = true;
+        await this.#o.feed.record({
+          kind: "alert",
+          source: "keeper",
+          reason: "collateral sales are disabled: no Binance key, and a sale is never broadcast publicly. Shields repay from the cushion only; set BINANCE_WEB3_API_KEY and BINANCE_WEB3_API_SECRET to enable sales.",
+          data: { sales: "disabled" },
+        });
+      }
     });
     let accounts: Address[] = [];
     await guard("listAccounts", async () => {
@@ -721,8 +735,15 @@ export class Keeper {
     for (const p of this.#pending.values()) if (p.intent === "shield") return true;
     const now = this.#o.clock?.() ?? Math.floor(Date.now() / 1000);
     for (const [k, startsAt] of this.#planned) {
-      if (startsAt > now) return true;
-      this.#planned.delete(k);
+      if (startsAt <= now) {
+        this.#planned.delete(k);
+        continue;
+      }
+      // A shield that was refused and waits out its back-off is not about to send: with more than
+      // SHIELD_BUSY_NEAR_SEC to the close it holds nobody up.
+      const waiting = (this.#backoff.get(k) ?? 0) > now;
+      if (waiting && startsAt - now > SHIELD_BUSY_NEAR_SEC) continue;
+      return true;
     }
     return false;
   }
@@ -1031,7 +1052,23 @@ export class Keeper {
     }
 
     const fresh = ctx.fresh;
-    if (!fresh) return;
+    if (!fresh) {
+      // The sender always asks for the plan first. If one ever reports a transaction without having asked,
+      // say so rather than lose it.
+      if (sent?.ok) {
+        await feed.record({
+          kind: "alert",
+          source: "keeper",
+          account: target.account,
+          ...(target.cover ? { cover: target.cover } : {}),
+          symbol: target.symbol,
+          plan: before,
+          txHash: sent.txHash,
+          reason: `the sender reports a ${sent.status} transaction the keeper did not plan in this attempt${sent.minedAs ? ` (${sent.minedAs})` : ""}; check the account`,
+        });
+      }
+      return;
+    }
     if (!ctx.step || !fresh.state || !fresh.decision) {
       const now = fresh.decision ? stepJson(fresh.decision.step) : undefined;
       await this.#noop(target, `plan changed before send: ${fresh.why ?? "the fresh read plans a different action"}`, fresh.window, { ...before, now });
@@ -1059,7 +1096,13 @@ export class Keeper {
     }
     if (thrown) return fail({ name: "BroadcastFailed", message: safeMessage(thrown) });
     const r = sent as SendResult;
-    if (!r.ok) return fail(r.stage === "estimate" ? r.error : { name: "Aborted", message: "the send was aborted" });
+    if (!r.ok) {
+      if (r.stage === "estimate") return fail(r.error);
+      // The plan was built and simulated, yet nothing was signed: for a sale that is a sender without a
+      // protected endpoint and without a cushion repay to send in its place.
+      if (sale) return fail({ name: "SaleNotSent", message: "the sale was not sent: no protected endpoint for it and no cushion repay to send instead" });
+      return fail({ name: "Aborted", message: "the send was aborted" });
+    }
 
     // The sale's cushion repay went out in its place (Binance failed, or the sale stopped being valid).
     const stood = r.minedAs === "fallback" && ctx.fallback ? ctx.fallback : null;
@@ -1074,6 +1117,9 @@ export class Keeper {
     }
     if (r.status === "dropped") {
       if (r.minedAs === "cancel") {
+        // A sale that ended in a cancel was not sold and nothing stood in for it: a failure, with the sale
+        // put on hold and the cushion tried. For anything else the intent was simply no longer valid.
+        if (sale) return fail({ name: "SaleNotSent", message: r.note ?? "the sale was not mined and its nonce was cancelled" }, r.txHash);
         await this.#noop(target, `${step.fn} was not mined in time and is no longer valid: its nonce was cancelled`, fresh.window, plan);
         return;
       }

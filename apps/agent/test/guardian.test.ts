@@ -74,7 +74,7 @@ class StubSender implements TxSender {
   /** Outcome of the next sends, in order (default success). */
   statuses: ("success" | "reverted" | "pending" | "dropped" | "cancelled" | "halted" | "throw")[] = [];
   /** What state() answers: a halt, and/or a transaction of the key in flight. */
-  senderState: SenderState = { halted: null, outstanding: null, spentLastHourWei: 0n };
+  senderState: SenderState = { sales: "protected", halted: null, outstanding: null, spentLastHourWei: 0n };
   /** What confirm() answers for a hash. */
   confirmations = new Map<string, Confirmation>();
   state() {
@@ -422,19 +422,19 @@ describe("Guardian", () => {
   it("waits while the sender is halted or has a transaction in flight: nothing simulated, no back-off", async () => {
     const { world, sender, guardian, feed } = await setup();
     world.jobs.set(101n, job(101n));
-    sender.senderState = { halted: HALT, outstanding: null, spentLastHourWei: 0n };
+    sender.senderState = { sales: "protected", halted: HALT, outstanding: null, spentLastHourWei: 0n };
     await guardian.tick();
     expect(sender.sims).toEqual([]);
     expect(feed.list({ kind: "refused" })).toEqual([]);
     expect(feed.list({ kind: "noop" })[0]).toMatchObject({ jobId: "101", reason: expect.stringMatching(/sender is halted \(STUCK\)/), data: { sender: "halted", halt: { reason: "STUCK", nonce: 5 } } });
     expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
-    sender.senderState = { halted: null, outstanding: { nonce: 6, hashes: [`0x${"ab".repeat(32)}`], gasPrice: 1n, rounds: 0, kind: "intent" }, spentLastHourWei: 0n };
+    sender.senderState = { sales: "protected", halted: null, outstanding: { nonce: 6, hashes: [`0x${"ab".repeat(32)}`], gasPrice: 1n, rounds: 0, kind: "intent" }, spentLastHourWei: 0n };
     world.at += QUICK_RETRY_SEC;
     await guardian.tick();
     expect(sender.sims).toEqual([]);
     expect(feed.list({ kind: "noop" })[0]).toMatchObject({ reason: expect.stringMatching(/in flight \(nonce 6\)/) });
     expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
-    sender.senderState = { halted: null, outstanding: null, spentLastHourWei: 0n };
+    sender.senderState = { sales: "protected", halted: null, outstanding: null, spentLastHourWei: 0n };
     world.at += QUICK_RETRY_SEC;
     expect((await guardian.tick()).settled).toEqual(["101"]);
   });

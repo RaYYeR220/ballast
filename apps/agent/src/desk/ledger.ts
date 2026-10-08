@@ -253,16 +253,43 @@ export interface MinedReport {
  * that was replaced a few times costs what its mined replacement cost; a nonce spent on a cancel is booked
  * as "cancelled". One book is shared by every loop's sender wrapper, so a transaction reported twice (by a
  * send and a later confirm, or by the startup recovery and a loop) is still one entry.
+ *
+ * A send that ends pending (the sender halted on it) is followed: the sender may settle that nonce later
+ * inside another loop's send, where nobody sees the result, so the book asks confirm() about it before each
+ * later send until it is mined or lost, and books it under the loop that sent it.
  */
 export class GasBook {
   readonly #ledger: Ledger;
   readonly #onError: (m: string) => void;
   /** nonce -> the hash booked for it in this process. */
   readonly #nonces = new Map<number, string>();
+  /** nonce -> a send that ended pending and is not booked yet. */
+  readonly #open = new Map<number, { source: LedgerSource; txHash: Hex }>();
 
   constructor(ledger: Ledger, onError: (m: string) => void = (m) => console.error(m)) {
     this.#ledger = ledger;
     this.#onError = onError;
+  }
+
+  /** Remembers a send that ended pending, to book its nonce once it is mined. */
+  follow(source: LedgerSource, nonce: number, txHash: Hex): void {
+    if (!this.#nonces.has(nonce) && !this.#open.has(nonce)) this.#open.set(nonce, { source, txHash });
+    if (this.#open.size > 1_000) this.#open.delete(this.#open.keys().next().value as number);
+  }
+
+  /** Asks about every followed send and books the ones that were mined; lost ones are let go. Never throws. */
+  async settle(confirm: (txHash: Hex, nonce?: number) => Promise<Confirmation>): Promise<void> {
+    for (const [nonce, o] of [...this.#open]) {
+      let c: Confirmation;
+      try {
+        c = await confirm(o.txHash, nonce);
+      } catch {
+        continue; // unreadable right now: asked again later
+      }
+      if (c.status === "pending") continue;
+      this.#open.delete(nonce);
+      await this.book(o.source, { ...c, txHash: c.txHash ?? o.txHash, nonce });
+    }
   }
 
   /** Never throws: the send result is what the loop acts on, not the bookkeeping. */
@@ -272,6 +299,12 @@ export class GasBook {
     if (status === null) return;
     const hash = r.txHash.toLowerCase();
     if (r.nonce !== undefined) {
+      // A nonce one loop left pending and another one saw mined belongs to the loop that sent it.
+      const sentBy = this.#open.get(r.nonce);
+      if (sentBy) {
+        source = sentBy.source;
+        this.#open.delete(r.nonce);
+      }
       const seen = this.#nonces.get(r.nonce);
       if (seen !== undefined) {
         if (seen !== hash) this.#onError(`ledger: nonce ${r.nonce} was already booked as ${seen}, ignoring ${hash}`);
@@ -308,11 +341,27 @@ export function ledgerSender(inner: TxSender, book: GasBook, source: LedgerSourc
     dryRun: inner.dryRun,
     simulate: (tx: TxRequest, opts?: SimulateOptions) => inner.simulate(tx, opts),
     async send(tx: TxRequest | TxBuilder, opts?: SendOptions): Promise<SendResult> {
+      if (inner.confirm) await book.settle(inner.confirm.bind(inner));
       const r = await inner.send(tx, opts);
-      if (r.ok) await book.book(source, r);
+      if (r.ok) {
+        if (r.status === "pending") book.follow(source, r.nonce, r.txHash);
+        else await book.book(source, r);
+      }
       return r;
     },
   };
+  if (inner.recover) {
+    const recover = inner.recover.bind(inner);
+    wrapped.recover = async (): Promise<unknown> => {
+      const r = (await recover()) as SendResult | null | undefined;
+      // What was in flight and is settled now: booked here, since no send will ever return it.
+      if (r && typeof r === "object" && r.ok === true) {
+        if (r.status === "pending") book.follow(source, r.nonce, r.txHash);
+        else await book.book(source, r);
+      }
+      return r;
+    };
+  }
   if (inner.confirm) {
     const confirm = inner.confirm.bind(inner);
     wrapped.confirm = async (txHash: Hex, nonce?: number): Promise<Confirmation> => {

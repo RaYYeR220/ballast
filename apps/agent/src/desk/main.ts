@@ -157,6 +157,8 @@ export function senderView(s: SenderState | undefined) {
   if (!s) return null;
   const o = s.outstanding;
   return {
+    // How collateral sales leave: "protected" (Binance MEV-protected endpoint), "public" (not mainnet) or "disabled".
+    sales: s.sales,
     halted: s.halted ? { reason: s.halted.reason, message: s.halted.message, nonce: s.halted.nonce, since: s.halted.since } : null,
     inFlight: o ? { nonce: o.nonce, kind: o.kind, rounds: o.rounds, gasPriceGwei: formatGwei(o.gasPrice), hashes: [...o.hashes] } : null,
     feeSpentLastHourBnb: formatEther(s.spentLastHourWei),
@@ -165,11 +167,12 @@ export function senderView(s: SenderState | undefined) {
 
 /**
  * On BSC mainnet a collateral sale is only ever broadcast through the Binance MEV-protected endpoint.
- * Without Binance keys the desk therefore never signs a sale; it still shields with the cushion.
+ * Without Binance keys the sender reports sales as disabled: the desk never signs a sale, it still shields
+ * with the cushion (and the keeper records the alert in the feed).
  */
-export function salesWarning(config: { chainId: number; binance: unknown | null }): string | null {
-  if (config.chainId !== 56 || config.binance) return null;
-  return "no Binance Web3 API key (BINANCE_WEB3_API_KEY / BINANCE_WEB3_API_SECRET): collateral sales are never signed, because a sale is only broadcast through the Binance MEV-protected endpoint; the cushion still shields";
+export function salesWarning(sales: SenderState["sales"] | undefined): string | null {
+  if (sales !== "disabled") return null;
+  return "collateral sales are DISABLED: no Binance Web3 API key (set BINANCE_WEB3_API_KEY and BINANCE_WEB3_API_SECRET), and a sale is only ever broadcast through the Binance MEV-protected endpoint. A sale is never signed; the cushion still shields";
 }
 
 // -------------------------------------------------------------- read views
@@ -278,12 +281,10 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   const chainSender = new ChainSender({ client, account, chainId: config.chainId, dryRun: config.dryRun, binance: web3 ? binanceTxApi(web3) : null, ...senderOptions(config) });
   const gasBook = new GasBook(ledger, onError);
   const gas = new GasWatch({ sender: chainSender, feed, minWei: parseEther(config.minBnbBalance.toFixed(18)) });
-  const noSales = salesWarning(config);
-  if (noSales) {
-    log(`WARNING: ${noSales}`);
-    const day = Math.floor(Date.now() / 1000) - 86_400;
-    if (!feed.list({ kind: "alert", limit: 200 }).some((e) => e.reason === noSales && e.ts > day)) await feed.record({ kind: "alert", source: "keeper", reason: noSales, data: { sales: "off" } });
-  }
+  const sales = chainSender.state().sales;
+  log(`collateral sales: ${sales}${sales === "protected" ? " (Binance MEV-protected broadcast only)" : sales === "public" ? " (not mainnet: public broadcast)" : ""}`);
+  const noSales = salesWarning(sales);
+  if (noSales) log(`WARNING: ${noSales}`);
 
   const paidEarningsFile = config.x402.earningsUrl ? path.join(config.dataDir, "earnings-paid.json") : null;
   const publisher = new Publisher({
@@ -294,9 +295,11 @@ export async function startDesk(env: Record<string, string | undefined> = proces
     feed,
     earnings: mergedEarnings(config.earningsFile, paidEarningsFile),
     gas,
+    // One key, one transaction at a time: a post that can wait stands back for a shield.
+    busy: () => keeper.shieldBusy(),
     log,
   });
-  const keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log });
+  const keeper: Keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log });
   const guardian = new Guardian({
     deployment,
     reads: chainGuardianReads(client, deployment),
@@ -356,7 +359,6 @@ export async function startDesk(env: Record<string, string | undefined> = proces
         feedSeq: feed.list({ limit: 1 })[0]?.seq ?? 0,
         notes: notes ? "on" : "off",
         x402Earnings: buyer ? "on" : "off",
-        collateralSales: config.chainId !== 56 ? "public broadcast (not mainnet)" : config.binance ? "Binance MEV-protected broadcast" : "off: no Binance key",
         sender,
         loops: loops.map((l) => l.state),
       };

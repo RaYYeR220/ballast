@@ -28,15 +28,17 @@ describe("data dir", () => {
 describe("sender view for /health", () => {
   it("shows the halt and the transaction in flight, amounts readable", () => {
     expect(senderView(undefined)).toBeNull();
-    expect(senderView({ halted: null, outstanding: null, spentLastHourWei: 0n })).toEqual({ halted: null, inFlight: null, feeSpentLastHourBnb: "0" });
+    expect(senderView({ sales: "public", halted: null, outstanding: null, spentLastHourWei: 0n })).toEqual({ sales: "public", halted: null, inFlight: null, feeSpentLastHourBnb: "0" });
     const hashes = [`0x${"aa".repeat(32)}`, `0x${"bb".repeat(32)}`] as const;
     expect(
       senderView({
+        sales: "disabled",
         halted: { reason: "GAS_CAP", message: "replacing nonce 12 needs more than the gas price cap of 5 gwei", nonce: 12, since: 1_800_000_000 },
         outstanding: { nonce: 12, hashes: [...hashes], gasPrice: 4_500_000_000n, rounds: 3, kind: "intent" },
         spentLastHourWei: 2_500_000_000_000_000n,
       }),
     ).toEqual({
+      sales: "disabled",
       halted: { reason: "GAS_CAP", message: "replacing nonce 12 needs more than the gas price cap of 5 gwei", nonce: 12, since: 1_800_000_000 },
       inFlight: { nonce: 12, kind: "intent", rounds: 3, gasPriceGwei: "4.5", hashes: [...hashes] },
       feeSpentLastHourBnb: "0.0025",
@@ -45,10 +47,11 @@ describe("sender view for /health", () => {
 });
 
 describe("startup warning", () => {
-  it("says sales are off on mainnet without Binance keys, and nothing otherwise", () => {
-    expect(salesWarning({ chainId: 56, binance: null })).toMatch(/collateral sales are never signed.*cushion still shields/);
-    expect(salesWarning({ chainId: 56, binance: {} })).toBeNull();
-    expect(salesWarning({ chainId: 31337, binance: null })).toBeNull();
+  it("says sales are disabled when the sender has no protected endpoint, and nothing otherwise", () => {
+    expect(salesWarning("disabled")).toMatch(/collateral sales are DISABLED.*BINANCE_WEB3_API_KEY.*cushion still shields/);
+    expect(salesWarning("protected")).toBeNull();
+    expect(salesWarning("public")).toBeNull();
+    expect(salesWarning(undefined)).toBeNull();
   });
 });
 
