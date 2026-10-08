@@ -410,6 +410,7 @@ export class Publisher {
   async #tick(): Promise<PublishReport> {
     const { reads, sender } = this.#o;
     await this.#o.gas?.check("publisher");
+    await this.#confirmPending();
     const snap = await reads.snapshot();
     const report: PublishReport = { at: snap.at, posted: [], refused: [], skipped: {} };
     const seen = new Set<string>();
@@ -538,8 +539,10 @@ export class Publisher {
       return report;
     }
     if (sent.status === "pending") {
-      // Only when the sender halted on it. Not remembered: the symbols stay due and are posted again once
-      // the sender has settled this nonce.
+      // The sender halted on it: not remembered, the symbols stay due and are posted again once the sender has
+      // settled this nonce. Without a halt the nonce is used and only the receipt is late: the post is ours,
+      // so it is remembered (not posted twice) and its real outcome is recorded by #confirmPending.
+      if (!sent.halted) this.#remember(batch, snap.at);
       await this.#o.feed.record({
         kind: "pending",
         source: "publisher",
@@ -565,6 +568,43 @@ export class Publisher {
     report.txHash = sent.txHash;
     this.#o.log?.(`published ${symbols.join(",")} in ${sent.txHash}`);
     return report;
+  }
+
+  /**
+   * Posts recorded as pending (their receipt was late, or the sender halted on them): once the sender can
+   * tell, record what became of them. A mined post becomes a `publish` event with the hash that was mined; a
+   * reverted or lost one is `refused`, and its symbols are forgotten so they are due again.
+   */
+  async #confirmPending(): Promise<void> {
+    const { sender, feed } = this.#o;
+    if (!sender.confirm) return;
+    for (const p of feed.unresolvedPending("publisher")) {
+      if (!p.txHash) continue;
+      const nonce = typeof p.data?.nonce === "number" ? p.data.nonce : undefined;
+      let c;
+      try {
+        c = await sender.confirm(p.txHash, nonce);
+      } catch {
+        continue; // unreadable right now: asked again next tick
+      }
+      if (c.status === "pending") continue;
+      const symbols = p.symbols ?? [];
+      const txHash = c.txHash ?? (c.status === "dropped" ? undefined : p.txHash);
+      if (c.status === "success") {
+        await feed.record({
+          kind: "publish",
+          source: "publisher",
+          symbols,
+          txHash: txHash ?? p.txHash,
+          data: { reasons: p.data?.reasons, overlays: p.data?.overlays, gasUsed: c.gasUsed, confirmedLater: true, pendingTx: p.txHash },
+        });
+        this.#o.log?.(`published ${symbols.join(",")} in ${txHash ?? p.txHash} (receipt confirmed later)`);
+        continue;
+      }
+      for (const s of symbols) this.#last.delete(s);
+      const error: FeedError = c.status === "reverted" ? { name: "Reverted", message: "postOverlays reverted on-chain" } : { name: "Dropped", message: "the post was replaced or lost before it was mined" };
+      await feed.record({ kind: "refused", source: "publisher", symbols, ...(txHash ? { txHash } : {}), error, reason: error.message, data: { pendingTx: p.txHash } });
+    }
   }
 
   #lastFor(t: TickerOnChain): Last {

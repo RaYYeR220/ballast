@@ -84,6 +84,8 @@ export interface DeskConfig {
   readonly maxGasPriceGwei: number;
   /** How long the sender waits for a receipt before replacing a transaction. */
   readonly receiptTimeoutSec: number;
+  /** How long a receipt may trail a used nonce before the transaction is read as not ours. */
+  readonly receiptLagSec: number;
   /** Replacement rounds per nonce before the sender halts. */
   readonly maxBumps: number;
   /** Fee budget (gas limit x gas price of everything signed) per rolling hour; above it the sender halts. */
@@ -205,6 +207,7 @@ const envSchema = z.object({
   // Sized for BSC: sub-second blocks, gas at a small fraction of a gwei.
   MAX_GAS_PRICE_GWEI: numberVar(1).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
   RECEIPT_TIMEOUT_SEC: numberVar(20).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
+  RECEIPT_LAG_SEC: numberVar(45).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
   MAX_BUMPS: numberVar(4).refine((n) => Number.isInteger(n) && n >= 0 && n <= 10, "must be a whole number from 0 to 10"),
   MAX_FEE_BNB_PER_HOUR: numberVar(0.003).refine((n) => Number.isFinite(n) && n > 0 && n <= 10, "must be an amount of BNB, above 0 and at most 10"),
   DRY_RUN: flagVar(true),
@@ -358,6 +361,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     minBnbBalance: e.MIN_BNB_BALANCE,
     maxGasPriceGwei: e.MAX_GAS_PRICE_GWEI,
     receiptTimeoutSec: e.RECEIPT_TIMEOUT_SEC,
+    receiptLagSec: e.RECEIPT_LAG_SEC,
     maxBumps: e.MAX_BUMPS,
     maxFeeBnbPerHour: e.MAX_FEE_BNB_PER_HOUR,
     dryRun: e.DRY_RUN,

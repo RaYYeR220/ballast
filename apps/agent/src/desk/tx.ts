@@ -65,6 +65,11 @@ export interface SenderLimits {
   maxBumps: number;
   /** gasLimit x gasPrice of everything signed within an hour (replacements included), wei. */
   maxFeeWeiPerHour: bigint;
+  /**
+   * How long a receipt may trail the nonce, ms. A load-balanced RPC answers `latest` from one node and the
+   * receipt from another: a used nonce with no receipt yet is ours until this long has passed.
+   */
+  receiptLagMs: number;
 }
 
 /** Sized for BSC: blocks are sub-second and gas costs a small fraction of a gwei. */
@@ -73,20 +78,24 @@ export const DEFAULT_LIMITS: SenderLimits = {
   receiptTimeoutMs: 20_000,
   maxBumps: 4,
   maxFeeWeiPerHour: parseEther("0.003"),
+  receiptLagMs: 45_000,
 };
+/** The longest pause between two looks for a late receipt. */
+const MAX_RECEIPT_PAUSE_MS = 6_000;
 
 /** Limits from the desk config (MAX_GAS_PRICE_GWEI, RECEIPT_TIMEOUT_SEC, MAX_BUMPS, MAX_FEE_BNB_PER_HOUR). */
-export function senderLimits(c: { maxGasPriceGwei: number; receiptTimeoutSec: number; maxBumps: number; maxFeeBnbPerHour: number }): SenderLimits {
+export function senderLimits(c: { maxGasPriceGwei: number; receiptTimeoutSec: number; maxBumps: number; maxFeeBnbPerHour: number; receiptLagSec?: number }): SenderLimits {
   return {
     maxGasPriceWei: parseGwei(c.maxGasPriceGwei.toFixed(9)),
     receiptTimeoutMs: Math.round(c.receiptTimeoutSec * 1000),
     maxBumps: c.maxBumps,
     maxFeeWeiPerHour: parseEther(c.maxFeeBnbPerHour.toFixed(18)),
+    receiptLagMs: c.receiptLagSec === undefined ? DEFAULT_LIMITS.receiptLagMs : Math.round(c.receiptLagSec * 1000),
   };
 }
 
 /** The sender's limits and state file from the desk config: `<dataDir>/sender.json`. */
-export function senderOptions(c: { dataDir: string; maxGasPriceGwei: number; receiptTimeoutSec: number; maxBumps: number; maxFeeBnbPerHour: number }): {
+export function senderOptions(c: { dataDir: string; maxGasPriceGwei: number; receiptTimeoutSec: number; maxBumps: number; maxFeeBnbPerHour: number; receiptLagSec?: number }): {
   limits: SenderLimits;
   stateFile: string;
 } {
@@ -178,8 +187,8 @@ export function classifyBroadcastError(err: unknown): BroadcastError {
 // ------------------------------------------------------------------- sender
 
 /**
- * success / reverted: mined. pending: broadcast but not mined (only when the sender halted on it, or when it
- * was found at startup). dropped: the nonce went to another transaction: our own cancel (`minedAs: "cancel"`,
+ * success / reverted: mined. pending: broadcast but not settled yet: the sender halted on it, it was found at
+ * startup, or its nonce is used but the node serves no receipt for it yet (no `halted` then; confirm() later). dropped: the nonce went to another transaction: our own cancel (`minedAs: "cancel"`,
  * the intent was no longer needed) or one that is not ours.
  */
 export type TxStatus = "success" | "reverted" | "pending" | "dropped";
@@ -384,6 +393,8 @@ export class ChainSender implements TxSender {
   #spends: { at: number; wei: bigint }[] = [];
   /** Every hash signed for a resolved nonce, by nonce. */
   readonly #history = new Map<number, FamilyEntry[]>();
+  /** confirm(): since when (ms) no node has known a hash whose nonce is used. */
+  readonly #unseen = new Map<string, number>();
 
   constructor(o: ChainSenderOptions) {
     this.#client = o.client;
@@ -771,11 +782,21 @@ export class ChainSender implements TxSender {
     return cap * 1000n >= out.gasPrice * MIN_REPLACEMENT_PERMILLE ? cap : null;
   }
 
-  /** The nonce was mined: find which of our hashes it was. Never throws. */
+  /**
+   * The nonce is used: find which of our hashes was mined. Never throws.
+   *
+   * A receipt can trail the nonce (a load-balanced RPC answers `latest` from one node and the receipt from
+   * another), so no receipt at first means nothing. The receipts are asked for again, with a growing pause,
+   * for up to RECEIPT_LAG. Only when the node knows none of our hashes after the whole wait did the nonce go
+   * to a transaction that is not ours (dropped). When it knows one of them but still serves no receipt, the
+   * result is pending: it is ours, and confirm() settles it later.
+   */
   async #finish(out: Outstanding): Promise<SendResult> {
     let found: { entry: FamilyEntry; receipt: Receipt } | null = null;
-    for (let attempt = 0; attempt < 3 && !found; attempt++) {
-      if (attempt > 0) await this.#sleep(this.#pollMs); // receipts can trail the nonce by a moment
+    let known: FamilyEntry | null = null;
+    const started = this.#now();
+    const end = started + this.#limits.receiptLagMs;
+    for (let pause = this.#pollMs; ; pause = Math.min(pause * 2, MAX_RECEIPT_PAUSE_MS)) {
       for (const entry of [...out.family].reverse()) {
         try {
           const receipt = await this.#receipt(entry.hash);
@@ -787,6 +808,20 @@ export class ChainSender implements TxSender {
           // unreadable right now: try again
         }
       }
+      if (found) break;
+      for (const entry of [...out.family].reverse()) {
+        try {
+          if (await this.#known(entry.hash)) {
+            known = entry; // pending or mined on the node we asked: ours either way
+            break;
+          }
+        } catch {
+          // unreadable right now: try again
+        }
+      }
+      const left = end - this.#now();
+      if (left <= 0) break;
+      await this.#sleep(Math.min(pause, left));
     }
     this.#out = null;
     this.#history.set(out.nonce, out.family);
@@ -794,7 +829,12 @@ export class ChainSender implements TxSender {
     await this.#save();
     const last = out.family[out.family.length - 1];
     if (!found) {
-      const note = [...out.notes, `nonce ${out.nonce} went to a transaction that is not ours`].join("; ");
+      const waited = Math.round((this.#now() - started) / 1000);
+      if (known) {
+        const note = [...out.notes, `nonce ${out.nonce} is used but the node serves no receipt for ${known.hash} yet (waited ${waited} s): confirmed later`].join("; ");
+        return { ok: true, status: "pending", txHash: known.hash, via: known.via, nonce: out.nonce, gasPrice: known.gasPrice, note };
+      }
+      const note = [...out.notes, `nonce ${out.nonce} went to a transaction that is not ours (no node knew any of our hashes for ${waited} s)`].join("; ");
       return { ok: true, status: "dropped", txHash: last?.hash ?? zeroHash, via: last?.via ?? "rpc", nonce: out.nonce, gasPrice: out.gasPrice, note };
     }
     const { entry, receipt } = found;
@@ -975,7 +1015,24 @@ export class ChainSender implements TxSender {
       };
     }
     if (latest === undefined || nonce === undefined) return { status: "pending" };
-    if (latest > nonce) return { status: "dropped" };
+    if (latest > nonce) {
+      // The nonce is used and no receipt is served for our hashes. While the node knows one of them it is
+      // ours and only its receipt is late. A hash no node knows gets RECEIPT_LAG (counted from the first time
+      // it was asked about) to show up before the nonce is read as gone to someone else.
+      const key = txHash.toLowerCase();
+      for (const e of family.values()) {
+        if (await this.#known(e.hash)) {
+          this.#unseen.delete(key);
+          return { status: "pending" };
+        }
+      }
+      const since = this.#unseen.get(key) ?? this.#now();
+      this.#unseen.set(key, since);
+      if (this.#unseen.size > HISTORY) this.#unseen.delete(this.#unseen.keys().next().value as string);
+      if (this.#now() - since < this.#limits.receiptLagMs) return { status: "pending" };
+      this.#unseen.delete(key);
+      return { status: "dropped" };
+    }
     // Still the next nonce, with nothing of the key pending and no node knowing it: it was lost, not delayed.
     if (latest === nonce && (await this.#pending()) === latest) {
       for (const e of family.values()) if (await this.#known(e.hash)) return { status: "pending" };

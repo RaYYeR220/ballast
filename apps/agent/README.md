@@ -53,6 +53,7 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
 | `MAX_GAS_PRICE_GWEI` | `1` | the sender never signs above this gas price (BSC gas is a small fraction of a gwei) |
 | `RECEIPT_TIMEOUT_SEC` | `20` | wait for a receipt this long before replacing a transaction (BSC blocks are sub-second) |
+| `RECEIPT_LAG_SEC` | `45` | how long a receipt may trail a used nonce (load-balanced RPCs) before the nonce is read as gone to someone else |
 | `MAX_BUMPS` | `4` | replacement rounds per nonce before the sender halts |
 | `MAX_FEE_BNB_PER_HOUR` | `0.003` | fee budget (gas limit x gas price of everything signed) per rolling hour |
 | `DATA_DIR` | `apps/agent/var/` | feed, ledger, guardian cursor, evidence; outside git. Test-written at startup: the desk exits non-zero if it cannot write there |

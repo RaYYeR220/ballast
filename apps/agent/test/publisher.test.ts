@@ -21,7 +21,7 @@ import {
   type PublisherSnapshot,
   type TickerOnChain,
 } from "../src/desk/publisher";
-import { GasWatch, revertError, type SendResult, type TxBuilder, type TxSender } from "../src/desk/tx";
+import { GasWatch, revertError, type Confirmation, type SendResult, type TxBuilder, type TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const E18 = 10n ** 18n;
@@ -103,6 +103,13 @@ class StubSender implements TxSender {
 
   /** What the next sends return (or throw); default: mined successfully. */
   outcomes: (SendResult | Error)[] = [];
+  /** What confirm() answers per hash (default: still pending). */
+  confirms = new Map<string, Confirmation>();
+  confirmed: [string, number | undefined][] = [];
+  async confirm(txHash: Hex, nonce?: number): Promise<Confirmation> {
+    this.confirmed.push([txHash, nonce]);
+    return this.confirms.get(txHash) ?? { status: "pending" };
+  }
   /** Simulations that report a Binance / eth_call disagreement (eth_call wins). */
   disagree = false;
 
@@ -468,9 +475,48 @@ describe("Publisher", () => {
       expect(h.feed.list({ kind: "publish" })).toHaveLength(1);
     });
 
-    it("records an unmined post as pending and posts again next tick (the send replaces it)", async () => {
+    it("records a post whose receipt is late as pending, does not post it again, and records the publish once confirmed", async () => {
       h = await harness([ticker("NVDA")]);
-      h.sender.outcomes = [{ ok: true, txHash: `0x${"ef".repeat(32)}`, via: "rpc", status: "pending", nonce: 4, gasPrice: 1n, note: "not mined yet" }];
+      const late = `0x${"ef".repeat(32)}` as const;
+      h.sender.outcomes = [{ ok: true, txHash: late, via: "rpc", status: "pending", nonce: 4, gasPrice: 1n, note: "nonce 4 is used but the node serves no receipt yet" }];
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "pending" })[0]).toMatchObject({ source: "publisher", symbols: ["NVDA"], txHash: late, data: { nonce: 4 } });
+      // next tick: the receipt is still not there; nothing is sent again (the nonce is used, the post is ours)
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.sender.sent).toHaveLength(1);
+      expect(h.sender.confirmed).toEqual([[late, 4]]);
+      expect(h.feed.list({ kind: "publish" })).toEqual([]);
+      // the receipt arrives: the real outcome is recorded with the hash, once
+      h.sender.confirms.set(late, { status: "success", txHash: late, minedAs: "intent", gasUsed: 123n, effectiveGasPrice: 1n });
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      const published = h.feed.list({ kind: "publish" });
+      expect(published).toHaveLength(1);
+      expect(published[0]).toMatchObject({ symbols: ["NVDA"], txHash: late, data: { confirmedLater: true, pendingTx: late, gasUsed: "123" } });
+      expect(h.feed.unresolvedPending("publisher")).toEqual([]);
+      expect(h.sender.sent).toHaveLength(1);
+    });
+
+    it("records a late post that turns out reverted or lost as refused and posts the symbols again", async () => {
+      h = await harness([ticker("NVDA")]);
+      const late = `0x${"ef".repeat(32)}` as const;
+      h.sender.outcomes = [{ ok: true, txHash: late, via: "rpc", status: "pending", nonce: 4, gasPrice: 1n }];
+      await h.publisher.tick();
+      h.sender.confirms.set(late, { status: "reverted", txHash: late, minedAs: "intent", gasUsed: 1n, effectiveGasPrice: 1n });
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "refused" })[0]).toMatchObject({ source: "publisher", symbols: ["NVDA"], txHash: late, error: { name: "Reverted" }, data: { pendingTx: late } });
+      expect(h.sender.sent).toHaveLength(2); // due again, posted in the same tick
+      expect(h.feed.list({ kind: "publish" })).toHaveLength(1);
+    });
+
+    it("records an unmined post the sender halted on as pending and posts again next tick (the send replaces it)", async () => {
+      h = await harness([ticker("NVDA")]);
+      const halted = { reason: "STUCK" as const, message: "nonce 4 is not mined after 4 replacement rounds", nonce: 4, since: 1 };
+      h.sender.outcomes = [{ ok: true, txHash: `0x${"ef".repeat(32)}`, via: "rpc", status: "pending", nonce: 4, gasPrice: 1n, note: "not mined yet", halted }];
       await h.publisher.tick();
       expect(h.feed.list({ kind: "pending" })[0]).toMatchObject({ source: "publisher", symbols: ["NVDA"], txHash: `0x${"ef".repeat(32)}` });
       expect(h.feed.list({ kind: "publish" })).toEqual([]);

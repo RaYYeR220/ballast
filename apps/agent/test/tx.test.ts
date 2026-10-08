@@ -275,7 +275,7 @@ describe("ChainSender.send", () => {
     node.network = 20n * GWEI;
     await sender(node).send(tx);
     expect(node.rpc[0]!.gasPrice).toBe(DEFAULT_LIMITS.maxGasPriceWei);
-    expect(DEFAULT_LIMITS).toEqual({ maxGasPriceWei: 1n * GWEI, receiptTimeoutMs: 20_000, maxBumps: 4, maxFeeWeiPerHour: parseEther("0.003") });
+    expect(DEFAULT_LIMITS).toEqual({ maxGasPriceWei: 1n * GWEI, receiptTimeoutMs: 20_000, maxBumps: 4, maxFeeWeiPerHour: parseEther("0.003"), receiptLagMs: 45_000 });
   });
 
   it("aborts without signing when the builder returns null, and reports a revert at estimation", async () => {
@@ -367,7 +367,9 @@ describe("ChainSender.send", () => {
       receiptTimeoutMs: 30_000,
       maxBumps: 2,
       maxFeeWeiPerHour: 100_000_000_000n,
+      receiptLagMs: 45_000,
     });
+    expect(senderLimits({ maxGasPriceGwei: 1, receiptTimeoutSec: 20, maxBumps: 4, maxFeeBnbPerHour: 0.003, receiptLagSec: 90 }).receiptLagMs).toBe(90_000);
   });
 });
 
@@ -723,6 +725,9 @@ describe("ChainSender: halting", () => {
     expect(okOf(await s.send(repay))).toMatchObject({ status: "success", nonce: 7 });
     expect(node.rpc.slice(sentBefore).map((t) => [t.nonce, t.data])).toEqual([[7, "0xbeef"]]);
     expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+    // The old hash: its nonce is used by the new intent and no node knows it. Dropped once RECEIPT_LAG has passed.
+    expect(await s.confirm(first.txHash, 7)).toEqual({ status: "pending" });
+    node.time += 45_000;
     expect(await s.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
   });
 });
@@ -1047,8 +1052,102 @@ describe("ChainSender: restart", () => {
     expect(await after.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
     node.accept = () => "mine";
     expect(okOf(await after.send(repay))).toMatchObject({ status: "success", nonce: 7 });
-    // The new intent at nonce 7 is not the old one: the old hash stays dropped.
+    // The new intent at nonce 7 is not the old one: the old hash stays gone (dropped once RECEIPT_LAG has passed).
+    expect(await after.confirm(first.txHash, 7)).toEqual({ status: "pending" });
+    node.time += 45_000;
     expect(await after.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
+  });
+});
+
+/**
+ * A load-balanced RPC: `latest` moves at once, but the receipt of a mined transaction is only served
+ * `receiptAfterMs` later, and the node may not even know the transaction for the first `knownAfterMs`.
+ */
+function lagging(node: Node, o: { receiptAfterMs: number; knownAfterMs?: number }): SenderClient {
+  const client = node.client();
+  const minedAt = new Map<string, number>();
+  const age = (hash: string) => {
+    if (node.mined.has(hash) && !minedAt.has(hash)) minedAt.set(hash, node.time);
+    const at = minedAt.get(hash);
+    return at === undefined ? null : node.time - at;
+  };
+  return {
+    ...client,
+    getTransactionReceipt: async (a: { hash: Hex }) => {
+      const t = age(a.hash);
+      if (t === null || t < o.receiptAfterMs) throw named("TransactionReceiptNotFoundError", "receipt not found");
+      return (client.getTransactionReceipt as (x: typeof a) => Promise<unknown>)(a);
+    },
+    getTransaction: async (a: { hash: Hex }) => {
+      const t = age(a.hash);
+      if (t !== null && t < (o.knownAfterMs ?? 0)) throw notFound();
+      return (client.getTransaction as (x: typeof a) => Promise<unknown>)(a);
+    },
+  } as unknown as SenderClient;
+}
+
+describe("ChainSender: receipts that lag behind the nonce", () => {
+  it.each([5_000, 30_000])("waits for a receipt that is served %i ms after the nonce moved: mined, not dropped", async (lag) => {
+    const node = new Node();
+    const s = sender(node, { client: lagging(node, { receiptAfterMs: lag }) });
+    const t0 = node.time;
+    const r = okOf(await s.send(tx));
+    expect(r).toMatchObject({ status: "success", nonce: 7, minedAs: "intent", gasUsed: 90_000n });
+    expect(node.time - t0).toBeGreaterThanOrEqual(lag);
+    expect(node.time - t0).toBeLessThan(lag + 7_000); // the pause between looks grows, but stays short
+    expect(node.rpc).toHaveLength(1); // nothing was signed again
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+  });
+
+  it("waits as well when the node only learns of the transaction after a while", async () => {
+    const node = new Node();
+    const s = sender(node, { client: lagging(node, { receiptAfterMs: 20_000, knownAfterMs: 15_000 }) });
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 7 });
+  });
+
+  it("returns pending, never dropped, when the node knows the transaction but serves no receipt in time", async () => {
+    const node = new Node();
+    const s = sender(node, { client: lagging(node, { receiptAfterMs: 120_000 }) });
+    const t0 = node.time;
+    const r = okOf(await s.send(tx));
+    expect(r).toMatchObject({ status: "pending", nonce: 7 });
+    expect(r.halted).toBeUndefined();
+    expect(r.note).toMatch(/nonce 7 is used.*no receipt/);
+    expect(node.time - t0).toBeGreaterThanOrEqual(45_000);
+    // The nonce is used: the sender is free and the next send takes the next nonce.
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+    expect(await s.confirm(r.txHash, r.nonce)).toEqual({ status: "pending" });
+    expect(okOf(await s.send(tx)).nonce).toBe(8);
+    // confirm() settles it once the receipt is served
+    node.time += 120_000;
+    expect(await s.confirm(r.txHash, r.nonce)).toMatchObject({ status: "success", txHash: r.txHash, minedAs: "intent" });
+  });
+
+  it("honours RECEIPT_LAG: a shorter limit gives up (as pending) sooner", async () => {
+    const node = new Node();
+    const s = sender(node, { client: lagging(node, { receiptAfterMs: 30_000 }), limits: { receiptLagMs: 10_000 } });
+    const t0 = node.time;
+    expect(okOf(await s.send(tx)).status).toBe("pending");
+    expect(node.time - t0).toBeGreaterThanOrEqual(10_000);
+    expect(node.time - t0).toBeLessThan(17_000);
+  });
+
+  it("reads the nonce as gone to a transaction that is not ours only after the full wait with no hash known", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    let taken = false;
+    node.onSleep = () => {
+      if (taken) return;
+      taken = true; // someone else used the nonce: our transaction is gone from every node
+      node.mempool.clear();
+      node.latest = 8;
+    };
+    const s = sender(node);
+    const t0 = node.time;
+    const r = okOf(await s.send(tx));
+    expect(r).toMatchObject({ status: "dropped", nonce: 7 });
+    expect(r.note).toMatch(/not ours/);
+    expect(node.time - t0).toBeGreaterThanOrEqual(45_000);
   });
 });
 
@@ -1059,7 +1158,29 @@ describe("ChainSender.confirm", () => {
     const r = okOf(await s.send(tx));
     expect(await s.confirm(r.txHash)).toMatchObject({ status: "success", txHash: r.txHash, minedAs: "intent", logs: [{ address: TO }] });
     expect(await s.confirm(`0x${"ab".repeat(32)}`)).toEqual({ status: "pending" });
-    expect(await s.confirm(`0x${"ab".repeat(32)}`, 3)).toEqual({ status: "dropped" });
+  });
+
+  it("reads a used nonce as dropped only once no node has known the hash for RECEIPT_LAG", async () => {
+    const node = new Node();
+    const s = sender(node);
+    const gone = `0x${"ab".repeat(32)}` as Hex;
+    expect(await s.confirm(gone, 3)).toEqual({ status: "pending" });
+    node.time += 44_000;
+    expect(await s.confirm(gone, 3)).toEqual({ status: "pending" });
+    node.time += 1_000;
+    expect(await s.confirm(gone, 3)).toEqual({ status: "dropped" });
+  });
+
+  it("keeps a used nonce pending while the node knows the transaction, however long its receipt takes", async () => {
+    const node = new Node();
+    const s = sender(node, { client: lagging(node, { receiptAfterMs: 600_000 }) });
+    const r = okOf(await s.send(tx));
+    for (let i = 0; i < 5; i++) {
+      node.time += 60_000;
+      expect(await s.confirm(r.txHash, r.nonce)).toEqual({ status: "pending" });
+    }
+    node.time += 600_000;
+    expect(await s.confirm(r.txHash, r.nonce)).toMatchObject({ status: "success" });
   });
 
   it("rethrows RPC failures", async () => {

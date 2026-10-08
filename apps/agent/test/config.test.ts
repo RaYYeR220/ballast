@@ -32,6 +32,9 @@ describe("loadConfig", () => {
     expect(c.x402DailyCapUsd).toBe(0.5);
     expect(c.minBnbBalance).toBe(0.003);
     expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([1, 20, 4, 0.003]);
+    expect(c.receiptLagSec).toBe(45);
+    expect(loadConfig({ ...base, RECEIPT_LAG_SEC: "90" }).receiptLagSec).toBe(90);
+    expect(issuesOf({ ...base, RECEIPT_LAG_SEC: "2" })[0]).toMatch(/^RECEIPT_LAG_SEC/);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
     expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);
