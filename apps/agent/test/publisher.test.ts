@@ -480,6 +480,23 @@ describe("Publisher", () => {
       expect(h.feed.list({ kind: "publish" })).toHaveLength(1);
     });
 
+    it("says SENDER_HALTED once per halt and posts again when the sender is back", async () => {
+      h = await harness([ticker("NVDA"), ticker("SPY")]);
+      const halt = { reason: "STUCK" as const, message: "nonce 7 is not mined after 4 replacement rounds", nonce: 7, since: 1_791_000_000 };
+      h.sender.outcomes = [
+        { ok: false, stage: "halted", halt },
+        { ok: false, stage: "halted", halt },
+      ];
+      const r = await h.publisher.tick();
+      expect(r.refused).toEqual(["NVDA", "SPY"]);
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "refused" })).toMatchObject([{ symbols: ["NVDA", "SPY"], error: { name: "SENDER_HALTED" }, reason: expect.stringMatching(/^SENDER_HALTED \(STUCK\)/), data: { sender: "halted" } }]);
+      h.state.at += TICK_SEC;
+      await h.publisher.tick();
+      expect(h.feed.list({ kind: "publish" })).toMatchObject([{ symbols: ["NVDA", "SPY"] }]);
+    });
+
     it("records repeated simulator disagreements as a finding", async () => {
       h = await harness([ticker("NVDA")]);
       h.sender.disagree = true;

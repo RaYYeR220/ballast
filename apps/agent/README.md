@@ -15,17 +15,17 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `src/desk/account.ts` | Signer from a raw key or a Studio keystore (Web3 Secret Storage v3) |
 | `src/desk/register.ts` | ERC-8004 identity: builds the registration file and mints or updates it |
 | `src/desk/feed.ts` | Audit feed: every attempt as one JSON line under `DATA_DIR`, plus an in-memory ring for the API |
-| `src/desk/tx.ts` | Simulation, signing, nonces, broadcast, receipt follow-up and the low-BNB alert |
+| `src/desk/tx.ts` | Simulation and the sender: one transaction in flight, bounded replacement, halting, the low-BNB alert |
 | `src/desk/publisher.ts` | Session Oracle overlay publisher (RWA status, Ondo multiplier, references, earnings) |
 | `src/desk/keeper.ts` | Shields accounts and covers before closures, restores accounts after the open |
 | `src/desk/client.ts` | The desk's viem client (uncached head block) |
 | `src/desk/guardian.ts` | Guardian jobs: scans the kernel from a persisted cursor, submits the evidence hash after each window, settles |
-| `src/desk/ledger.ts` | Income, gas per transaction and x402 spend under the daily cap (`DATA_DIR/ledger.json`) |
+| `src/desk/ledger.ts` | Income, gas once per nonce (the mined transaction, cancels labelled) and x402 spend under the daily cap (`DATA_DIR/ledger.json`) |
 | `src/desk/x402.ts` | x402 buyer: exact scheme, EIP-3009 on pinned stablecoins, per-call and daily caps checked before signing |
 | `src/desk/earnings.ts` | Buys the next earnings dates once per trading day; `config/earnings.json` is the fallback |
 | `src/desk/notes.ts` | Two-sentence desk notes from the Studio LLM after shields, restores and refusals (never a decision input) |
-| `src/desk/api.ts` | Read API: health, feed, accounts, oracle, ledger, evidence, Binance API health |
-| `src/desk/main.ts` | The process: API first, then the loops with jitter and back-off; graceful SIGTERM |
+| `src/desk/api.ts` | Read API: health (503 while the sender is halted), feed, accounts, oracle, ledger, evidence, Binance API health |
+| `src/desk/main.ts` | The process: API first, sender recovery, then the loops with jitter and back-off; graceful SIGTERM |
 | `test/` | Unit tests (`pnpm test` at the repo root) |
 
 ## Environment
@@ -36,7 +36,7 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `BSC_RPC_URL` | required | treated as a secret because providers put keys in the path; https on chain 56 (http only for a loopback node) |
 | `AGENT_PRIVATE_KEY` | | or the two keystore variables below, not both |
 | `AGENT_KEYSTORE_PATH`, `AGENT_KEYSTORE_PASSWORD` | | Studio keystore; `WALLET_PASSWORD` is accepted as the password |
-| `BINANCE_WEB3_API_KEY`, `BINANCE_WEB3_API_SECRET` | unset | both or neither; unset means keyless public endpoints |
+| `BINANCE_WEB3_API_KEY`, `BINANCE_WEB3_API_SECRET` | unset | both or neither. Required on chain 56 for collateral sales: without them a sale is never signed (the cushion still shields) and the desk warns at startup |
 | `DEPLOYMENT_FILE` | `contracts/deployments/<CHAIN_ID>.json` | |
 | `AGENT_BIND_HOST`, `AGENT_PORT` | `127.0.0.1`, `9000` | Studio A2A/MCP listener; must be loopback on chain 56 |
 | `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy; must be loopback on chain 56 |
@@ -51,6 +51,10 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `STUDIO_TOML` | `app/agent/studio.toml` | where the notes read `[llm]` |
 | `FORK_TICK_SEC` | unset | fork only (`CHAIN_ID=31337`): every loop runs at this interval |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
+| `MAX_GAS_PRICE_GWEI` | `5` | the sender never signs above this gas price |
+| `RECEIPT_TIMEOUT_SEC` | `45` | wait for a receipt this long before replacing a transaction |
+| `MAX_BUMPS` | `4` | replacement rounds per nonce before the sender halts |
+| `MAX_FEE_BNB_PER_HOUR` | `0.01` | fee budget (gas limit x gas price of everything signed) per rolling hour |
 | `DATA_DIR` | `apps/agent/var/` | feed, ledger, guardian cursor, evidence; outside git. Test-written at startup: the desk exits non-zero if it cannot write there |
 | `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
 | `DRY_RUN` | `true` | simulate every write, broadcast nothing |
@@ -92,8 +96,37 @@ The same flag updates endpoints later. Running without `--agent-id` always mints
   closes the loan after a shield, the cycle ends and the desk borrows nothing back.
 - A liquidated account is no longer managed. The desk records the seizure on-chain with
   `recordLiquidation()` once and then leaves the account alone; the owner takes it from there.
-- A transaction that is not mined in time is recorded as `pending` and settled on a later tick; the
-  next send from the desk key replaces it at a higher gas price if it is still stuck.
+- Shield amounts for the restore cycle come from the receipt's `Shielded` logs. Repays are sized against
+  the debt with a basis point of accrual, and a shortfall under max(0.05 loan units, 0.1% of the debt)
+  is treated as dust: no transaction.
+- `shieldBusy()` on the keeper is true while a shield is pending or planned in a lead window; other
+  loops hold their own sends back on it.
+
+## How the desk sends
+
+- One transaction of the desk key is in flight at a time. A send waits for its receipt
+  (`RECEIPT_TIMEOUT_SEC`); if none comes, the same intent is rebuilt and replaced at the same nonce for
+  12.5% more gas, or by a 0-value cancel when it is no longer valid, at most `MAX_BUMPS` times and
+  never above `MAX_GAS_PRICE_GWEI`. A shield already sent is not cancelled because the lead window ended.
+- When that is not enough, or the key cannot pay, the hourly fee budget is used up or a transaction the
+  desk did not sign is pending for the key, the sender halts: nothing more is signed until the chain
+  shows the way is clear. The feed shows it (`alert`, and `refused` with `SENDER_HALTED`, both with
+  `data.sender = "halted"`) and it resumes by itself.
+- Collateral sales are broadcast only through the Binance MEV-protected endpoint, never to the public
+  mempool. If that endpoint fails, the cushion repay takes the sale's nonce instead. Without Binance keys
+  on mainnet a sale is never signed at all: the desk warns at startup, records an alert and shows
+  `collateralSales: "off: no Binance key"` in `/health`; the cushion still shields.
+- `/health` shows the sender (halt reason, the nonce in flight and its hashes, fees signed in the last
+  hour) and answers 503 while it is halted. The guardian stands back while the keeper has a shield to
+  send (`shieldBusy()`), while the sender is halted and while another transaction is in flight, and tries
+  again 90 s later with no back-off.
+- The ledger books gas once per nonce, from the transaction that was finally mined there at its effective
+  gas price; a nonce spent on a cancel is booked as `cancelled`.
+- The outstanding nonce and every hash signed for it are kept in `DATA_DIR/sender.json`, so a restart
+  picks the nonce up and settles it before sending anything new.
+- One sender per key. Nothing else may sign with the desk key while the desk runs: the Studio ERC-8183
+  rail is off, so Studio sends nothing at runtime, and the ERC-8004 registration is done before the
+  desk starts.
 
 ## Security posture
 

@@ -77,6 +77,12 @@ The desk refuses to start when `DATA_DIR` is not writable (it test-writes at sta
 when `HTTP_HOST` or `AGENT_BIND_HOST` is not loopback on chain 56, when the RPC or the paid-data URL is
 plain http on chain 56, and when `guardian.json` in `DATA_DIR` was written for another chain or guardian.
 
+**Binance Web3 API keys are required on mainnet for collateral sales.** A sale (`shieldDeleverage`) is only
+ever broadcast through the Binance MEV-protected endpoint, never to the public mempool. Without
+`BINANCE_WEB3_API_KEY` / `BINANCE_WEB3_API_SECRET` the desk never signs a sale: it still shields with the
+cushion, posts overlays and settles guardian jobs over the RPC, and it warns at startup, records an alert in
+the feed and shows `collateralSales: "off: no Binance key"` in `/health`.
+
 The desk key needs BNB for gas; the feed raises an alert below `MIN_BNB_BALANCE`. Paid earnings data is
 off until `X402_EARNINGS_URL` is set; the key then also needs the stablecoin the endpoint is paid in, on
 the network it is paid on (`X402_NETWORKS`), and spend stays under `X402_MAX_PRICE_USD` per call (at most
@@ -93,12 +99,20 @@ curl -s http://127.0.0.1:8787/health
 ```
 
 `Restart=always` brings the process back after a crash; each loop already isolates its own failures and
-backs off, and the API stays up through RPC or Binance outages. `systemctl stop` sends SIGTERM: the desk
+backs off, and the API stays up through RPC or Binance outages.
+
+The desk sends one transaction at a time. `/health` shows the sender: the transaction in flight (nonce and
+every hash signed for it) and, when it has halted, why (`STUCK`, `GAS_CAP`, `INSUFFICIENT_FUNDS`,
+`FEE_BUDGET`, `FOREIGN_BLOCKER`, `BUILD_FAILED`). While halted `/health` answers HTTP 503 with `ok: false`
+and the desk signs nothing; it resumes by itself once the cause clears (the nonce is mined, the key is
+topped up, the hour has moved on). Point an uptime check at `/health` to be paged for it. Nothing else may
+sign with the desk key while the desk runs. `systemctl stop` sends SIGTERM: the desk
 stops scheduling, lets a transaction waiting for its receipt finish (up to `TimeoutStopSec`), then flushes
 the ledger and the guardian cursor.
 
 State lives in `/var/lib/ballast` (the unit's `StateDirectory`, created by systemd for the `ballast`
-user): `feed.jsonl` (audit feed), `ledger.json`, `guardian.json` (scan cursor and open jobs, stamped with
+user): `feed.jsonl` (audit feed), `ledger.json`, `sender.json` (the nonce in flight and every hash signed for
+it, so a restart settles it before sending anything new), `guardian.json` (scan cursor and open jobs, stamped with
 the chain id and guardian address), `evidence/<jobId>.json` (submitted guardian evidence; its keccak256 is
 the on-chain deliverable), `earnings-paid.json`, `notes.jsonl`. Back it up; never delete `evidence/` for
 open jobs. After a redeploy of the contracts move the old directory away: the desk will not load state
@@ -139,11 +153,11 @@ sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 
 | Path | What |
 |---|---|
-| `/health` | process and loop status (runs, failures, last error, next run) |
+| `/health` | process, sender (halt, transaction in flight) and loop status; 503 while the sender is halted |
 | `/feed?account=&kind=&source=&limit=` | audit feed, newest first, with desk notes |
 | `/accounts` | Ballast accounts and CushionVault covers with their state |
 | `/oracle` | session and Session Oracle snapshot per ticker |
-| `/ledger?kind=&limit=` | income, gas and x402 spend, today and in total |
+| `/ledger?kind=&limit=` | income, gas (one entry per nonce: the mined transaction, cancels labelled) and x402 spend |
 | `/evidence/:jobId` | the evidence file a guardian job was submitted with |
 | `/api-health` | Binance call latency (p50/p95) and response codes |
 

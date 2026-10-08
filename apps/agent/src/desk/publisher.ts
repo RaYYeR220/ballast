@@ -380,6 +380,8 @@ export class Publisher {
   /** Null until the schedule has loaded once: until then each symbol carries its last nextEarnings forward. */
   #earnings: EarningsSchedule | null = null;
   #running = false;
+  /** `since` of the sender halt already reported. */
+  #haltSeen: number | null = null;
   readonly #disagreements: DisagreementWatch;
 
   constructor(o: PublisherOptions) {
@@ -490,6 +492,24 @@ export class Publisher {
       await this.#refuse(batch, snap.at, sim, { name: "BroadcastFailed", message: safeMessage(err) }, report, { backoffSec: TICK_SEC });
       return report;
     }
+    if (!sent.ok && sent.stage === "halted") {
+      // The sender signs nothing until its halt clears: say so once per halt and look again next tick.
+      for (const e of batch) this.#backoff.set(e.symbol, snap.at + TICK_SEC);
+      report.refused.push(...symbols);
+      if (this.#haltSeen !== sent.halt.since) {
+        this.#haltSeen = sent.halt.since;
+        await this.#o.feed.record({
+          kind: "refused",
+          source: "publisher",
+          symbols,
+          sim,
+          error: { name: "SENDER_HALTED", message: sent.halt.message },
+          reason: `SENDER_HALTED (${sent.halt.reason}): ${sent.halt.message}`,
+          data: { sender: "halted", halt: sent.halt },
+        });
+      }
+      return report;
+    }
     if (!sent.ok) {
       const error: FeedError = sent.stage === "estimate" ? sent.error : { name: "Aborted", message: "the send was aborted" };
       await this.#isolate(batch, snap.at, sim, error, report);
@@ -504,7 +524,8 @@ export class Publisher {
       return report;
     }
     if (sent.status === "pending") {
-      // Not remembered: the next tick finds the symbols still due and its send replaces this transaction.
+      // Only when the sender halted on it. Not remembered: the symbols stay due and are posted again once
+      // the sender has settled this nonce.
       await this.#o.feed.record({
         kind: "pending",
         source: "publisher",
@@ -512,7 +533,7 @@ export class Publisher {
         sim,
         txHash: sent.txHash,
         reason: sent.note ?? "not mined yet",
-        data: { ...data, nonce: sent.nonce },
+        data: { ...data, nonce: sent.nonce, ...(sent.halted ? { sender: "halted", halt: sent.halted } : {}) },
       });
       return report;
     }

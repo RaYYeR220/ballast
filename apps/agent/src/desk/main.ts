@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { PublicRwaClient, Web3Client, createProbe, type ProbeRecord } from "@ballast/binance";
 import { tickers } from "@ballast/risk";
 import { accountState, listAccounts, listCovers, loadDeployment, oracleSnapshot, sessionState, type AccountState, type Deployment } from "@ballast/sdk";
-import { parseEther, type Address, type PublicClient } from "viem";
+import { formatEther, formatGwei, parseEther, type Address, type PublicClient } from "viem";
 import { loadAccount } from "./account";
 import { ApiProbe, cached, closeServer, createDeskApi, listen } from "./api";
 import { deskPublicClient } from "./client";
@@ -18,10 +18,10 @@ import { EARNINGS_CHECK_SEC, EarningsBuyer, mergedEarnings } from "./earnings";
 import { Feed } from "./feed";
 import { Guardian, GuardianState, chainGuardianReads } from "./guardian";
 import { KEEPER_TICK_SEC, Keeper, chainKeeperReads } from "./keeper";
-import { Ledger, ledgerSender } from "./ledger";
+import { GasBook, Ledger, ledgerSender } from "./ledger";
 import { NOTES_TICK_SEC, NotesStore, NotesWorker, studioNoteModel } from "./notes";
 import { Publisher, chainPublisherReads, publisherDelaySec } from "./publisher";
-import { ChainSender, GasWatch, binanceTxApi, safeMessage } from "./tx";
+import { ChainSender, GasWatch, binanceTxApi, safeMessage, senderOptions, type SenderState } from "./tx";
 import { X402Client } from "./x402";
 
 // ------------------------------------------------------------------- loops
@@ -149,6 +149,29 @@ export async function assertWritable(dir: string): Promise<void> {
   }
 }
 
+/**
+ * The sender as /health shows it: why it is halted (it signs nothing until that clears), and the one
+ * transaction in flight with every hash signed for its nonce.
+ */
+export function senderView(s: SenderState | undefined) {
+  if (!s) return null;
+  const o = s.outstanding;
+  return {
+    halted: s.halted ? { reason: s.halted.reason, message: s.halted.message, nonce: s.halted.nonce, since: s.halted.since } : null,
+    inFlight: o ? { nonce: o.nonce, kind: o.kind, rounds: o.rounds, gasPriceGwei: formatGwei(o.gasPrice), hashes: [...o.hashes] } : null,
+    feeSpentLastHourBnb: formatEther(s.spentLastHourWei),
+  };
+}
+
+/**
+ * On BSC mainnet a collateral sale is only ever broadcast through the Binance MEV-protected endpoint.
+ * Without Binance keys the desk therefore never signs a sale; it still shields with the cushion.
+ */
+export function salesWarning(config: { chainId: number; binance: unknown | null }): string | null {
+  if (config.chainId !== 56 || config.binance) return null;
+  return "no Binance Web3 API key (BINANCE_WEB3_API_KEY / BINANCE_WEB3_API_SECRET): collateral sales are never signed, because a sale is only broadcast through the Binance MEV-protected endpoint; the cushion still shields";
+}
+
 // -------------------------------------------------------------- read views
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -250,30 +273,40 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   };
   const rwa = new PublicRwaClient({ probe: probeFn });
   const web3 = config.binance ? new Web3Client({ apiKey: config.binance.apiKey.reveal(), apiSecret: config.binance.apiSecret.reveal(), probe: probeFn }) : null;
-  // One sender (one nonce manager) for the key; each loop books its own gas through a ledger wrapper.
-  const chainSender = new ChainSender({ client, account, chainId: config.chainId, dryRun: config.dryRun, binance: web3 ? binanceTxApi(web3) : null });
+  // One sender for the key (one transaction in flight at a time, its hash family kept in DATA_DIR/sender.json).
+  // Every loop gets the same sender through a wrapper that books its mined transactions in one shared gas book.
+  const chainSender = new ChainSender({ client, account, chainId: config.chainId, dryRun: config.dryRun, binance: web3 ? binanceTxApi(web3) : null, ...senderOptions(config) });
+  const gasBook = new GasBook(ledger, onError);
   const gas = new GasWatch({ sender: chainSender, feed, minWei: parseEther(config.minBnbBalance.toFixed(18)) });
+  const noSales = salesWarning(config);
+  if (noSales) {
+    log(`WARNING: ${noSales}`);
+    const day = Math.floor(Date.now() / 1000) - 86_400;
+    if (!feed.list({ kind: "alert", limit: 200 }).some((e) => e.reason === noSales && e.ts > day)) await feed.record({ kind: "alert", source: "keeper", reason: noSales, data: { sales: "off" } });
+  }
 
   const paidEarningsFile = config.x402.earningsUrl ? path.join(config.dataDir, "earnings-paid.json") : null;
   const publisher = new Publisher({
     deployment,
     reads: chainPublisherReads(client, deployment),
     rwa,
-    sender: ledgerSender(chainSender, ledger, "publisher", onError),
+    sender: ledgerSender(chainSender, gasBook, "publisher"),
     feed,
     earnings: mergedEarnings(config.earningsFile, paidEarningsFile),
     gas,
     log,
   });
-  const keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, ledger, "keeper", onError), feed, gas, log });
+  const keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log });
   const guardian = new Guardian({
     deployment,
     reads: chainGuardianReads(client, deployment),
-    sender: ledgerSender(chainSender, ledger, "guardian", onError),
+    sender: ledgerSender(chainSender, gasBook, "guardian"),
     feed,
     ledger,
     state: guardianState,
     dataDir: config.dataDir,
+    // One key, one transaction at a time: a shield goes before a guardian submit or settle.
+    busy: () => keeper.shieldBusy(),
     log,
   });
   const buyer =
@@ -310,24 +343,42 @@ export async function startDesk(env: Record<string, string | undefined> = proces
     secrets,
     ratePerMin: config.apiRatePerMin,
     log,
-    health: () => ({
-      ok: true,
-      chainId: config.chainId,
-      agent: account.address,
-      dryRun: config.dryRun,
-      startedAt: new Date(startedAt).toISOString(),
-      uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
-      feedSeq: feed.list({ limit: 1 })[0]?.seq ?? 0,
-      notes: notes ? "on" : "off",
-      x402Earnings: buyer ? "on" : "off",
-      loops: loops.map((l) => l.state),
-    }),
+    health: () => {
+      const sender = senderView(chainSender.state());
+      return {
+        // Not ok while the sender is halted: the desk signs nothing until the cause clears.
+        ok: !sender?.halted,
+        chainId: config.chainId,
+        agent: account.address,
+        dryRun: config.dryRun,
+        startedAt: new Date(startedAt).toISOString(),
+        uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+        feedSeq: feed.list({ limit: 1 })[0]?.seq ?? 0,
+        notes: notes ? "on" : "off",
+        x402Earnings: buyer ? "on" : "off",
+        collateralSales: config.chainId !== 56 ? "public broadcast (not mainnet)" : config.binance ? "Binance MEV-protected broadcast" : "off: no Binance key",
+        sender,
+        loops: loops.map((l) => l.state),
+      };
+    },
     accounts: cached(() => views.accounts(), 30_000),
     oracle: cached(() => views.oracle(), 30_000),
     apiHealth: () => probe.summary(),
   });
   const addr = await listen(server, config.httpHost, config.httpPort);
   log(`read API on http://${config.httpHost}:${addr.port} (agent ${account.address}, ${config.dryRun ? "DRY RUN" : "live"})`);
+  // Once at startup: settle what a previous run left in flight. It runs in the sender's queue, so the loops
+  // start right away and their first sends simply wait behind it.
+  void chainSender
+    .recover()
+    .then(async (r) => {
+      if (!r) return;
+      if (r.ok) {
+        await gasBook.book("other", r);
+        log(`sender recovery: nonce ${r.nonce} ${r.status}${r.minedAs ? ` (${r.minedAs})` : ""} ${r.txHash}${r.halted ? `; halted: ${r.halted.reason}` : ""}`);
+      } else if (r.stage === "halted") log(`sender recovery: halted (${r.halt.reason}): ${r.halt.message}`);
+    })
+    .catch((err) => log(`sender recovery failed: ${safeMessage(err)}`));
   for (const l of loops) l.start();
 
   let stopping: Promise<void> | null = null;

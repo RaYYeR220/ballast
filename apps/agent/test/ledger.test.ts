@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { getAddress, toHex, type Address } from "viem";
 import type { TxRequest } from "@ballast/sdk";
-import { Ledger, ledgerSender, stableUsd } from "../src/desk/ledger";
+import { GasBook, Ledger, ledgerSender, stableUsd } from "../src/desk/ledger";
 import type { SendResult, TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
@@ -90,36 +90,119 @@ describe("Ledger", () => {
 
 describe("ledgerSender", () => {
   const tx: TxRequest = { to: addr(9), data: "0x", value: 0n };
+  const H = (b: string) => `0x${b.repeat(32)}` as const;
   const sender = (r: SendResult): TxSender => ({
     address: addr(0xee),
     dryRun: false,
     simulate: async () => ({ via: "rpc", ok: true }),
     send: async () => r,
   });
-
-  it("books gas for mined transactions, reverted ones included", async () => {
+  const mined = (o: Partial<Extract<SendResult, { ok: true }>> = {}): SendResult => ({
+    ok: true,
+    txHash: H("aa"),
+    via: "rpc",
+    status: "success",
+    nonce: 7,
+    gasPrice: 10n ** 9n,
+    minedAs: "intent",
+    gasUsed: 50_000n,
+    effectiveGasPrice: 2n * 10n ** 9n,
+    ...o,
+  });
+  const book = async () => {
     const l = new Ledger({ dir: await tmp(), x402DailyCapUsd: 0.5, clock: () => T0 });
-    const ok: SendResult = { ok: true, txHash: `0x${"aa".repeat(32)}`, via: "rpc", status: "reverted", nonce: 1, gasPrice: 10n ** 9n, gasUsed: 50_000n, effectiveGasPrice: 10n ** 9n };
-    expect(await ledgerSender(sender(ok), l, "publisher").send(tx)).toBe(ok);
-    expect(l.list()[0]).toMatchObject({ kind: "gas", source: "publisher", status: "reverted", feeWei: (50_000n * 10n ** 9n).toString() });
+    return { l, b: new GasBook(l) };
+  };
+
+  it("books the mined hash once per nonce at the effective gas price, reverted ones included", async () => {
+    const { l, b } = await book();
+    const r = mined({ status: "reverted" });
+    expect(await ledgerSender(sender(r), b, "publisher").send(tx)).toBe(r);
+    expect(l.list()).toHaveLength(1);
+    expect(l.list()[0]).toMatchObject({ kind: "gas", source: "publisher", status: "reverted", nonce: 7, minedAs: "intent", txHash: H("aa"), feeWei: (50_000n * 2n * 10n ** 9n).toString() });
+    // the same nonce reported again by another loop (a recover at startup, a later confirm): still one entry
+    await ledgerSender(sender(mined({ status: "reverted" })), b, "keeper").send(tx);
+    await b.book("other", { txHash: H("bb"), nonce: 7, status: "success", gasUsed: 1n, effectiveGasPrice: 1n });
+    expect(l.list()).toHaveLength(1);
   });
 
-  it("books nothing for a pending, dropped or refused send, then books a pending one once confirmed", async () => {
-    const l = new Ledger({ dir: await tmp(), x402DailyCapUsd: 0.5 });
-    const hash = `0x${"aa".repeat(32)}` as const;
-    const inner = sender({ ok: true, txHash: hash, via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
-    inner.confirm = async () => ({ status: "success", gasUsed: 21_000n, effectiveGasPrice: 10n ** 9n });
-    inner.balance = async () => 5n;
-    const w = ledgerSender(inner, l, "keeper");
-    await w.send(tx);
-    await ledgerSender(sender({ ok: true, txHash: hash, via: "rpc", status: "dropped", nonce: 3, gasPrice: 1n }), l, "keeper").send(tx);
-    await ledgerSender(sender({ ok: false, stage: "estimate", error: { name: "X", message: "x" } }), l, "keeper").send(tx);
-    await ledgerSender(sender({ ok: false, stage: "aborted" }), l, "keeper").send(tx);
+  it("books a mined cancel and a fallback under their own labels", async () => {
+    const { l, b } = await book();
+    await ledgerSender(sender(mined({ status: "dropped", minedAs: "cancel", nonce: 8, txHash: H("c1"), gasUsed: 21_000n })), b, "keeper").send(tx);
+    await ledgerSender(sender(mined({ minedAs: "fallback", nonce: 9, txHash: H("f1") })), b, "keeper").send(tx);
+    const [fallback, cancel] = l.list();
+    expect(cancel).toMatchObject({ status: "cancelled", minedAs: "cancel", nonce: 8, feeWei: (21_000n * 2n * 10n ** 9n).toString() });
+    expect(fallback).toMatchObject({ status: "success", minedAs: "fallback", nonce: 9 });
+    expect(l.summary().transactions).toBe(2);
+  });
+
+  it("books nothing for a pending, replaced-by-others, halted or refused send", async () => {
+    const { l, b } = await book();
+    const halt = { reason: "STUCK" as const, message: "nonce 3 is not mined after 4 replacement rounds", nonce: 3, since: T0 };
+    for (const r of [
+      { ok: true, txHash: H("aa"), via: "rpc", status: "pending", nonce: 3, gasPrice: 1n, halted: halt },
+      { ok: true, txHash: H("aa"), via: "rpc", status: "dropped", nonce: 3, gasPrice: 1n },
+      { ok: false, stage: "estimate", error: { name: "X", message: "x" } },
+      { ok: false, stage: "aborted" },
+      { ok: false, stage: "halted", halt },
+    ] satisfies SendResult[]) {
+      await ledgerSender(sender(r), b, "keeper").send(tx);
+    }
     expect(l.list()).toEqual([]);
-    expect(await w.confirm!(hash, 3)).toMatchObject({ status: "success" });
-    await w.confirm!(hash, 3);
+  });
+
+  it("books a pending send from confirm(): the hash that was mined at its nonce, once", async () => {
+    const { l, b } = await book();
+    const inner = sender({ ok: true, txHash: H("aa"), via: "rpc", status: "pending", nonce: 3, gasPrice: 10n ** 9n });
+    // the transaction asked about was replaced: a bumped one was mined at the same nonce
+    inner.confirm = async () => ({ status: "success", txHash: H("ab"), minedAs: "intent", gasUsed: 21_000n, effectiveGasPrice: 10n ** 9n });
+    const w = ledgerSender(inner, b, "keeper");
+    await w.send(tx);
+    expect(await w.confirm!(H("aa"), 3)).toMatchObject({ status: "success", txHash: H("ab") });
+    await w.confirm!(H("aa"), 3);
+    await ledgerSender(inner, b, "guardian").confirm!(H("aa"), 3);
     expect(l.list()).toHaveLength(1);
-    expect(l.list()[0]).toMatchObject({ kind: "gas", txHash: hash, feeWei: (21_000n * 10n ** 9n).toString() });
-    expect(await w.balance!()).toBe(5n);
+    expect(l.list()[0]).toMatchObject({ kind: "gas", txHash: H("ab"), nonce: 3, feeWei: (21_000n * 10n ** 9n).toString() });
+  });
+
+  it("never books a mined hash twice across restarts", async () => {
+    const dir = await tmp();
+    const l1 = new Ledger({ dir, x402DailyCapUsd: 0.5 });
+    await new GasBook(l1).book("keeper", { txHash: H("aa"), nonce: 7, status: "success", minedAs: "intent", gasUsed: 5n, effectiveGasPrice: 5n });
+    const l2 = new Ledger({ dir, x402DailyCapUsd: 0.5 });
+    await l2.load();
+    await new GasBook(l2).book("other", { txHash: H("AA"), nonce: 7, status: "success", minedAs: "intent", gasUsed: 5n, effectiveGasPrice: 5n });
+    expect(l2.list()).toHaveLength(1);
+  });
+
+  it("passes the whole sender through: options, confirm, balance, state", async () => {
+    const { b } = await book();
+    const seen: unknown[] = [];
+    const state = { halted: null, outstanding: { nonce: 4, hashes: [H("aa")], gasPrice: 1n, rounds: 1, kind: "intent" as const }, spentLastHourWei: 9n };
+    const inner: TxSender = {
+      address: addr(0xee),
+      dryRun: true,
+      simulate: async (_t, o) => {
+        seen.push(o);
+        return { via: "rpc", ok: true };
+      },
+      send: async (_t, o) => {
+        seen.push(o);
+        return { ok: false, stage: "aborted" };
+      },
+      confirm: async () => ({ status: "pending" }),
+      balance: async () => 5n,
+      state: () => state,
+    };
+    const w = ledgerSender(inner, b, "keeper");
+    const fallback = async () => null;
+    await w.simulate(tx, { strict: true });
+    await w.send(async () => tx, { mevProtect: true, fallback });
+    expect(seen).toEqual([{ strict: true }, { mevProtect: true, fallback }]);
+    expect([w.address, w.dryRun, await w.balance!(), w.state!()]).toEqual([addr(0xee), true, 5n, state]);
+    expect(await w.confirm!(H("aa"), 4)).toEqual({ status: "pending" });
+    // a sender without the optional calls stays without them
+    const bare = ledgerSender(sender({ ok: false, stage: "aborted" }), b, "keeper");
+    expect([bare.confirm, bare.balance, bare.state]).toEqual([undefined, undefined, undefined]);
   });
 });

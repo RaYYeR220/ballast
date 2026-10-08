@@ -177,7 +177,11 @@ export function createDeskApi(o: DeskApiOptions): http.Server {
   async function route(url: URL): Promise<{ status: number; body: unknown; raw?: string }> {
     const p = url.pathname.replace(/\/+$/, "") || "/";
     const q = url.searchParams;
-    if (p === "/health") return { status: 200, body: o.health() };
+    if (p === "/health") {
+      // Not ok (the sender halted) answers 503, so an uptime check needs no JSON parsing to notice.
+      const h = o.health();
+      return { status: h.ok === false ? 503 : 200, body: h };
+    }
     if (p === "/feed") {
       const account = q.get("account");
       if (account && !ADDRESS.test(account)) throw new HttpError(400, "account must be a 0x address");

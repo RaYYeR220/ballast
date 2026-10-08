@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Loop, assertWritable, backoffSec, startDesk } from "../src/desk/main";
+import { Loop, assertWritable, backoffSec, salesWarning, senderView, startDesk } from "../src/desk/main";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -22,6 +22,33 @@ describe("data dir", () => {
     await expect(
       startDesk({ CHAIN_ID: "31337", BSC_RPC_URL: "http://127.0.0.1:1", AGENT_PRIVATE_KEY: `0x${"4f".repeat(32)}`, DATA_DIR: path.join(file, "state") }, () => undefined),
     ).rejects.toThrow(/DATA_DIR .* is not writable/);
+  });
+});
+
+describe("sender view for /health", () => {
+  it("shows the halt and the transaction in flight, amounts readable", () => {
+    expect(senderView(undefined)).toBeNull();
+    expect(senderView({ halted: null, outstanding: null, spentLastHourWei: 0n })).toEqual({ halted: null, inFlight: null, feeSpentLastHourBnb: "0" });
+    const hashes = [`0x${"aa".repeat(32)}`, `0x${"bb".repeat(32)}`] as const;
+    expect(
+      senderView({
+        halted: { reason: "GAS_CAP", message: "replacing nonce 12 needs more than the gas price cap of 5 gwei", nonce: 12, since: 1_800_000_000 },
+        outstanding: { nonce: 12, hashes: [...hashes], gasPrice: 4_500_000_000n, rounds: 3, kind: "intent" },
+        spentLastHourWei: 2_500_000_000_000_000n,
+      }),
+    ).toEqual({
+      halted: { reason: "GAS_CAP", message: "replacing nonce 12 needs more than the gas price cap of 5 gwei", nonce: 12, since: 1_800_000_000 },
+      inFlight: { nonce: 12, kind: "intent", rounds: 3, gasPriceGwei: "4.5", hashes: [...hashes] },
+      feeSpentLastHourBnb: "0.0025",
+    });
+  });
+});
+
+describe("startup warning", () => {
+  it("says sales are off on mainnet without Binance keys, and nothing otherwise", () => {
+    expect(salesWarning({ chainId: 56, binance: null })).toMatch(/collateral sales are never signed.*cushion still shields/);
+    expect(salesWarning({ chainId: 56, binance: {} })).toBeNull();
+    expect(salesWarning({ chainId: 31337, binance: null })).toBeNull();
   });
 });
 

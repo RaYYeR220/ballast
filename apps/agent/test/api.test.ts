@@ -131,6 +131,32 @@ describe("desk read API", () => {
   });
 });
 
+describe("health", () => {
+  it("answers 503 with the reason when the desk reports itself not ok", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "desk-api-h-"));
+    let ok = true;
+    const server = createDeskApi({
+      feed: new Feed({ dir, secrets: [] }),
+      ledger: new Ledger({ dir, x402DailyCapUsd: 0.5 }),
+      dataDir: dir,
+      webOrigin: null,
+      secrets: [],
+      ratePerMin: 100,
+      health: () => ({ ok, sender: ok ? { halted: null } : { halted: { reason: "STUCK", nonce: 5 } } }),
+      accounts: async () => ({}),
+      oracle: async () => ({}),
+      apiHealth: () => ({}),
+    });
+    servers.push(server);
+    const { port } = await listen(server, "127.0.0.1", 0);
+    expect((await fetch(`http://127.0.0.1:${port}/health`)).status).toBe(200);
+    ok = false;
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ ok: false, sender: { halted: { reason: "STUCK", nonce: 5 } } });
+  });
+});
+
 describe("evidence files", () => {
   it("are served byte for byte, and refused when they hold a desk secret", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "desk-api-ev-"));

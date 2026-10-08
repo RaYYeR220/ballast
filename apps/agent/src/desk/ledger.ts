@@ -15,12 +15,20 @@ interface Base {
   ts: number;
 }
 
-/** Gas paid for one broadcast transaction (reverted ones included). */
+/**
+ * Gas paid for one nonce of the desk key: the transaction that was finally mined there (the intent, a
+ * sale's stand-in or the cancel that replaced it), reverted ones included.
+ */
 export interface GasEntry extends Base {
   kind: "gas";
   source: LedgerSource;
+  /** The mined transaction. */
   txHash: Hex;
-  status: "success" | "reverted";
+  /** "cancelled": the nonce was spent on a 0-value cancel because the intent was no longer needed. */
+  status: "success" | "reverted" | "cancelled";
+  nonce?: number;
+  /** Which transaction of the intent was mined. */
+  minedAs?: "intent" | "fallback" | "cancel";
   gasUsed: string;
   effectiveGasPrice: string;
   /** gasUsed x effectiveGasPrice, in wei. */
@@ -139,6 +147,12 @@ export class Ledger {
       const booked = this.#entries.find((e) => e.kind === "income" && e.jobId === input.jobId);
       if (booked) return booked;
     }
+    if (input.kind === "gas") {
+      // A mined transaction is booked once, whoever reports it and however often (also across restarts).
+      const hash = input.txHash.toLowerCase();
+      const booked = this.#entries.find((e) => e.kind === "gas" && e.txHash.toLowerCase() === hash);
+      if (booked) return booked;
+    }
     const entry = { id: this.#nextId++, ts: this.#clock(), ...input } as LedgerEntry;
     this.#entries.push(entry);
     if (this.#entries.length > MAX_ENTRIES) this.#entries.splice(0, this.#entries.length - MAX_ENTRIES);
@@ -223,40 +237,79 @@ export class Ledger {
   }
 }
 
+/** What a send, recover or confirm result says about a mined transaction. */
+export interface MinedReport {
+  txHash?: Hex;
+  nonce?: number;
+  status: string;
+  minedAs?: "intent" | "fallback" | "cancel";
+  gasUsed?: bigint;
+  effectiveGasPrice?: bigint;
+}
+
 /**
- * Wraps a sender so every mined transaction books its gas (reverted ones too): at send time when the receipt
- * is there, or when a later confirm() resolves a pending one. Each hash is booked once. Ledger failures never
- * reach the caller: the send result is what the loop acts on.
+ * Books the gas of the desk key, once per nonce: only a result that names the mined transaction (its hash,
+ * gas used and effective gas price) is booked, under the hash that was finally mined at that nonce. An intent
+ * that was replaced a few times costs what its mined replacement cost; a nonce spent on a cancel is booked
+ * as "cancelled". One book is shared by every loop's sender wrapper, so a transaction reported twice (by a
+ * send and a later confirm, or by the startup recovery and a loop) is still one entry.
  */
-export function ledgerSender(inner: TxSender, ledger: Ledger, source: LedgerSource, onError?: (m: string) => void): TxSender {
-  const booked = new Set<string>();
-  const book = async (txHash: Hex, status: string, gasUsed?: bigint, effectiveGasPrice?: bigint) => {
-    if ((status !== "success" && status !== "reverted") || gasUsed === undefined || effectiveGasPrice === undefined) return;
-    const k = txHash.toLowerCase();
-    if (booked.has(k)) return;
-    booked.add(k);
-    if (booked.size > 10_000) booked.delete(booked.values().next().value as string);
+export class GasBook {
+  readonly #ledger: Ledger;
+  readonly #onError: (m: string) => void;
+  /** nonce -> the hash booked for it in this process. */
+  readonly #nonces = new Map<number, string>();
+
+  constructor(ledger: Ledger, onError: (m: string) => void = (m) => console.error(m)) {
+    this.#ledger = ledger;
+    this.#onError = onError;
+  }
+
+  /** Never throws: the send result is what the loop acts on, not the bookkeeping. */
+  async book(source: LedgerSource, r: MinedReport): Promise<void> {
+    if (!r.txHash || r.gasUsed === undefined || r.effectiveGasPrice === undefined) return; // not mined (or not ours)
+    const status = r.minedAs === "cancel" ? "cancelled" : r.status === "success" || r.status === "reverted" ? r.status : null;
+    if (status === null) return;
+    const hash = r.txHash.toLowerCase();
+    if (r.nonce !== undefined) {
+      const seen = this.#nonces.get(r.nonce);
+      if (seen !== undefined) {
+        if (seen !== hash) this.#onError(`ledger: nonce ${r.nonce} was already booked as ${seen}, ignoring ${hash}`);
+        return;
+      }
+      this.#nonces.set(r.nonce, hash);
+      if (this.#nonces.size > 10_000) this.#nonces.delete(this.#nonces.keys().next().value as number);
+    }
     try {
-      await ledger.record({
+      await this.#ledger.record({
         kind: "gas",
         source,
-        txHash,
+        txHash: r.txHash,
         status,
-        gasUsed: gasUsed.toString(),
-        effectiveGasPrice: effectiveGasPrice.toString(),
-        feeWei: (gasUsed * effectiveGasPrice).toString(),
+        ...(r.nonce !== undefined ? { nonce: r.nonce } : {}),
+        ...(r.minedAs ? { minedAs: r.minedAs } : {}),
+        gasUsed: r.gasUsed.toString(),
+        effectiveGasPrice: r.effectiveGasPrice.toString(),
+        feeWei: (r.gasUsed * r.effectiveGasPrice).toString(),
       });
     } catch (err) {
-      onError?.(`ledger gas entry failed: ${(err as Error).message}`);
+      this.#onError(`ledger gas entry failed: ${(err as Error).message}`);
     }
-  };
+  }
+}
+
+/**
+ * The sender as one loop sees it: the same sender (every call and option passed through, optional calls only
+ * when the sender has them) with its mined transactions booked under that loop's name.
+ */
+export function ledgerSender(inner: TxSender, book: GasBook, source: LedgerSource): TxSender {
   const wrapped: TxSender = {
     address: inner.address,
     dryRun: inner.dryRun,
     simulate: (tx: TxRequest, opts?: SimulateOptions) => inner.simulate(tx, opts),
     async send(tx: TxRequest | TxBuilder, opts?: SendOptions): Promise<SendResult> {
       const r = await inner.send(tx, opts);
-      if (r.ok) await book(r.txHash, r.status, r.gasUsed, r.effectiveGasPrice);
+      if (r.ok) await book.book(source, r);
       return r;
     },
   };
@@ -264,10 +317,12 @@ export function ledgerSender(inner: TxSender, ledger: Ledger, source: LedgerSour
     const confirm = inner.confirm.bind(inner);
     wrapped.confirm = async (txHash: Hex, nonce?: number): Promise<Confirmation> => {
       const c = await confirm(txHash, nonce);
-      await book(txHash, c.status, c.gasUsed, c.effectiveGasPrice);
+      // The mined hash may be a replacement of the one asked about.
+      await book.book(source, { ...c, txHash: c.txHash ?? txHash, ...(nonce !== undefined ? { nonce } : {}) });
       return c;
     };
   }
   if (inner.balance) wrapped.balance = inner.balance.bind(inner);
+  if (inner.state) wrapped.state = inner.state.bind(inner);
   return wrapped;
 }

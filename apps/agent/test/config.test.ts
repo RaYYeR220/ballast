@@ -31,6 +31,7 @@ describe("loadConfig", () => {
     expect(c.httpPort).toBe(8787);
     expect(c.x402DailyCapUsd).toBe(0.5);
     expect(c.minBnbBalance).toBe(0.003);
+    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([5, 45, 4, 0.01]);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
     expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);
@@ -47,6 +48,10 @@ describe("loadConfig", () => {
         HTTP_PORT: "9100",
         X402_DAILY_CAP_USD: "0.25",
         MIN_BNB_BALANCE: "0.01",
+        MAX_GAS_PRICE_GWEI: "3",
+        RECEIPT_TIMEOUT_SEC: "30",
+        MAX_BUMPS: "2",
+        MAX_FEE_BNB_PER_HOUR: "0.02",
         DRY_RUN: "false",
         DEPLOYMENT_FILE: "deploy/fork.json",
         DATA_DIR: "state",
@@ -60,6 +65,7 @@ describe("loadConfig", () => {
     expect(c.httpPort).toBe(9100);
     expect(c.x402DailyCapUsd).toBe(0.25);
     expect(c.minBnbBalance).toBe(0.01);
+    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([3, 30, 2, 0.02]);
     expect(c.dryRun).toBe(false);
     expect(c.deploymentFile).toBe(path.join(cwd, "deploy", "fork.json"));
     expect(c.dataDir).toBe(path.join(cwd, "state"));
@@ -133,6 +139,10 @@ describe("loadConfig", () => {
     expect(issuesOf({ ...base, HTTP_PORT: "70000" })).toEqual(["HTTP_PORT: must be a port number"]);
     expect(issuesOf({ ...base, X402_DAILY_CAP_USD: "-1" })).toEqual(["X402_DAILY_CAP_USD: must be a non-negative amount"]);
     expect(issuesOf({ ...base, DRY_RUN: "maybe" })).toEqual(["DRY_RUN: must be true or false"]);
+    expect(issuesOf({ ...base, MAX_GAS_PRICE_GWEI: "0" })).toHaveLength(1);
+    expect(issuesOf({ ...base, RECEIPT_TIMEOUT_SEC: "1" })).toHaveLength(1);
+    expect(issuesOf({ ...base, MAX_BUMPS: "2.5" })).toHaveLength(1);
+    expect(issuesOf({ ...base, MAX_FEE_BNB_PER_HOUR: "-1" })).toHaveLength(1);
   });
 
   it("keeps the Studio faces on loopback on mainnet", () => {

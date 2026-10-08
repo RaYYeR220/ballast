@@ -21,7 +21,7 @@ import {
 import { erc20Abi, keccak256, parseEventLogs, stringToBytes, type Address, type Hex, type PublicClient } from "viem";
 import type { Feed, FeedError, FeedEvent, FeedInput, FeedSim } from "./feed";
 import { stableUsd, type Ledger } from "./ledger";
-import { safeMessage, type SendResult, type TxSender } from "./tx";
+import { safeMessage, type HaltInfo, type SendResult, type TxSender } from "./tx";
 
 export const GUARDIAN_TICK_SEC = 600;
 /** Job ids scanned per call, and calls per tick (later ids wait for the next tick). */
@@ -160,6 +160,8 @@ interface JobRecord {
   /** Chain time of our own submit. */
   submitAt?: number;
   settleTx?: Hex;
+  /** Nonce of a settle that was still pending: the transaction mined there may be a replacement. */
+  settleNonce?: number;
 }
 
 interface StateFile {
@@ -363,8 +365,9 @@ export class Guardian {
       case "Completed":
       case "Rejected": {
         // Our settle that was still pending last loop, or someone else's (settle is permissionless).
-        const settleTx = this.#o.state.jobs.get(k)?.settleTx;
-        if (settleTx) {
+        const rec = this.#o.state.jobs.get(k);
+        if (rec?.settleTx) {
+          const settleTx = await this.#minedHash(rec.settleTx, rec.settleNonce);
           const own = await this.#outcomeOf(job, settleTx);
           if (own.survived !== null) {
             report.settled.push(k);
@@ -511,6 +514,17 @@ export class Guardian {
     this.#o.log?.(`guardian settled job ${k} (${survived === null ? "unknown" : survived ? "complete" : "reject"}) in ${sent.txHash}`);
   }
 
+  /** The transaction mined at the nonce of one we sent: itself, or the replacement the sender bumped it to. */
+  async #minedHash(txHash: Hex, nonce: number | undefined): Promise<Hex> {
+    try {
+      const c = await this.#o.sender.confirm?.(txHash, nonce);
+      if (c && (c.status === "success" || c.status === "reverted") && c.txHash) return c.txHash;
+    } catch (err) {
+      this.#o.log?.(`guardian: confirm of ${txHash} failed: ${safeMessage(err)}`);
+    }
+    return txHash;
+  }
+
   /** Outcome and payout from our settle receipt; survived null when it cannot be read. */
   async #outcomeOf(job: GuardianJob, txHash: Hex): Promise<SettleOutcome & { token: PaymentToken | null }> {
     try {
@@ -525,9 +539,9 @@ export class Guardian {
   /**
    * Sends a submit or settle and records every outcome that is not a mined success. Contract reverts (at
    * estimate or on-chain) are refusals that back the job off. Everything that passes by itself is tried again
-   * in QUICK_RETRY_SEC with no back-off: a failed broadcast, a transaction replaced before it was mined, one
-   * still pending (the next refresh of the job shows whether it landed), CannotEvaluateNow, and a node that
-   * has not caught up with our own submit yet.
+   * in QUICK_RETRY_SEC with no back-off: a halted sender, a failed broadcast, a transaction cancelled or
+   * replaced before it was mined, one still pending because the sender halted on it (the next refresh of the
+   * job shows whether it landed), CannotEvaluateNow, and a node that has not caught up with our own submit.
    */
   async #broadcast(job: GuardianJob, at: number, step: "submit" | "settle", tx: TxRequest, sim: FeedSim, data: Record<string, unknown> = {}): Promise<{ txHash: Hex; via: string } | null> {
     const k = job.jobId.toString();
@@ -539,6 +553,10 @@ export class Guardian {
       return null;
     }
     if (!sent.ok) {
+      if (sent.stage === "halted") {
+        await this.#halted(job, at, sent.halt);
+        return null;
+      }
       if (sent.stage !== "estimate") {
         await this.#failedSend(job, step, sim, { name: "Aborted", message: `${step} was not sent` });
         return null;
@@ -553,17 +571,31 @@ export class Guardian {
     }
     const rec = this.#o.state.jobs.get(k);
     if (sent.status === "pending") {
+      // Only when the sender halted on it: it may still be mined, the next loops read the job again.
       if (rec) {
         if (step === "submit") Object.assign(rec, { submitTx: sent.txHash, submitAt: at });
-        else rec.settleTx = sent.txHash;
+        else Object.assign(rec, { settleTx: sent.txHash, settleNonce: sent.nonce });
       }
       await this.#o.state.save();
       this.#retrySoon = true;
-      await this.#event({ kind: "pending", job, sim, txHash: sent.txHash, reason: `${step} sent but not mined yet; the next loop reads the job again`, data: { ...data, step, nonce: sent.nonce } });
+      await this.#event({
+        kind: "pending",
+        job,
+        sim,
+        txHash: sent.txHash,
+        reason: `${step} sent but not mined yet${sent.halted ? ` (the sender halted: ${sent.halted.reason})` : ""}; the next loop reads the job again`,
+        data: { ...data, step, nonce: sent.nonce, ...(sent.halted ? { sender: "halted", halt: sent.halted } : {}) },
+      });
       return null;
     }
     if (sent.status === "dropped") {
-      await this.#failedSend(job, step, sim, { name: "Dropped", message: `${step} was replaced before it was mined` }, sent.txHash);
+      // Our own cancel (the transaction would have reverted by the time it was replaced) or a nonce lost to
+      // someone else: either way the job is read again shortly.
+      const error =
+        sent.minedAs === "cancel"
+          ? { name: "Cancelled", message: `${step} was cancelled before it was mined: it would have reverted by then` }
+          : { name: "Dropped", message: `${step} was replaced before it was mined` };
+      await this.#failedSend(job, step, sim, error, sent.txHash);
       return null;
     }
     if (sent.status === "reverted") {
@@ -640,12 +672,39 @@ export class Guardian {
     await this.#event({ kind: "refused", job, sim, error, reason: `${step}: ${error.message}; trying again shortly`, ...(txHash ? { txHash } : {}), data: { step, retryInSec: QUICK_RETRY_SEC } });
   }
 
-  /** True (and a wait is recorded) while the keeper needs the key for a shield. */
+  /**
+   * True (and a wait is recorded) while a guardian send has to stand back: the keeper has a shield to send,
+   * the sender is halted, or another transaction of the desk key is in flight (one at a time: ours would only
+   * queue behind it). No back-off; the next tick comes shortly.
+   */
   async #deferred(job: GuardianJob, at: number): Promise<boolean> {
-    if (!this.#o.busy?.()) return false;
+    if (this.#o.busy?.()) {
+      this.#retrySoon = true;
+      await this.#wait(job, at, "deferred", { kind: "noop", job, reason: "deferred: the keeper has a shield to send first; trying again shortly" });
+      return true;
+    }
+    const st = this.#o.sender.state?.();
+    if (st?.halted) {
+      await this.#halted(job, at, st.halted);
+      return true;
+    }
+    if (st?.outstanding) {
+      this.#retrySoon = true;
+      await this.#wait(job, at, "in-flight", { kind: "noop", job, reason: `waiting: another transaction of the desk key is in flight (nonce ${st.outstanding.nonce}); trying again shortly` });
+      return true;
+    }
+    return false;
+  }
+
+  /** The sender signs nothing while halted: a wait, not a refusal. It resumes by itself. */
+  async #halted(job: GuardianJob, at: number, halt: HaltInfo) {
     this.#retrySoon = true;
-    await this.#wait(job, at, "deferred", { kind: "noop", job, reason: "deferred: the keeper has a shield to send first; trying again shortly" });
-    return true;
+    await this.#wait(job, at, `halted:${halt.reason}`, {
+      kind: "noop",
+      job,
+      reason: `waiting: the sender is halted (${halt.reason}): ${halt.message}`,
+      data: { sender: "halted", halt },
+    });
   }
 
   /**

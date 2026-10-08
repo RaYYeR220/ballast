@@ -7,7 +7,7 @@ import { ballastErrorsAbi, ballastGuardianAbi, kernelAbi, parseDeployment, type 
 import { Feed } from "../src/desk/feed";
 import { GUARDIAN_TICK_SEC, Guardian, GuardianState, QUICK_RETRY_SEC, REFUSAL_BACKOFF_SEC, buildEvidence, evidenceFile, type GuardianReads } from "../src/desk/guardian";
 import { Ledger } from "../src/desk/ledger";
-import { revertError, type SendResult, type TxSender } from "../src/desk/tx";
+import { revertError, type Confirmation, type HaltInfo, type SendResult, type SenderState, type TxSender } from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const E18 = 10n ** 18n;
@@ -62,6 +62,7 @@ const decode = (tx: TxRequest): Call => {
 };
 
 const revert = (name: string) => encodeErrorResult({ abi: ballastErrorsAbi, errorName: name as never });
+const HALT: HaltInfo = { reason: "STUCK", message: "nonce 5 is not mined after 4 replacement rounds", nonce: 5, since: 1_800_000_000 };
 
 class StubSender implements TxSender {
   readonly address = AGENT;
@@ -71,7 +72,17 @@ class StubSender implements TxSender {
   sent: Call[] = [];
   onSend?: (c: Call) => void;
   /** Outcome of the next sends, in order (default success). */
-  statuses: ("success" | "reverted" | "pending" | "dropped" | "throw")[] = [];
+  statuses: ("success" | "reverted" | "pending" | "dropped" | "cancelled" | "halted" | "throw")[] = [];
+  /** What state() answers: a halt, and/or a transaction of the key in flight. */
+  senderState: SenderState = { halted: null, outstanding: null, spentLastHourWei: 0n };
+  /** What confirm() answers for a hash. */
+  confirmations = new Map<string, Confirmation>();
+  state() {
+    return this.senderState;
+  }
+  async confirm(txHash: Hex): Promise<Confirmation> {
+    return this.confirmations.get(txHash) ?? { status: "pending" };
+  }
   async simulate(tx: TxRequest) {
     const c = decode(tx);
     this.sims.push(c);
@@ -85,7 +96,12 @@ class StubSender implements TxSender {
     if ((this.statuses[0] ?? "success") === "success") this.onSend?.(c);
     const status = this.statuses.shift() ?? "success";
     if (status === "throw") throw new Error("broadcast failed: connection reset");
-    return { ok: true, txHash: `0x${String(this.sent.length).padStart(64, "0")}`, via: "rpc", status, nonce: this.sent.length, gasPrice: 10n ** 8n, gasUsed: 100_000n, effectiveGasPrice: 10n ** 8n };
+    if (status === "halted") return { ok: false, stage: "halted", halt: HALT };
+    const base = { ok: true as const, txHash: `0x${String(this.sent.length).padStart(64, "0")}` as Hex, via: "rpc" as const, nonce: this.sent.length, gasPrice: 10n ** 8n };
+    if (status === "pending") return { ...base, status, halted: HALT };
+    if (status === "dropped") return { ...base, status };
+    if (status === "cancelled") return { ...base, status: "dropped", minedAs: "cancel", gasUsed: 21_000n, effectiveGasPrice: 10n ** 8n };
+    return { ...base, status, minedAs: "intent", gasUsed: 100_000n, effectiveGasPrice: 10n ** 8n };
   }
 }
 
@@ -401,6 +417,70 @@ describe("Guardian", () => {
     sender.failing.delete("settle");
     await guardian.tick();
     expect(sender.sent.map((c) => c.fn)).toEqual(["settle"]);
+  });
+
+  it("waits while the sender is halted or has a transaction in flight: nothing simulated, no back-off", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n));
+    sender.senderState = { halted: HALT, outstanding: null, spentLastHourWei: 0n };
+    await guardian.tick();
+    expect(sender.sims).toEqual([]);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ jobId: "101", reason: expect.stringMatching(/sender is halted \(STUCK\)/), data: { sender: "halted", halt: { reason: "STUCK", nonce: 5 } } });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    sender.senderState = { halted: null, outstanding: { nonce: 6, hashes: [`0x${"ab".repeat(32)}`], gasPrice: 1n, rounds: 0, kind: "intent" }, spentLastHourWei: 0n };
+    world.at += QUICK_RETRY_SEC;
+    await guardian.tick();
+    expect(sender.sims).toEqual([]);
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ reason: expect.stringMatching(/in flight \(nonce 6\)/) });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    sender.senderState = { halted: null, outstanding: null, spentLastHourWei: 0n };
+    world.at += QUICK_RETRY_SEC;
+    expect((await guardian.tick()).settled).toEqual(["101"]);
+  });
+
+  it("treats a send the sender refused because it halted as a wait", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    sender.statuses = ["halted"];
+    await guardian.tick();
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ reason: expect.stringMatching(/sender is halted/), data: { sender: "halted" } });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    world.at += QUICK_RETRY_SEC;
+    expect((await guardian.tick()).settled).toEqual(["101"]);
+  });
+
+  it("retries a settle the sender cancelled (it would have reverted by then) shortly, no back-off", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    sender.statuses = ["cancelled"];
+    await guardian.tick();
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "Cancelled" }, data: { step: "settle", retryInSec: QUICK_RETRY_SEC } });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+  });
+
+  it("books a settle that halted the sender from the hash that was finally mined at its nonce", async () => {
+    const { world, sender, guardian, feed, ledger, reads } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted" }));
+    sender.statuses = ["pending"];
+    await guardian.tick();
+    expect(feed.list({ kind: "pending" })[0]).toMatchObject({ jobId: "101", data: { step: "settle", nonce: 1, sender: "halted", halt: { reason: "STUCK" } } });
+    // a bumped replacement of our settle is mined between loops
+    const minedHash = `0x${"5e".repeat(32)}` as const;
+    sender.confirmations.set(`0x${"1".padStart(64, "0")}`, { status: "success", txHash: minedHash, minedAs: "intent", gasUsed: 1n, effectiveGasPrice: 1n });
+    world.jobs.set(101n, job(101n, { status: "Completed" }));
+    const asked: Hex[] = [];
+    const orig = reads.settleOutcome;
+    reads.settleOutcome = async (h, ...rest) => {
+      asked.push(h);
+      return orig(h, ...rest);
+    };
+    const r = await guardian.tick();
+    expect(r.settled).toEqual(["101"]);
+    expect(asked).toEqual([minedHash]);
+    expect(ledger.list({ kind: "income" })[0]).toMatchObject({ jobId: "101", txHash: minedHash, amount: E18.toString() });
+    expect(ledger.list({ kind: "income" })[0]).not.toHaveProperty("estimated");
   });
 
   it("defers its sends while the keeper has a shield to send, and tries again shortly", async () => {
