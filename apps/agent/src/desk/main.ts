@@ -21,7 +21,7 @@ import { KEEPER_TICK_SEC, Keeper, chainKeeperReads } from "./keeper";
 import { GasBook, Ledger, ledgerSender } from "./ledger";
 import { NOTES_TICK_SEC, NotesStore, NotesWorker, studioNoteModel } from "./notes";
 import { Publisher, chainPublisherReads, publisherDelaySec } from "./publisher";
-import { ChainSender, GasWatch, binanceTxApi, safeMessage, senderOptions, type SenderState } from "./tx";
+import { ChainSender, GasWatch, binanceTxApi, safeMessage, senderOptions, type SendResult, type SenderState } from "./tx";
 import { X402Client } from "./x402";
 
 // ------------------------------------------------------------------- loops
@@ -370,15 +370,14 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   const addr = await listen(server, config.httpHost, config.httpPort);
   log(`read API on http://${config.httpHost}:${addr.port} (agent ${account.address}, ${config.dryRun ? "DRY RUN" : "live"})`);
   // Once at startup: settle what a previous run left in flight. It runs in the sender's queue, so the loops
-  // start right away and their first sends simply wait behind it.
-  void chainSender
-    .recover()
-    .then(async (r) => {
+  // start right away and their first sends simply wait behind it. Through the ledger wrapper: what it settles
+  // is booked, and a nonce that is still pending is followed until it is mined.
+  void (ledgerSender(chainSender, gasBook, "other").recover?.() ?? Promise.resolve(null))
+    .then((res) => {
+      const r = res as SendResult | null;
       if (!r) return;
-      if (r.ok) {
-        await gasBook.book("other", r);
-        log(`sender recovery: nonce ${r.nonce} ${r.status}${r.minedAs ? ` (${r.minedAs})` : ""} ${r.txHash}${r.halted ? `; halted: ${r.halted.reason}` : ""}`);
-      } else if (r.stage === "halted") log(`sender recovery: halted (${r.halt.reason}): ${r.halt.message}`);
+      if (r.ok) log(`sender recovery: nonce ${r.nonce} ${r.status}${r.minedAs ? ` (${r.minedAs})` : ""} ${r.txHash}${r.halted ? `; halted: ${r.halted.reason}` : ""}`);
+      else if (r.stage === "halted") log(`sender recovery: halted (${r.halt.reason}): ${r.halt.message}`);
     })
     .catch((err) => log(`sender recovery failed: ${safeMessage(err)}`));
   for (const l of loops) l.start();
