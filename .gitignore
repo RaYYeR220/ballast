@@ -18,3 +18,6 @@ contracts/broadcast/**/dry-run/
 _internal/
 *-internal/
 contracts/deployments/31337.json
+.vercel
+
+.vercel
