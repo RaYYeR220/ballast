@@ -57,7 +57,7 @@ Mocked or forced, and why:
 | Venue price for one check | `vm.mockCall` on `Moolah.getPrice` (the oracle-floor test) and on the Venus oracle (the Venus liquidation test) | To make the floor unreachable, and to make a Venus position liquidatable. |
 | A second Lista market | `vm.prank` as the holder of Moolah's operator role, then `createMarket` with `SessionAwareFeed` as its oracle | Only the operator can create a market. This is the one place a Lista market reads the feed. |
 | Token balances | `vm.prank` as a large exchange wallet to transfer bStocks and stablecoins to the test accounts | The test accounts start empty. |
-| Liquidators | `vm.prank` as Lista's liquidator account and Venus's liquidator contract | Liquidation is permissioned on both venues. |
+| Liquidators | `vm.prank` as Lista's liquidator account and Venus's liquidator contract | The tests liquidate the way each venue's own liquidator does. |
 | Identity and reputation edge cases | `vm.mockCall` and `vm.mockCallRevert` on `getAgentWallet` and `giveFeedback` | To test a provider that is the agent wallet, a wallet lookup that reverts, and a feedback write that fails. |
 
 What this means for the headline tests:
