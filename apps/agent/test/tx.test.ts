@@ -46,7 +46,7 @@ type Parsed = ReturnType<typeof parseTransaction> & { hash: Hex; raw: Hex };
  */
 class Node {
   latest = 7;
-  network = 1n * GWEI;
+  network = GWEI / 10n;
   balance = parseEther("1");
   time = 1_000_000;
   /** Unmined transactions by nonce (the node keeps the best-paying one). */
@@ -135,13 +135,14 @@ function sender(node: Node, o: Partial<ChainSenderOptions> = {}) {
   });
 }
 
-function binance(node: Node, o: { failAfter?: number; relay?: boolean } = {}) {
+function binance(node: Node, o: { failAfter?: number; relay?: boolean; swallow?: boolean } = {}) {
   const broadcasts: Parsed[] = [];
   const api: BinanceTxApi = {
     simulate: async () => ({ status: "SUCCESS", failReason: null, balanceChanges: [], allowanceChanges: [] }),
     broadcast: async (body) => {
       const raw = body.signedTransaction as Hex;
       broadcasts.push(node.parse(raw));
+      if (o.swallow) return { orderId: "1", txHash: keccak256(raw) }; // accepted, never relayed
       if (o.failAfter !== undefined && broadcasts.length > o.failAfter) {
         if (o.relay) node.receive(raw); // relayed although the API answered with an error
         throw new Error("HTTP 503");
@@ -251,14 +252,14 @@ describe("ChainSender.send", () => {
     const s = sender(node);
     const r = okOf(await s.send(tx));
     const sent = node.rpc[0]!;
-    expect(sent).toMatchObject({ to: TO, nonce: 7, chainId: 31337, gas: 120_000n, gasPrice: 1_100_000_000n, data: "0x1234" });
+    expect(sent).toMatchObject({ to: TO, nonce: 7, chainId: 31337, gas: 120_000n, gasPrice: 110_000_000n, data: "0x1234" });
     expect(r).toEqual({
       ok: true,
       status: "success",
       txHash: sent.hash,
       via: "rpc",
       nonce: 7,
-      gasPrice: 1_100_000_000n,
+      gasPrice: 110_000_000n,
       minedAs: "intent",
       gasUsed: 90_000n,
       effectiveGasPrice: 1n * GWEI,
@@ -266,7 +267,7 @@ describe("ChainSender.send", () => {
       logs: [{ address: TO, topics: ["0x01"], data: "0x" }],
     });
     expect(JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? String(v) : v))).not.toContain(sent.raw.slice(2, 60));
-    expect(s.state()).toMatchObject({ halted: null, outstanding: null, spentLastHourWei: 120_000n * 1_100_000_000n });
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null, spentLastHourWei: 120_000n * 110_000_000n });
   });
 
   it("never signs above the gas price cap", async () => {
@@ -274,7 +275,7 @@ describe("ChainSender.send", () => {
     node.network = 20n * GWEI;
     await sender(node).send(tx);
     expect(node.rpc[0]!.gasPrice).toBe(DEFAULT_LIMITS.maxGasPriceWei);
-    expect(DEFAULT_LIMITS.maxGasPriceWei).toBe(5n * GWEI);
+    expect(DEFAULT_LIMITS).toEqual({ maxGasPriceWei: 1n * GWEI, receiptTimeoutMs: 20_000, maxBumps: 4, maxFeeWeiPerHour: parseEther("0.003") });
   });
 
   it("aborts without signing when the builder returns null, and reports a revert at estimation", async () => {
@@ -358,7 +359,7 @@ describe("ChainSender.send", () => {
   });
 
   it("turns the desk config into limits", () => {
-    expect(senderLimits({ maxGasPriceGwei: 5, receiptTimeoutSec: 45, maxBumps: 4, maxFeeBnbPerHour: 0.01 })).toEqual(DEFAULT_LIMITS);
+    expect(senderLimits({ maxGasPriceGwei: 1, receiptTimeoutSec: 20, maxBumps: 4, maxFeeBnbPerHour: 0.003 })).toEqual(DEFAULT_LIMITS);
     const config = loadConfig({ CHAIN_ID: "31337", BSC_RPC_URL: "http://127.0.0.1:8545", AGENT_PRIVATE_KEY: `0x${"4f".repeat(32)}`, DATA_DIR: "/srv/desk" });
     expect(senderOptions(config)).toEqual({ limits: DEFAULT_LIMITS, stateFile: path.join(path.resolve("/srv/desk"), "sender.json") });
     expect(senderLimits({ maxGasPriceGwei: 0.5, receiptTimeoutSec: 30, maxBumps: 2, maxFeeBnbPerHour: 0.0000001 })).toEqual({
@@ -373,7 +374,7 @@ describe("ChainSender.send", () => {
 describe("ChainSender: a transaction that is not mined in time", () => {
   it("rebuilds the same intent and replaces it at the same nonce for 12.5% more", async () => {
     const node = new Node();
-    node.accept = (t) => ((t.gasPrice as bigint) > 1_300_000_000n ? "mine" : "hold"); // only the second replacement is good enough
+    node.accept = (t) => ((t.gasPrice as bigint) > 130_000_000n ? "mine" : "hold"); // only the second replacement is good enough
     const rounds: number[] = [];
     const build: TxBuilder = async ({ round }) => {
       rounds.push(round);
@@ -384,11 +385,11 @@ describe("ChainSender: a transaction that is not mined in time", () => {
     const r = okOf(await s.send(build));
     expect(rounds).toEqual([0, 1, 2]);
     expect(node.rpc.map((t) => [t.nonce, t.gasPrice])).toEqual([
-      [7, 1_100_000_000n],
-      [7, 1_237_500_000n],
-      [7, 1_392_187_500n],
+      [7, 110_000_000n],
+      [7, 123_750_000n],
+      [7, 139_218_750n],
     ]);
-    expect(r).toMatchObject({ status: "success", nonce: 7, txHash: node.rpc[2]!.hash, minedAs: "intent", gasPrice: 1_392_187_500n });
+    expect(r).toMatchObject({ status: "success", nonce: 7, txHash: node.rpc[2]!.hash, minedAs: "intent", gasPrice: 139_218_750n });
     // Two full receipt waits passed before the replacements.
     expect(node.time - started).toBeGreaterThanOrEqual(2 * DEFAULT_LIMITS.receiptTimeoutMs);
     expect(node.ahead).toEqual([]);
@@ -396,12 +397,12 @@ describe("ChainSender: a transaction that is not mined in time", () => {
 
   it("follows the network when it moved above the bump", async () => {
     const node = new Node();
-    node.accept = (t) => ((t.gasPrice as bigint) >= 3n * GWEI ? "mine" : "hold");
+    node.accept = (t) => ((t.gasPrice as bigint) >= 300_000_000n ? "mine" : "hold");
     node.onSleep = () => {
-      node.network = 3n * GWEI;
+      node.network = 300_000_000n;
     };
     await sender(node).send(tx);
-    expect(node.rpc.map((t) => t.gasPrice)).toEqual([1_100_000_000n, 3_300_000_000n]);
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([110_000_000n, 330_000_000n]);
   });
 
   it("replaces it with a 0-value transfer to itself when the intent is no longer needed", async () => {
@@ -410,7 +411,7 @@ describe("ChainSender: a transaction that is not mined in time", () => {
     const s = sender(node);
     const r = okOf(await s.send(async ({ round }) => (round === 0 ? tx : null)));
     const cancel = node.rpc[1]!;
-    expect(cancel).toMatchObject({ nonce: 7, to: account.address.toLowerCase(), gas: 21_000n, gasPrice: 1_237_500_000n });
+    expect(cancel).toMatchObject({ nonce: 7, to: account.address.toLowerCase(), gas: 21_000n, gasPrice: 123_750_000n });
     expect(cancel.value ?? 0n).toBe(0n);
     expect(cancel.data ?? "0x").toBe("0x");
     expect(r).toMatchObject({ status: "dropped", minedAs: "cancel", txHash: cancel.hash, note: expect.stringMatching(/no longer needed/) });
@@ -436,12 +437,12 @@ describe("ChainSender: a transaction that is not mined in time", () => {
       if (node.rpc.length === 2 && ++slept === 2) node.mine(node.rpc[0]!);
     };
     const r = okOf(await sender(node).send(tx));
-    expect(r).toMatchObject({ status: "success", txHash: node.rpc[0]!.hash, gasPrice: 1_100_000_000n });
+    expect(r).toMatchObject({ status: "success", txHash: node.rpc[0]!.hash, gasPrice: 110_000_000n });
   });
 
   it("leaves the outstanding transaction alone when the rebuild throws, and tries again next time", async () => {
     const node = new Node();
-    node.accept = (t) => ((t.gasPrice as bigint) > 1_100_000_000n ? "mine" : "hold");
+    node.accept = (t) => ((t.gasPrice as bigint) > 110_000_000n ? "mine" : "hold");
     const rounds: number[] = [];
     const r = okOf(
       await sender(node).send(async ({ round }) => {
@@ -503,22 +504,22 @@ describe("ChainSender: halting", () => {
   it("halts instead of signing above the cap", async () => {
     const node = new Node();
     node.accept = () => "hold";
-    node.network = 4n * GWEI; // 4.4 gwei, then 4.95; the next bump (5.57) is over the 5 gwei cap and 5 is not +10%
+    node.network = 800_000_000n; // 0.88 gwei, then 0.99; the next bump (1.11) is over the 1 gwei cap and 1 is not +10%
     const s = sender(node, { limits: { maxBumps: 10 } });
     const r = okOf(await s.send(tx));
-    expect(node.rpc.map((t) => t.gasPrice)).toEqual([4_400_000_000n, 4_950_000_000n]);
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([880_000_000n, 990_000_000n]);
     expect(r.halted).toMatchObject({ reason: "GAS_CAP", nonce: 7 });
   });
 
   it("uses the cap itself as the last replacement when that still outbids by 10%", async () => {
     const node = new Node();
     node.accept = () => "hold";
-    node.network = 4n * GWEI;
+    node.network = 800_000_000n;
     node.onSleep = () => {
-      node.network = 10n * GWEI; // the network ran away: 11 gwei wanted, 5 allowed, and 5 is +13.6% on 4.4
+      node.network = 2n * GWEI; // the network ran away: 2.2 gwei wanted, 1 allowed, and 1 is +13.6% on 0.88
     };
     const r = okOf(await sender(node, { limits: { maxBumps: 10 } }).send(tx));
-    expect(node.rpc.map((t) => t.gasPrice)).toEqual([4_400_000_000n, 5n * GWEI]);
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([880_000_000n, 1n * GWEI]);
     expect(r.halted).toMatchObject({ reason: "GAS_CAP" });
     expect(Math.max(...node.rpc.map((t) => Number(t.gasPrice)))).toBeLessThanOrEqual(Number(DEFAULT_LIMITS.maxGasPriceWei));
   });
@@ -550,7 +551,7 @@ describe("ChainSender: halting", () => {
 
   it("halts when the hourly fee budget is used up and resumes when the hour has passed", async () => {
     const node = new Node();
-    const cost = 120_000n * 1_100_000_000n;
+    const cost = 120_000n * 110_000_000n;
     const s = sender(node, { limits: { maxFeeWeiPerHour: cost * 2n + 1n } });
     await s.send(tx);
     await s.send(tx);
@@ -564,7 +565,7 @@ describe("ChainSender: halting", () => {
   it("counts replacements against the fee budget", async () => {
     const node = new Node();
     node.accept = () => "hold";
-    const first = 120_000n * 1_100_000_000n;
+    const first = 120_000n * 110_000_000n;
     const s = sender(node, { limits: { maxFeeWeiPerHour: first * 2n } }); // room for the send, not for a 12.5% dearer one on top
     const r = okOf(await s.send(tx));
     expect(node.rpc).toHaveLength(1);
@@ -583,16 +584,118 @@ describe("ChainSender: halting", () => {
     expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 9 });
   });
 
-  it("halts without bumping when a lower nonce that is not ours appears", async () => {
+  it("lifts a foreign-blocker halt when the foreign transaction is gone from the mempool", async () => {
+    const node = new Node();
+    const s = sender(node);
+    await s.send(tx);
+    node.mempool.set(8, node.parse(await account.signTransaction({ type: "legacy", chainId: 31337, nonce: 8, to: TO, gas: 21_000n, gasPrice: GWEI })));
+    expect(await s.send(tx)).toMatchObject({ ok: false, stage: "halted" });
+    node.mempool.clear();
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 8 });
+  });
+
+  it("does not take one lagging read for a foreign blocker, and never counts the latest nonce backwards", async () => {
+    const node = new Node();
+    const s = sender(node);
+    await s.send(tx); // latest is 8 now
+    // One backend still answers the old "latest" once: pending (8) > latest (7) for a moment.
+    const client = node.client();
+    let lag = 1;
+    const lagging = {
+      ...client,
+      getTransactionCount: async (a: { blockTag: "pending" | "latest" }) => {
+        if (a.blockTag === "latest" && lag-- > 0) return 7;
+        return (client.getTransactionCount as (x: typeof a) => Promise<number>)(a);
+      },
+    } as unknown as SenderClient;
+    const fresh = sender(node, { client: lagging });
+    const r = okOf(await fresh.send(tx));
+    expect(r).toMatchObject({ status: "success", nonce: 8 });
+    expect(fresh.state().halted).toBeNull();
+
+    // And while waiting, a backend that reports an older count does not un-mine anything.
+    node.accept = () => "hold";
+    let reads = 0;
+    const flapping = {
+      ...client,
+      getTransactionCount: async (a: { blockTag: "pending" | "latest" }) => {
+        const n = await (client.getTransactionCount as (x: typeof a) => Promise<number>)(a);
+        return a.blockTag === "latest" && ++reads % 2 === 0 ? n - 1 : n;
+      },
+    } as unknown as SenderClient;
+    node.onSleep = () => {
+      if (node.mempool.size && node.time % 6_000 < 1_500) node.mine([...node.mempool.values()][0]!);
+    };
+    const r2 = okOf(await sender(node, { client: flapping }).send(tx));
+    expect(r2).toMatchObject({ status: "success", nonce: 9 });
+  });
+
+  it("keeps a stuck halt while any sign of the transaction remains: a pending count, or a node that knows a hash", async () => {
     const node = new Node();
     node.accept = () => "hold";
-    node.onSleep = () => {
-      node.latest = 6; // a reorg or a second signer: nonce 6 is unmined again and it is not ours
+    const client = node.client();
+    let pendingLags = false;
+    let lookupsFail = false;
+    const odd = {
+      ...client,
+      getTransactionCount: async (a: { blockTag: "pending" | "latest" }) => (a.blockTag === "pending" && pendingLags ? node.latest : (client.getTransactionCount as (x: typeof a) => Promise<number>)(a)),
+      getTransaction: async (a: { hash: Hex }) => {
+        if (lookupsFail) throw notFound();
+        return (client.getTransaction as (x: typeof a) => Promise<unknown>)(a);
+      },
+    } as unknown as SenderClient;
+    const s = sender(node, { client: odd, limits: { maxBumps: 1 } });
+    expect(okOf(await s.send(tx)).halted).toMatchObject({ reason: "STUCK" });
+    // The pending count misses it, but a node still knows the hash: not gone.
+    pendingLags = true;
+    expect(await s.send(tx)).toMatchObject({ ok: false, stage: "halted" });
+    // No node answers for the hash, but the key still has a pending transaction: not gone either.
+    pendingLags = false;
+    lookupsFail = true;
+    expect(await s.send(tx)).toMatchObject({ ok: false, stage: "halted" });
+    expect(s.state().outstanding).toMatchObject({ nonce: 7 });
+  });
+
+  it("never picks a nonce below the highest one it has seen mined", async () => {
+    const node = new Node();
+    const client = node.client();
+    let lag = false;
+    const lagging = {
+      ...client,
+      getTransactionCount: async (a: { blockTag: "pending" | "latest" }) => (await (client.getTransactionCount as (x: typeof a) => Promise<number>)(a)) - (lag ? 1 : 0),
+    } as unknown as SenderClient;
+    const s = sender(node, { client: lagging });
+    expect(okOf(await s.send(tx)).nonce).toBe(7);
+    lag = true; // every backend is now one block behind: both counts say 7 again
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 8 });
+  });
+
+  it.each([
+    ["STUCK", { maxBumps: 1 }, GWEI / 10n],
+    ["GAS_CAP", { maxBumps: 10 }, 860_000_000n],
+    ["BUILD_FAILED", { maxBumps: 1 }, GWEI / 10n],
+  ] as const)("lifts a %s halt when the mempool has dropped everything signed for that nonce", async (reason, limits, network) => {
+    const node = new Node();
+    node.network = network;
+    node.accept = () => "hold";
+    const s = sender(node, { limits });
+    const build: TxBuilder = async ({ round }) => {
+      if (reason === "BUILD_FAILED" && round > 0) throw new Error("fetch failed");
+      return tx;
     };
-    const s = sender(node);
-    const r = okOf(await s.send(tx));
-    expect(node.rpc).toHaveLength(1);
-    expect(r).toMatchObject({ status: "pending", halted: { reason: "FOREIGN_BLOCKER", nonce: 6 } });
+    const first = okOf(await s.send(build));
+    expect(first.halted).toMatchObject({ reason, nonce: 7 });
+    // Still in the mempool: the halt stands.
+    expect(await s.send(tx)).toMatchObject({ ok: false, stage: "halted" });
+    // The node dropped it all: nothing pending, no hash known. The nonce is free again.
+    node.mempool.clear();
+    node.accept = () => "mine";
+    node.network = GWEI / 10n;
+    const sentBefore = node.rpc.length;
+    expect(okOf(await s.send(repay))).toMatchObject({ status: "success", nonce: 7 });
+    expect(node.rpc.slice(sentBefore).map((t) => [t.nonce, t.data])).toEqual([[7, "0xbeef"]]);
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+    expect(await s.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
   });
 });
 
@@ -620,8 +723,8 @@ describe("ChainSender: broadcast errors", () => {
     const r = okOf(await s.send(tx));
     // The first broadcast died on the way; after the timeout the same intent was replaced at the same nonce.
     expect(node.rpc.map((t) => [t.nonce, t.gasPrice])).toEqual([
-      [7, 1_100_000_000n],
-      [7, 1_237_500_000n],
+      [7, 110_000_000n],
+      [7, 123_750_000n],
     ]);
     expect(r).toMatchObject({ status: "success", txHash: node.rpc[1]!.hash, note: expect.stringMatching(/got no answer .* treated as sent/) });
     expect(await s.confirm(node.rpc[0]!.hash, 7)).toMatchObject({ status: "success", txHash: node.rpc[1]!.hash });
@@ -672,11 +775,11 @@ describe("ChainSender: broadcast errors", () => {
     const node = new Node();
     const s = sender(node, { client: failing(node, [rpcError("replacement transaction underpriced"), rpcError("replacement transaction underpriced")]) });
     const r = okOf(await s.send(tx));
-    expect(node.rpc.map((t) => t.gasPrice)).toEqual([1_100_000_000n, 1_237_500_000n, 1_392_187_500n]);
-    expect(r).toMatchObject({ status: "success", gasPrice: 1_392_187_500n });
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([110_000_000n, 123_750_000n, 139_218_750n]);
+    expect(r).toMatchObject({ status: "success", gasPrice: 139_218_750n });
 
     const capped = new Node();
-    capped.network = 4_300_000_000n; // 4.73 gwei first; one bump would be 5.32 > the 5 gwei cap
+    capped.network = 860_000_000n; // 0.946 gwei first; one bump would be 1.06 > the 1 gwei cap
     const always = { ...capped.client(), sendRawTransaction: async () => Promise.reject(rpcError("replacement transaction underpriced")) } as unknown as SenderClient;
     expect(await sender(capped, { client: always }).send(tx)).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "GAS_CAP", nonce: 7 }) });
   });
@@ -691,7 +794,7 @@ describe("ChainSender: broadcast errors", () => {
 
   it("keeps the earlier transaction when a replacement is rejected", async () => {
     const node = new Node();
-    node.accept = (t) => ((t.gasPrice as bigint) > 1_300_000_000n ? "mine" : "hold");
+    node.accept = (t) => ((t.gasPrice as bigint) > 130_000_000n ? "mine" : "hold");
     const s = sender(node, { client: failing(node, [null, rpcError("invalid sender")]) });
     const r = okOf(await s.send(tx));
     expect(r).toMatchObject({ status: "success", note: expect.stringMatching(/rejected \(.*invalid sender.*\), the earlier one stays/) });
@@ -701,15 +804,41 @@ describe("ChainSender: broadcast errors", () => {
 describe("ChainSender: collateral sales", () => {
   const sale: TxRequest = { to: TO, data: "0x5a1e", value: 0n };
 
+  it("resolves a sale Binance accepted but that never lands in public: one private re-send, then its cushion repay", async () => {
+    const node = new Node();
+    const b = binance(node, { swallow: true }); // accepted every time, relayed never
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    expect(b.broadcasts.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([
+      [7, "0x5a1e", 110_000_000n],
+      [7, "0x5a1e", 123_750_000n],
+    ]);
+    expect(node.rpc.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([[7, "0xbeef", 139_218_750n]]);
+    expect(r).toMatchObject({ status: "success", minedAs: "fallback", nonce: 7, note: expect.stringMatching(/not mined after a private re-send/) });
+    expect(r.halted).toBeUndefined();
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+  });
+
+  it("cancels in public when such a sale has no cushion repay", async () => {
+    const node = new Node();
+    const b = binance(node, { swallow: true });
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true }));
+    expect(b.broadcasts).toHaveLength(2);
+    expect(node.rpc.map((t) => [t.nonce, t.to])).toEqual([[7, account.address.toLowerCase()]]);
+    expect(r).toMatchObject({ status: "dropped", minedAs: "cancel" });
+    expect(s.state().halted).toBeNull();
+  });
+
   it("broadcasts a sale only through Binance with MEV protection, re-sends included", async () => {
     const node = new Node();
-    node.accept = (t) => ((t.gasPrice as bigint) > 1_100_000_000n ? "mine" : "hold");
+    node.accept = (t) => ((t.gasPrice as bigint) > 110_000_000n ? "mine" : "hold");
     const b = binance(node);
     const s = sender(node, { chainId: 56, binance: b.api });
     const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
     expect(b.broadcasts.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([
-      [7, "0x5a1e", 1_100_000_000n],
-      [7, "0x5a1e", 1_237_500_000n],
+      [7, "0x5a1e", 110_000_000n],
+      [7, "0x5a1e", 123_750_000n],
     ]);
     expect(node.rpc).toEqual([]); // nothing of the sale ever reached the public RPC
     expect(r).toMatchObject({ status: "success", via: "binance", minedAs: "intent", txHash: b.broadcasts[1]!.hash });
@@ -721,7 +850,7 @@ describe("ChainSender: collateral sales", () => {
     const s = sender(node, { chainId: 56, binance: b.api });
     const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
     expect(b.broadcasts.map((t) => t.data)).toEqual(["0x5a1e"]);
-    expect(node.rpc.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([[7, "0xbeef", 1_237_500_000n]]);
+    expect(node.rpc.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([[7, "0xbeef", 123_750_000n]]);
     expect(node.rpc.every((t) => t.data !== "0x5a1e")).toBe(true);
     expect(r).toMatchObject({ status: "success", via: "rpc", minedAs: "fallback", txHash: node.rpc[0]!.hash, note: expect.stringMatching(/not sent publicly/) });
   });
@@ -756,14 +885,51 @@ describe("ChainSender: collateral sales", () => {
     expect(r).toMatchObject({ status: "success", minedAs: "fallback" });
   });
 
-  it("without a Binance key on mainnet sends the cushion repay instead of the sale, or nothing", async () => {
+  it("without a Binance key on mainnet plans the sale, then sends its cushion repay instead, or nothing", async () => {
     const node = new Node();
     const s = sender(node, { chainId: 56 });
-    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    expect(s.state().sales).toBe("disabled");
+    const order: string[] = [];
+    const r = okOf(
+      await s.send(
+        async ({ round }) => {
+          order.push(`sale builder round ${round}`); // the caller's plan and simulation happen here
+          return sale;
+        },
+        {
+          mevProtect: true,
+          fallback: async () => {
+            order.push("fallback builder");
+            return repay;
+          },
+        },
+      ),
+    );
+    expect(order).toEqual(["sale builder round 0", "fallback builder"]);
     expect(node.rpc.map((t) => t.data)).toEqual(["0xbeef"]);
     expect(r).toMatchObject({ status: "success", minedAs: "fallback", note: expect.stringMatching(/never broadcast publicly/) });
+    // No cushion repay to send: nothing is signed.
     expect(await s.send(async () => sale, { mevProtect: true })).toEqual({ ok: false, stage: "aborted" });
+    expect(await s.send(async () => sale, { mevProtect: true, fallback: async () => null })).toEqual({ ok: false, stage: "aborted" });
+    // The sale itself is no longer the plan: aborted before the fallback is even asked.
+    let asked = false;
+    const gone = await s.send(async () => null, {
+      mevProtect: true,
+      fallback: async () => {
+        asked = true;
+        return repay;
+      },
+    });
+    expect(gone).toEqual({ ok: false, stage: "aborted" });
+    expect(asked).toBe(false);
     expect(node.rpc).toHaveLength(1);
+  });
+
+  it("says how sales go out: protected, public off mainnet, or disabled", () => {
+    const node = new Node();
+    expect(sender(node, { chainId: 56, binance: binance(node).api }).state().sales).toBe("protected");
+    expect(sender(node, { chainId: 31337, binance: binance(node).api }).state().sales).toBe("public");
+    expect(sender(node, { chainId: 56 }).state().sales).toBe("disabled");
   });
 });
 
@@ -782,8 +948,8 @@ describe("ChainSender: restart", () => {
     expect(saved).toEqual({
       nonce: 7,
       family: [
-        { hash: node.rpc[0]!.hash, gasPrice: "1100000000", kind: "intent", via: "rpc" },
-        { hash: node.rpc[1]!.hash, gasPrice: "1237500000", kind: "intent", via: "rpc" },
+        { hash: node.rpc[0]!.hash, gasPrice: "110000000", kind: "intent", via: "rpc" },
+        { hash: node.rpc[1]!.hash, gasPrice: "123750000", kind: "intent", via: "rpc" },
       ],
     });
     node.mine(node.rpc[1]!);
@@ -804,9 +970,9 @@ describe("ChainSender: restart", () => {
     const r = okOf(await after.send(repay)); // a new intent right after the restart
     // First the adopted nonce was settled: a cancel at 12.5% over the recorded price, at the same nonce.
     expect(node.rpc.map((t) => [t.nonce, t.to, t.gasPrice])).toEqual([
-      [7, TO, 1_100_000_000n],
-      [7, account.address.toLowerCase(), 1_237_500_000n],
-      [8, TO, 1_100_000_000n],
+      [7, TO, 110_000_000n],
+      [7, account.address.toLowerCase(), 123_750_000n],
+      [8, TO, 110_000_000n],
     ]);
     expect(node.ahead).toEqual([]);
     expect(r).toMatchObject({ status: "success", nonce: 8 });
@@ -828,18 +994,18 @@ describe("ChainSender: restart", () => {
 
   it("outbids a pending transaction it has no record of at twice the network price, capped", async () => {
     const node = new Node();
-    const unknown = node.parse(await account.signTransaction({ type: "legacy", chainId: 31337, nonce: 7, to: TO, gas: 21_000n, gasPrice: GWEI }));
+    const unknown = node.parse(await account.signTransaction({ type: "legacy", chainId: 31337, nonce: 7, to: TO, gas: 21_000n, gasPrice: GWEI / 20n }));
     node.mempool.set(7, unknown);
     node.accept = () => "mine";
     const r = await sender(node).recover();
-    expect(node.rpc.map((t) => [t.nonce, t.to, t.gasPrice])).toEqual([[7, account.address.toLowerCase(), 2n * GWEI]]);
+    expect(node.rpc.map((t) => [t.nonce, t.to, t.gasPrice])).toEqual([[7, account.address.toLowerCase(), 200_000_000n]]);
     expect(r).toMatchObject({ status: "dropped", minedAs: "cancel" });
 
     const hot = new Node();
-    hot.network = 4n * GWEI;
+    hot.network = 800_000_000n;
     hot.mempool.set(7, unknown);
     await sender(hot).recover();
-    expect(hot.rpc[0]!.gasPrice).toBe(5n * GWEI);
+    expect(hot.rpc[0]!.gasPrice).toBe(1n * GWEI);
   });
 
   it("reads a transaction the node lost across a restart as dropped: no wedge", async () => {

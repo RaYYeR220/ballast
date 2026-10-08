@@ -159,10 +159,11 @@ const envSchema = z.object({
   HTTP_PORT: portVar(8787),
   X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
-  MAX_GAS_PRICE_GWEI: numberVar(5).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
-  RECEIPT_TIMEOUT_SEC: numberVar(45).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
+  // Sized for BSC: sub-second blocks, gas at a small fraction of a gwei.
+  MAX_GAS_PRICE_GWEI: numberVar(1).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
+  RECEIPT_TIMEOUT_SEC: numberVar(20).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
   MAX_BUMPS: numberVar(4).refine((n) => Number.isInteger(n) && n >= 0 && n <= 10, "must be a whole number from 0 to 10"),
-  MAX_FEE_BNB_PER_HOUR: numberVar(0.01).refine((n) => Number.isFinite(n) && n > 0 && n <= 10, "must be an amount of BNB, above 0 and at most 10"),
+  MAX_FEE_BNB_PER_HOUR: numberVar(0.003).refine((n) => Number.isFinite(n) && n > 0 && n <= 10, "must be an amount of BNB, above 0 and at most 10"),
   DRY_RUN: flagVar(true),
 });
 

@@ -31,7 +31,7 @@ describe("loadConfig", () => {
     expect(c.httpPort).toBe(8787);
     expect(c.x402DailyCapUsd).toBe(0.5);
     expect(c.minBnbBalance).toBe(0.003);
-    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([5, 45, 4, 0.01]);
+    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([1, 20, 4, 0.003]);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
     expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);

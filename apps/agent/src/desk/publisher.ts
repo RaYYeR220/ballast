@@ -329,6 +329,9 @@ interface Last {
   refAt: number;
 }
 
+/** A posted overlay with under 30 min of validity left (or none): it has to be renewed whatever else is going on. */
+const expiringSoon = (last: Last, at: number) => last.postedAt !== 0 && last.validUntil - at < 1800;
+
 function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: number): string | null {
   if (last.postedAt === 0) return "first post";
   if (o.flags !== last.flags) return `flags ${last.flags} -> ${o.flags}`;
@@ -340,7 +343,7 @@ function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: numb
     if (devBps(o.referencePrice, last.refPrice) > REF_MOVE_BPS) return "reference moved";
   }
   if (at - last.postedAt >= HEARTBEAT_SEC) return "heartbeat";
-  if (last.validUntil - at < 1800) return "expiring";
+  if (expiringSoon(last, at)) return "expiring";
   return null;
 }
 
@@ -356,6 +359,11 @@ export interface PublisherOptions {
   earnings: () => Promise<EarningsSchedule>;
   /** Shared low-BNB alert (one per process). */
   gas?: GasWatch;
+  /**
+   * True while something more urgent wants the sender (the keeper's `shieldBusy`): the post waits for the
+   * next tick, unless an overlay is about to expire.
+   */
+  busy?: () => boolean;
   log?: (line: string) => void;
 }
 
@@ -370,7 +378,7 @@ export interface PublishReport {
   busy?: true;
 }
 
-type Entry = { symbol: string; overlay: Built["overlay"]; reason: string };
+type Entry = { symbol: string; overlay: Built["overlay"]; reason: string; expiring: boolean };
 
 export class Publisher {
   readonly #o: PublisherOptions;
@@ -444,10 +452,16 @@ export class Publisher {
       const built = buildOverlay(t, bStock.value, ondo, snap, nextEarnings);
       for (const f of built.findings) await finding(t.symbol, f);
       const reason = dueReason(last, built.overlay, snap.at, refRefreshSec(snap.params.maxRefAge));
-      if (reason) due.push({ symbol: t.symbol, overlay: built.overlay, reason });
+      if (reason) due.push({ symbol: t.symbol, overlay: built.overlay, reason, expiring: expiringSoon(last, snap.at) });
     }
     this.#findings = seen;
     if (due.length === 0) return report;
+    // One transaction of the key is in flight at a time: a shield goes first. An expiring overlay cannot
+    // wait, though (a stale overlay blocks every restore).
+    if (this.#o.busy?.() && !due.some((e) => e.expiring)) {
+      for (const e of due) report.skipped[e.symbol] = "held back: the keeper has a shield in progress";
+      return report;
+    }
 
     // Simulate the batch; if it reverts, find the symbols that revert alone and post the rest.
     let batch = due;

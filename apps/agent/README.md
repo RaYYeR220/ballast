@@ -35,10 +35,10 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy |
 | `X402_DAILY_CAP_USD` | `0.5` | daily ceiling for paid data |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
-| `MAX_GAS_PRICE_GWEI` | `5` | the sender never signs above this gas price |
-| `RECEIPT_TIMEOUT_SEC` | `45` | wait for a receipt this long before replacing a transaction |
+| `MAX_GAS_PRICE_GWEI` | `1` | the sender never signs above this gas price (BSC gas is a small fraction of a gwei) |
+| `RECEIPT_TIMEOUT_SEC` | `20` | wait for a receipt this long before replacing a transaction (BSC blocks are sub-second) |
 | `MAX_BUMPS` | `4` | replacement rounds per nonce before the sender halts |
-| `MAX_FEE_BNB_PER_HOUR` | `0.01` | fee budget (gas limit x gas price of everything signed) per rolling hour |
+| `MAX_FEE_BNB_PER_HOUR` | `0.003` | fee budget (gas limit x gas price of everything signed) per rolling hour |
 | `DATA_DIR` | `apps/agent/var/` | feed and other desk state; outside git |
 | `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
 | `DRY_RUN` | `true` | simulate every write, broadcast nothing |
@@ -80,8 +80,9 @@ The same flag updates endpoints later. Running without `--agent-id` always mints
 - Shield amounts for the restore cycle come from the receipt's `Shielded` logs. Repays are sized against
   the debt with a basis point of accrual, and a shortfall under max(0.05 loan units, 0.1% of the debt)
   is treated as dust: no transaction.
-- `shieldBusy()` on the keeper is true while a shield is pending or planned in a lead window; other
-  loops hold their own sends back on it.
+- `shieldBusy()` on the keeper is true while a shield is pending or planned in a lead window (not while
+  it merely waits out a back-off with more than 30 min to the close). The publisher and the guardian
+  hold their own sends back on it; the publisher still renews an overlay that is about to expire.
 
 ## How the desk sends
 
@@ -92,9 +93,14 @@ The same flag updates endpoints later. Running without `--agent-id` always mints
 - When that is not enough, or the key cannot pay, the hourly fee budget is used up or a transaction the
   desk did not sign is pending for the key, the sender halts: nothing more is signed until the chain
   shows the way is clear. The feed shows it (`alert`, and `refused` with `SENDER_HALTED`, both with
-  `data.sender = "halted"`) and it resumes by itself.
+  `data.sender = "halted"`). It resumes by itself once the nonce is mined, or once nothing of the key is
+  pending and no node knows the stuck transaction any more. **If a halt alert does not clear, restart
+  the desk**: at startup it takes over whatever is pending for the key and cancels it.
 - Collateral sales are broadcast only through the Binance MEV-protected endpoint, never to the public
-  mempool. If that endpoint fails, the cushion repay takes the sale's nonce instead.
+  mempool. A sale that is not mined gets one more private attempt; after that, or if the endpoint
+  fails, its nonce is settled in public by the cushion repay (or a cancel) and the sale is reported as
+  not sent (`refused`, `SaleNotSent`) and put on hold. Without a Binance key on mainnet sales are
+  disabled (one `alert` says so) and shields repay from the cushion only.
 - The outstanding nonce and every hash signed for it are kept in `DATA_DIR/sender.json`, so a restart
   picks the nonce up and settles it before sending anything new.
 - One sender per key. Nothing else may sign with the desk key while the desk runs: the Studio ERC-8183

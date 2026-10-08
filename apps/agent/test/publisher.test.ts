@@ -579,6 +579,58 @@ describe("Publisher", () => {
       expect((await h.publisher.tick()).busy).toBeUndefined();
     });
 
+    it("holds its post back while the keeper has a shield in progress, unless an overlay is about to expire", async () => {
+      h = await harness([ticker("NVDA")]);
+      let busy = true;
+      const p = new Publisher({
+        deployment: d,
+        reads: { snapshot: async () => ({ at: h.state.at, session: h.state.session, params, tickers: h.state.tickers }) },
+        rwa: { assetStatus: async () => trading, dynamic: async () => dynamic() },
+        sender: h.sender,
+        feed: h.feed,
+        earnings: async () => new Map(),
+        busy: () => busy,
+      });
+      const r = await p.tick();
+      expect(r.posted).toEqual([]);
+      expect(r.skipped).toEqual({ NVDA: "held back: the keeper has a shield in progress" });
+      expect(h.sender.sims).toEqual([]);
+      expect(h.feed.list()).toEqual([]);
+      busy = false;
+      h.state.at += 60;
+      expect((await p.tick()).posted).toEqual(["NVDA"]);
+
+      // An overlay within 30 min of expiring is posted even while the keeper is busy: a stale overlay blocks restores.
+      busy = true;
+      const posted = { validUntil: h.state.at + 1700, nextEarnings: 0, flags: 0, ondoMultiplier: 1_004n * 10n ** 15n, referencePrice: 0n, postedAt: h.state.at - 3600 };
+      const fresh = await harness([ticker("NVDA", { overlay: posted })], h.state.at);
+      const p2 = new Publisher({
+        deployment: d,
+        reads: { snapshot: async () => ({ at: fresh.state.at, session: fresh.state.session, params, tickers: fresh.state.tickers }) },
+        rwa: { assetStatus: async () => trading, dynamic: async () => dynamic() },
+        sender: fresh.sender,
+        feed: fresh.feed,
+        earnings: async () => new Map(),
+        busy: () => busy,
+      });
+      expect((await p2.tick()).posted).toEqual(["NVDA"]);
+
+      // The same holds when another reason comes first (here the heartbeat): what counts is the time left.
+      const late = { ...posted, validUntil: h.state.at + 1000, postedAt: h.state.at - HEARTBEAT_SEC - 800 };
+      const third = await harness([ticker("NVDA", { overlay: late })], h.state.at);
+      const p3 = new Publisher({
+        deployment: d,
+        reads: { snapshot: async () => ({ at: third.state.at, session: third.state.session, params, tickers: third.state.tickers }) },
+        rwa: { assetStatus: async () => trading, dynamic: async () => dynamic() },
+        sender: third.sender,
+        feed: third.feed,
+        earnings: async () => new Map(),
+        busy: () => true,
+      });
+      expect((await p3.tick()).posted).toEqual(["NVDA"]);
+      expect(third.feed.list({ kind: "publish" })[0]!.data).toMatchObject({ reasons: { NVDA: "heartbeat" } });
+    });
+
     it("alerts once when the desk key runs low on BNB", async () => {
       h = await harness([ticker("NVDA")]);
       h.sender.balance = async () => 10n ** 15n;
