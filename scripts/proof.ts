@@ -1,4 +1,4 @@
-// Renders PROOF.md from data, never from memory:
+// Renders PROOF.md from data files:
 //   contracts/deployments/56.json   addresses written by the mainnet deploy script (absent until it has run)
 //   data/proof-txs.json             mainnet transactions, added by hand as they happen: { label, txHash, at, note }[]
 //   data/test-counts.json           test results, updated by hand after each full run
