@@ -9,53 +9,78 @@ public endpoints.
 Only the read API is public, through Caddy over HTTPS. The Agent Studio A2A/MCP faces and the Ballast MCP
 server are not started by this unit; if you run them, they bind to `127.0.0.1` and stay unproxied.
 
-## 1. Node 22, pnpm and a service user
+## 1. Node 22, pnpm and two users
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs git
 sudo corepack enable                       # provides the pnpm version pinned in package.json
-sudo useradd --system --home /opt/ballast --shell /usr/sbin/nologin ballast
+# runs the desk: no home, no shell, owns nothing but its state directory
+sudo useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin ballast
+# fetches and installs the code: its own home for the pnpm store and caches, never runs the desk
+sudo useradd --system --create-home --home-dir /var/lib/ballast-build --shell /usr/sbin/nologin ballast-build
 ```
+
+The split keeps the running desk from ever writing its own code: the service user can read `/opt/ballast`
+and write `/var/lib/ballast`, nothing else, and the user that can write the code never holds the key.
 
 ## 2. Code
 
 ```bash
-sudo git clone <repository-url> /opt/ballast
-sudo chown -R ballast:ballast /opt/ballast
+sudo install -d -o ballast-build -g ballast-build /opt/ballast
+sudo -u ballast-build -H git clone <repository-url> /opt/ballast
 cd /opt/ballast
-sudo -u ballast corepack pnpm install --frozen-lockfile
+sudo -u ballast-build -H corepack pnpm install --frozen-lockfile --ignore-scripts
+sudo chown -R root:root /opt/ballast       # from here on the code is root-owned and read-only
 ```
+
+`--ignore-scripts` runs no dependency install script as any user on this host. The only dependency that
+has one is esbuild (pulled in by `tsx`), and it works without it: its platform binary ships as an optional
+dependency. `--frozen-lockfile` installs exactly what `pnpm-lock.yaml` pins.
 
 `contracts/deployments/56.json` must be in the checkout (it is committed after the mainnet deploy). Check
 the deployment against the chain before anything runs on it:
 
 ```bash
-sudo -u ballast env BSC_RPC_URL=<rpc> PUBLISHER_ADDRESS=<desk address> PUBLISHER_AGENT_ID=<agent id> \
-  corepack pnpm verify:onchain
+sudo -u ballast-build -H env BSC_RPC_URL=<rpc> PUBLISHER_ADDRESS=<desk address> PUBLISHER_AGENT_ID=<agent id> \
+  VERIFY_SKIP_BYTECODE=1 corepack pnpm verify:onchain
 ```
 
-It checks code at every address, the wiring between the contracts, the Session Oracle params and tickers
-against `config/bsc-mainnet.json`, the publisher, the guardian limits and `guardianStartJobId`, prints
-explorer links and exits non-zero on any mismatch.
+It checks code at every address, the external addresses against `config/bsc-mainnet.json`, the wiring
+between the contracts, the Session Oracle params and tickers, the publisher and that its ERC-8004 identity
+belongs to the desk key (owner or agent wallet), the guardian limits and `guardianStartJobId`, and that the
+on-chain calendar agrees with the desk's on the current session. It prints explorer links and exits non-zero
+on any mismatch.
+
+Run it once without `VERIFY_SKIP_BYTECODE` on the machine that built and deployed the contracts
+(`pnpm contracts:build` first). There it also compares the runtime bytecode of all eight contracts with
+the forge artifacts: same length, immutable ranges zeroed on both sides (they are constructor arguments,
+covered by the wiring checks), trailing CBOR metadata cut, then keccak256 of the rest must match.
 
 ## 3. Secrets and settings
 
 ```bash
 sudo install -d -m 0750 -o root -g ballast /etc/ballast
-sudo install -m 0640 -o root -g ballast deploy/agent.env.example /etc/ballast/agent.env
+sudo install -m 0600 -o root -g root deploy/agent.env.example /etc/ballast/agent.env
 sudoedit /etc/ballast/agent.env
 ```
 
-Every variable is documented in the file. For mainnet set at least `CHAIN_ID=56`, `BSC_RPC_URL`, the signer
-(`AGENT_PRIVATE_KEY`, or `AGENT_KEYSTORE_PATH` plus its password with the keystore in `/etc/ballast/`),
-`DATA_DIR=/var/lib/ballast`, `DX_PROBE_FILE=/var/lib/ballast/dx-probe.jsonl` and `WEB_ORIGIN`. Leave
-`DRY_RUN` unset (true) for the first start, read the feed, then set `DRY_RUN=false`.
+`agent.env` is `root:root 0600`: systemd reads it as root and hands the variables to the process, so the
+desk user cannot read (or leak) the file itself. A keystore, if you use one instead of `AGENT_PRIVATE_KEY`,
+is read by the desk and goes to `/etc/ballast/` as `root:ballast 0640`.
+
+Every variable is documented in the file. For mainnet set at least `CHAIN_ID=56`, `BSC_RPC_URL` (https), the
+signer and `WEB_ORIGIN`; `DATA_DIR=/var/lib/ballast` and `DX_PROBE_FILE` are pre-filled. Leave `DRY_RUN`
+unset (true) for the first start, read the feed, then set `DRY_RUN=false`.
+
+The desk refuses to start when `DATA_DIR` is not writable (it test-writes at startup and exits non-zero),
+when `HTTP_HOST` or `AGENT_BIND_HOST` is not loopback on chain 56, when the RPC or the paid-data URL is
+plain http on chain 56, and when `guardian.json` in `DATA_DIR` was written for another chain or guardian.
 
 The desk key needs BNB for gas; the feed raises an alert below `MIN_BNB_BALANCE`. Paid earnings data is
 off until `X402_EARNINGS_URL` is set; the key then also needs the stablecoin the endpoint is paid in, on
-the network it is paid on (`X402_NETWORKS`), and spend stays under `X402_MAX_PRICE_USD` per call and
-`X402_DAILY_CAP_USD` per day.
+the network it is paid on (`X402_NETWORKS`), and spend stays under `X402_MAX_PRICE_USD` per call (at most
+0.05) and `X402_DAILY_CAP_USD` per day (at most 0.5).
 
 ## 4. The service
 
@@ -72,9 +97,12 @@ backs off, and the API stays up through RPC or Binance outages. `systemctl stop`
 stops scheduling, lets a transaction waiting for its receipt finish (up to `TimeoutStopSec`), then flushes
 the ledger and the guardian cursor.
 
-State lives in `/var/lib/ballast`: `feed.jsonl` (audit feed), `ledger.json`, `guardian.json` (scan cursor
-and open jobs), `evidence/<jobId>.json` (submitted guardian evidence; its keccak256 is the on-chain
-deliverable), `earnings-paid.json`, `notes.jsonl`. Back it up; never delete `evidence/` for open jobs.
+State lives in `/var/lib/ballast` (the unit's `StateDirectory`, created by systemd for the `ballast`
+user): `feed.jsonl` (audit feed), `ledger.json`, `guardian.json` (scan cursor and open jobs, stamped with
+the chain id and guardian address), `evidence/<jobId>.json` (submitted guardian evidence; its keccak256 is
+the on-chain deliverable), `earnings-paid.json`, `notes.jsonl`. Back it up; never delete `evidence/` for
+open jobs. After a redeploy of the contracts move the old directory away: the desk will not load state
+that belongs to another guardian.
 
 ## 5. HTTPS with Caddy
 
@@ -123,7 +151,10 @@ sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 
 ```bash
 cd /opt/ballast
-sudo -u ballast git pull --ff-only
-sudo -u ballast corepack pnpm install --frozen-lockfile
-sudo systemctl restart ballast-agent
+sudo systemctl stop ballast-agent
+sudo chown -R ballast-build:ballast-build /opt/ballast
+sudo -u ballast-build -H git pull --ff-only
+sudo -u ballast-build -H corepack pnpm install --frozen-lockfile --ignore-scripts
+sudo chown -R root:root /opt/ballast
+sudo systemctl start ballast-agent
 ```

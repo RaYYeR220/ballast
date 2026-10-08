@@ -1,5 +1,6 @@
 # Ballast Risk Desk: publisher, keeper, guardian, x402 data and the read API in one process.
-# Install: see deploy/README.md. Secrets live only in /etc/ballast/agent.env (root:ballast, 0640).
+# Install: see deploy/README.md. Secrets live only in /etc/ballast/agent.env (root:root, 0600; systemd reads
+# it as root). The code under /opt/ballast is root-owned and read-only to the service user.
 [Unit]
 Description=Ballast Risk Desk
 After=network-online.target
@@ -19,8 +20,11 @@ RestartSec=10
 # SIGTERM stops the loops, lets a send waiting for its receipt finish, then flushes the ledger and state.
 KillSignal=SIGTERM
 TimeoutStopSec=180
-# Desk state (feed, ledger, guardian cursor, evidence): /var/lib/ballast, set DATA_DIR to it.
+# Desk state (feed, ledger, guardian cursor, evidence) lives in the state directory /var/lib/ballast, which
+# systemd creates for the service user. agent.env sets DATA_DIR to it; the default below covers an env file
+# that leaves it out. The desk test-writes DATA_DIR at startup and exits non-zero if it cannot.
 StateDirectory=ballast
+Environment=DATA_DIR=/var/lib/ballast
 StateDirectoryMode=0750
 UMask=0027
 
