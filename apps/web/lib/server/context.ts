@@ -4,6 +4,7 @@ import { bsc, bscFork } from "@/lib/chains";
 import type { AppChainId } from "@/lib/app-config";
 import { resolveDeployment, type DeploymentStatus } from "./deployment";
 import { serverEnv, type ServerEnv } from "./env";
+import { LIMITS } from "./limits";
 
 const DEPLOYMENT_TTL_MS = 60_000;
 
@@ -32,7 +33,8 @@ export function publicClient(e: ServerEnv = env()): PublicClient {
   if (clientMemo?.key === key) return clientMemo.v;
   const v = createPublicClient({
     chain: chainFor(e.chainId, e.rpcUrl),
-    transport: http(e.rpcUrl, { timeout: 12_000, retryCount: 1, batch: { batchSize: 50, wait: 8 } }),
+    // every JSON-RPC request is aborted after LIMITS.rpcTimeoutMs; a batch carries at most 50 calls
+    transport: http(e.rpcUrl, { timeout: LIMITS.rpcTimeoutMs, retryCount: 1, batch: { batchSize: 50, wait: 8 } }),
   }) as PublicClient;
   clientMemo = { key, v };
   return v;

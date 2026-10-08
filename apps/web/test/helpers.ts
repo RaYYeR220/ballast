@@ -58,14 +58,21 @@ type Answer = unknown | ((o: { address: string; args: readonly unknown[] }) => u
  * A ReadClient answering readContract by function name ("fn" or "fn@0xaddress" in lower case). A value that
  * is an Error is thrown. Unmocked reads throw, so a test never passes on a read it did not expect.
  */
-export function fakeReads(answers: Record<string, Answer>, o: { code?: Record<string, Hex>; timestamp?: bigint; blockNumber?: bigint } = {}) {
+export function fakeReads(
+  answers: Record<string, Answer>,
+  o: { code?: Record<string, Hex> | ((address: string) => Hex); timestamp?: bigint; blockNumber?: bigint } = {},
+) {
   const reads: { address: string; functionName: string; args: readonly unknown[] }[] = [];
-  const blockNumber = o.blockNumber ?? 1000n;
-  const timestamp = o.timestamp ?? 1_791_300_000n;
+  /** the head the client reports; tests move it to mine a block */
+  const chain = { blockNumber: o.blockNumber ?? 1000n, timestamp: o.timestamp ?? 1_791_300_000n, headReads: 0 };
   const client = {
-    getBlock: async () => ({ number: blockNumber, timestamp }),
-    getBlockNumber: async () => blockNumber,
-    getCode: async ({ address }: { address: string }) => o.code?.[address.toLowerCase()] ?? "0x",
+    // `headReads` counts reads of the latest block only; a read pinned to a block number is not a head read
+    getBlock: async (args?: { blockNumber?: bigint }) => {
+      if (args?.blockNumber === undefined) chain.headReads++;
+      return { number: args?.blockNumber ?? chain.blockNumber, timestamp: chain.timestamp };
+    },
+    getBlockNumber: async () => chain.blockNumber,
+    getCode: async ({ address }: { address: string }) => (typeof o.code === "function" ? o.code(address) : (o.code?.[address.toLowerCase()] ?? "0x")),
     multicall: async () => {
       throw new Error("multicall is not mocked");
     },
@@ -73,13 +80,29 @@ export function fakeReads(answers: Record<string, Answer>, o: { code?: Record<st
       reads.push({ address, functionName, args });
       const key = `${functionName}@${address.toLowerCase()}`;
       const hit = key in answers ? answers[key] : functionName in answers ? answers[functionName] : new Error(`unmocked read ${key}`);
-      const v = typeof hit === "function" ? (hit as (o: { address: string; args: readonly unknown[] }) => unknown)({ address, args }) : hit;
+      const v = typeof hit === "function" ? await (hit as (o: { address: string; args: readonly unknown[] }) => unknown)({ address, args }) : hit;
       if (v instanceof Error) throw v;
       return v;
     },
   };
-  return { client: client as never, reads };
+  return { client: client as never, reads, chain };
 }
+
+const ZERO = "0x0000000000000000000000000000000000000000" as const;
+
+/** What CushionVault.cover(user, key) returns when no cover is open. */
+export const NO_COVER = {
+  venue: 0,
+  mp: { loanToken: ZERO, collateralToken: ZERO, oracle: ZERO, irm: ZERO, lltv: 0n },
+  vDebt: ZERO,
+  token: ZERO,
+  symbol: `0x${"00".repeat(32)}`,
+  keeper: ZERO,
+  capPerDay: 0n,
+  balance: 0n,
+  dayStart: 0n,
+  usedToday: 0n,
+} as const;
 
 /** EIP-1167 runtime code of a minimal proxy pointing at `impl`. */
 export const cloneCode = (impl: Address): Hex => `0x363d3d373d3d3d363d73${impl.slice(2).toLowerCase()}5af43d82803e903d91602b57fd5bf3`;

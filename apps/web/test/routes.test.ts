@@ -9,7 +9,7 @@ import { handleAccounts, handleLoans, handleMarkets, handleToken, summarizeDefi 
 import { handleRwaStatus, readRwaStatus } from "../lib/server/handlers/rwa";
 import { clientKey, rateLimiter } from "../lib/server/ratelimit";
 import { listaCoverKey, venusCoverKey } from "../lib/server/reads";
-import { addr, cloneCode, DEPLOYMENT, fakeReads } from "./helpers";
+import { addr, cloneCode, DEPLOYMENT, fakeReads, NO_COVER } from "./helpers";
 
 const TUE_1100 = 1_791_298_800n; // Tue 6 Oct 2026 11:00 New York, regular session
 const CLOSE = 1_791_316_800; // Tue 16:00
@@ -88,7 +88,7 @@ describe("resolveDeployment", () => {
 describe("ttlCache", () => {
   it("caches a value for its TTL, shares one request in flight and never caches a failure", async () => {
     let t = 0;
-    const c = ttlCache<number>(1000, () => t);
+    const c = ttlCache<number>(1000, { clock: () => t });
     const load = vi.fn(async () => 7);
     expect(await Promise.all([c.get("k", load), c.get("k", load)])).toEqual([7, 7]);
     expect(load).toHaveBeenCalledTimes(1);
@@ -205,7 +205,8 @@ function paramsFor({ args }: { args: readonly unknown[] }) {
 const accountAnswers = () => ({
   ...oracleAnswers(),
   accountsOf: [ACCOUNT],
-  coverCount: 0n,
+  idToMarketParams: paramsFor,
+  cover: NO_COVER,
   owner: OWNER,
   keeper: KEEPER,
   symbol: stringToHex("NVDA", { size: 32 }),
@@ -239,7 +240,7 @@ describe("GET /api/accounts", () => {
     const { client } = fakeReads(accountAnswers(), { timestamp: TUE_1100, code: { [ACCOUNT.toLowerCase()]: cloneCode(DEPLOYMENT.listaImpl) } });
     const res = await handleAccounts(new Request(`http://x/api/accounts?owner=${OWNER}`), OK, client);
     const body = await res.json();
-    expect(body).toMatchObject({ status: "ok", chainId: 31337, blockNumber: "1000", covers: [], errors: [] });
+    expect(body).toMatchObject({ status: "ok", chainId: 31337, blockNumber: "1000", total: 1, offset: 0, more: false, covers: [], errors: [] });
     const a = body.accounts[0];
     expect(a).toMatchObject({
       address: ACCOUNT,

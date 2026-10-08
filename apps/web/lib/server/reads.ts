@@ -1,15 +1,18 @@
 /* Chain reads behind the app's routes: a wallet's Ballast accounts and covers, its own Lista/Venus loans (for a
    cover), the configured markets with their live parameters, and one token's balance and allowance. Every read
-   in one answer is pinned to one block. */
+   in one answer is pinned to one block, and every answer is bounded: by the configuration (markets, tickers,
+   tokens) or by LIMITS, never by how much state exists on chain or by a range the caller supplies. */
 import { listaDebt } from "@ballast/risk";
 import {
   accountState,
+  bytes32ToSymbol,
   comptrollerAbi,
+  cushionVaultAbi,
   listAccounts,
-  listCovers,
   moolahAbi,
   oracleSnapshot,
   vTokenAbi,
+  venueName,
   venusOracleAbi,
   type Deployment,
   type ExternalAddresses,
@@ -19,17 +22,62 @@ import {
 import { encodeAbiParameters, erc20Abi, formatUnits, getAddress, keccak256, type Address, type Hex } from "viem";
 import { deleveragePathFor, MARKETS, tokenSymbol, type CatalogMarket } from "@/lib/markets";
 import type { AccountView, CoverView, LoanView, MarketParamsView, MarketView, TokenView } from "@/lib/views";
+import { LIMITS } from "./limits";
 import { shortMessage } from "./simulate";
 import { accountView } from "./views";
 
 type Client = ReadClient;
 
-async function head(c: Client) {
-  const b = await c.getBlock({ blockTag: "latest" });
-  return { blockNumber: b.number as bigint, at: Number(b.timestamp) };
+export interface Head {
+  blockNumber: bigint;
+  /** unix seconds of that block */
+  at: number;
 }
 
-const decimalsMemo = new Map<string, number>();
+const heads = new WeakMap<object, { at: number; v?: Head; inflight?: Promise<Head> }>();
+
+/**
+ * The head block, re-read at most every LIMITS.headTtlMs per client with one request in flight. Per-wallet
+ * answers are cached by this block, so identical requests inside one head cost one round of reads.
+ */
+export function head(c: Client, clock: () => number = Date.now): Promise<Head> {
+  const memo = heads.get(c);
+  if (memo?.v && clock() - memo.at < LIMITS.headTtlMs) return Promise.resolve(memo.v);
+  if (memo?.inflight) return memo.inflight;
+  const inflight = c
+    .getBlock({ blockTag: "latest" })
+    .then((b) => {
+      const v = { blockNumber: b.number as bigint, at: Number(b.timestamp) };
+      heads.set(c, { at: clock(), v });
+      return v;
+    })
+    .catch((err) => {
+      heads.delete(c);
+      throw err;
+    });
+  heads.set(c, { at: memo?.at ?? 0, v: memo?.v, inflight });
+  return inflight;
+}
+
+/** A memo map that never grows past LIMITS.memoEntries (oldest dropped first). */
+function boundedMemo<V>() {
+  const m = new Map<string, V>();
+  return {
+    get: (k: string) => m.get(k),
+    set(k: string, v: V) {
+      m.set(k, v);
+      while (m.size > LIMITS.memoEntries) m.delete(m.keys().next().value as string);
+    },
+  };
+}
+
+async function mapLimit<T, R>(items: readonly T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += n) out.push(...(await Promise.all(items.slice(i, i + n).map(fn))));
+  return out;
+}
+
+const decimalsMemo = boundedMemo<number>();
 async function decimalsOf(c: Client, token: Address): Promise<number> {
   const k = token.toLowerCase();
   const hit = decimalsMemo.get(k);
@@ -39,7 +87,9 @@ async function decimalsOf(c: Client, token: Address): Promise<number> {
   return d;
 }
 
-const mpView = (mp: { loanToken: Address; collateralToken: Address; oracle: Address; irm: Address; lltv: bigint }): MarketParamsView => ({
+type Mp = { loanToken: Address; collateralToken: Address; oracle: Address; irm: Address; lltv: bigint };
+
+const mpView = (mp: Mp): MarketParamsView => ({
   loanToken: mp.loanToken,
   collateralToken: mp.collateralToken,
   oracle: mp.oracle,
@@ -47,70 +97,8 @@ const mpView = (mp: { loanToken: Address; collateralToken: Address; oracle: Addr
   lltv: mp.lltv.toString(),
 });
 
-// ----------------------------------------------------------------- accounts
-
-export async function readAccounts(c: Client, d: Deployment, owner: Address) {
-  const { blockNumber, at } = await head(c);
-  const errors: string[] = [];
-  const [addrs, coverEntries] = await Promise.all([
-    listAccounts(c, d, { owner, blockNumber }),
-    listCovers(c, d, { user: owner, blockNumber }),
-  ]);
-  const states = await Promise.all(
-    addrs.map((a) =>
-      accountState(c, d, a, { blockNumber }).catch((err) => {
-        errors.push(`account ${a} could not be read: ${shortMessage(err)}`);
-        return null;
-      }),
-    ),
-  );
-  const symbols = [...new Set(states.flatMap((st) => (st ? [st.symbol] : [])))];
-  const oracles = new Map<string, OracleSnapshot | string>();
-  await Promise.all(
-    symbols.map(async (sym) => {
-      try {
-        oracles.set(sym, await oracleSnapshot(c, d, sym, { blockNumber }));
-      } catch (err) {
-        oracles.set(sym, `the Session Oracle could not be read for ${sym}: ${shortMessage(err)}`);
-      }
-    }),
-  );
-  const accounts: AccountView[] = states.flatMap((st) => {
-    if (!st) return [];
-    const o = oracles.get(st.symbol);
-    return [typeof o === "string" || o === undefined ? accountView(st, null, o) : accountView(st, o)];
-  });
-  const covers: CoverView[] = await Promise.all(
-    coverEntries.map(async (e) => {
-      const cv = e.cover;
-      const tokenDecimals = await decimalsOf(c, cv.token);
-      const label =
-        cv.venue === "lista"
-          ? `Lista ${tokenSymbol(cv.marketParams.collateralToken) ?? `${cv.symbol}B`} / ${tokenSymbol(cv.marketParams.loanToken) ?? "loan"}`
-          : `Venus ${cv.symbol}B / ${tokenSymbol(cv.token) ?? "loan"}`;
-      return {
-        user: e.user,
-        key: e.key,
-        venue: cv.venue,
-        symbol: cv.symbol,
-        token: cv.token,
-        tokenSymbol: tokenSymbol(cv.token) ?? "tokens",
-        tokenDecimals,
-        keeper: cv.keeper,
-        capPerDay: cv.capPerDay.toString(),
-        balance: cv.balance.toString(),
-        dayStart: cv.dayStart,
-        usedToday: cv.usedToday.toString(),
-        label,
-      };
-    }),
-  );
-  return { blockNumber: blockNumber.toString(), at, accounts, covers, errors };
-}
-
-// -------------------------------------------------------------------- loans
-
-export const listaCoverKey = (mp: { loanToken: Address; collateralToken: Address; oracle: Address; irm: Address; lltv: bigint }): Hex =>
+/** CushionVault cover key of a Lista loan: keccak256(abi.encode(VENUE_LISTA, marketParams)). */
+export const listaCoverKey = (mp: Mp): Hex =>
   keccak256(
     encodeAbiParameters(
       [{ type: "uint8" }, { type: "tuple", components: [{ type: "address" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "uint256" }] }],
@@ -118,10 +106,11 @@ export const listaCoverKey = (mp: { loanToken: Address; collateralToken: Address
     ),
   );
 
+/** CushionVault cover key of a Venus loan: keccak256(abi.encode(VENUE_VENUS, vDebt)). */
 export const venusCoverKey = (vDebt: Address): Hex => keccak256(encodeAbiParameters([{ type: "uint8" }, { type: "address" }], [2, vDebt]));
 
-const paramsMemo = new Map<string, { loanToken: Address; collateralToken: Address; oracle: Address; irm: Address; lltv: bigint }>();
-async function listaParams(c: Client, moolah: Address, id: Hex) {
+const paramsMemo = boundedMemo<Mp>();
+async function listaParams(c: Client, moolah: Address, id: Hex): Promise<Mp> {
   const hit = paramsMemo.get(id);
   if (hit) return hit;
   const r = await c.readContract({ address: moolah, abi: moolahAbi, functionName: "idToMarketParams", args: [id] });
@@ -130,6 +119,114 @@ async function listaParams(c: Client, moolah: Address, id: Hex) {
   paramsMemo.set(id, mp);
   return mp;
 }
+
+// ----------------------------------------------------------------- accounts
+
+/**
+ * The wallet's covers on the configured markets, read by key. A cover's key is derived from its market, so each
+ * is one `cover(user, key)` read: the vault's whole cover list (which anyone can grow) is never walked.
+ */
+export async function readCovers(c: Client, d: Deployment, user: Address, blockNumber: bigint, errors: string[]): Promise<CoverView[]> {
+  const keys = new Set<Hex>();
+  await Promise.all(
+    MARKETS.map(async (m) => {
+      try {
+        if (m.lista) keys.add(listaCoverKey(await listaParams(c, d.external.moolah, m.lista.marketId)));
+        else if (m.venus) keys.add(venusCoverKey(m.venus.vDebt));
+      } catch (err) {
+        errors.push(`the cover on ${m.label} could not be looked up: ${shortMessage(err)}`);
+      }
+    }),
+  );
+  const found = await Promise.all(
+    [...keys].map(async (key) => {
+      try {
+        const cv = await c.readContract({ address: d.cushionVault, abi: cushionVaultAbi, blockNumber, functionName: "cover", args: [user, key] });
+        return cv.venue === 0 ? null : { key, cv };
+      } catch (err) {
+        errors.push(`a cover could not be read: ${shortMessage(err)}`);
+        return null;
+      }
+    }),
+  );
+  return Promise.all(
+    found
+      .flatMap((f) => (f ? [f] : []))
+      .map(async ({ key, cv }): Promise<CoverView> => {
+        const venue = venueName(cv.venue);
+        const symbol = bytes32ToSymbol(cv.symbol);
+        const label =
+          venue === "lista"
+            ? `Lista ${tokenSymbol(cv.mp.collateralToken) ?? `${symbol}B`} / ${tokenSymbol(cv.mp.loanToken) ?? "loan"}`
+            : `Venus ${symbol}B / ${tokenSymbol(cv.token) ?? "loan"}`;
+        return {
+          user,
+          key,
+          venue,
+          symbol,
+          token: cv.token,
+          tokenSymbol: tokenSymbol(cv.token) ?? "tokens",
+          tokenDecimals: await decimalsOf(c, cv.token),
+          keeper: cv.keeper,
+          capPerDay: cv.capPerDay.toString(),
+          balance: cv.balance.toString(),
+          dayStart: Number(cv.dayStart),
+          usedToday: cv.usedToday.toString(),
+          label,
+        };
+      }),
+  );
+}
+
+export interface AccountsPage {
+  blockNumber: string;
+  at: number;
+  accounts: AccountView[];
+  /** credit lines the owner has in all */
+  total: number;
+  offset: number;
+  /** older credit lines exist beyond this page */
+  more: boolean;
+  covers: CoverView[];
+  errors: string[];
+}
+
+/**
+ * One page of the owner's credit lines, newest first: at most LIMITS.accountsPerPage accounts are read however
+ * many the owner has opened, LIMITS.accountConcurrency at a time.
+ */
+export async function readAccounts(c: Client, d: Deployment, owner: Address, o: { offset?: number; head?: Head } = {}): Promise<AccountsPage> {
+  const { blockNumber, at } = o.head ?? (await head(c));
+  const offset = Math.max(0, Math.min(LIMITS.maxAccountOffset, Math.floor(o.offset ?? 0)));
+  const errors: string[] = [];
+  const [all, covers] = await Promise.all([listAccounts(c, d, { owner, blockNumber }), readCovers(c, d, owner, blockNumber, errors)]);
+  const end = Math.max(0, all.length - offset);
+  const start = Math.max(0, end - LIMITS.accountsPerPage);
+  const page = all.slice(start, end).reverse();
+  const states = await mapLimit(page, LIMITS.accountConcurrency, (a) =>
+    accountState(c, d, a, { blockNumber }).catch((err) => {
+      errors.push(`account ${a} could not be read: ${shortMessage(err)}`);
+      return null;
+    }),
+  );
+  const symbols = [...new Set(states.flatMap((st) => (st ? [st.symbol] : [])))];
+  const oracles = new Map<string, OracleSnapshot | string>();
+  await mapLimit(symbols, LIMITS.accountConcurrency, async (sym) => {
+    try {
+      oracles.set(sym, await oracleSnapshot(c, d, sym, { blockNumber }));
+    } catch (err) {
+      oracles.set(sym, `the Session Oracle could not be read for ${sym}: ${shortMessage(err)}`);
+    }
+  });
+  const accounts: AccountView[] = states.flatMap((st) => {
+    if (!st) return [];
+    const snap = oracles.get(st.symbol);
+    return [typeof snap === "string" || snap === undefined ? accountView(st, null, snap) : accountView(st, snap)];
+  });
+  return { blockNumber: blockNumber.toString(), at, accounts, total: all.length, offset, more: start > 0, covers, errors };
+}
+
+// -------------------------------------------------------------------- loans
 
 const ratio = (num: number, den: number) => (den > 0 ? Math.round((num / den) * 10_000) : null);
 
@@ -217,9 +314,12 @@ async function venusLoans(c: Client, ext: ExternalAddresses, user: Address, bloc
   return out;
 }
 
-/** The wallet's own loans on the configured Lista markets and Venus (the ones a CushionVault cover can protect). */
-export async function readLoans(c: Client, ext: ExternalAddresses, user: Address) {
-  const { blockNumber, at } = await head(c);
+/**
+ * The wallet's own loans on the configured Lista markets and Venus (the ones a CushionVault cover can protect).
+ * The markets come from the configuration, so the number of reads does not depend on the caller.
+ */
+export async function readLoans(c: Client, ext: ExternalAddresses, user: Address, o: { head?: Head } = {}) {
+  const { blockNumber, at } = o.head ?? (await head(c));
   const errors: string[] = [];
   const lista = await Promise.all(
     MARKETS.filter((m) => m.lista).map((m) =>
@@ -280,12 +380,16 @@ export async function readMarkets(c: Client, ext: ExternalAddresses): Promise<Ma
 
 // -------------------------------------------------------------------- token
 
-export async function readToken(c: Client, token: Address, owner: Address, spender: Address | null): Promise<TokenView> {
-  const [decimals, balance, allowance, symbol] = await Promise.all([
+/** Tokens the app deals in: the configured stablecoins and bStocks. No other contract is read on a caller's word. */
+export const isKnownToken = (token: string) => tokenSymbol(token) !== null;
+
+export async function readToken(c: Client, token: Address, owner: Address, spender: Address | null, o: { head?: Head } = {}): Promise<TokenView> {
+  if (!isKnownToken(token)) throw new Error("not a token this app uses");
+  const { blockNumber } = o.head ?? (await head(c));
+  const [decimals, balance, allowance] = await Promise.all([
     decimalsOf(c, token),
-    c.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [owner] }),
-    spender ? c.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [owner, spender] }) : Promise.resolve(null),
-    c.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }).catch(() => tokenSymbol(token) ?? "token"),
+    c.readContract({ address: token, abi: erc20Abi, blockNumber, functionName: "balanceOf", args: [owner] }),
+    spender ? c.readContract({ address: token, abi: erc20Abi, blockNumber, functionName: "allowance", args: [owner, spender] }) : Promise.resolve(null),
   ]);
-  return { token, symbol, decimals, balance: balance.toString(), allowance: allowance === null ? null : allowance.toString() };
+  return { token, symbol: tokenSymbol(token) ?? "token", decimals, balance: balance.toString(), allowance: allowance === null ? null : allowance.toString() };
 }

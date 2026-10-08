@@ -16,7 +16,7 @@ async function getJson<T>(url: string): Promise<T> {
 }
 
 export const keys = {
-  accounts: (owner: string) => ["accounts", owner.toLowerCase()] as const,
+  accounts: (owner: string, offset = 0) => ["accounts", owner.toLowerCase(), offset] as const,
   loans: (user: string) => ["loans", user.toLowerCase()] as const,
   token: (token: string, owner: string, spender: string | null) => ["token", token.toLowerCase(), owner.toLowerCase(), spender?.toLowerCase() ?? ""] as const,
 };
@@ -39,10 +39,10 @@ export function useDeskFeed(account: string | null, limit = 100) {
   });
 }
 
-export function useAccounts(owner: string | undefined, enabled: boolean) {
+export function useAccounts(owner: string | undefined, enabled: boolean, offset = 0) {
   return useQuery({
-    queryKey: keys.accounts(owner ?? ""),
-    queryFn: () => getJson<AccountsBody>(`/api/accounts?owner=${owner}`),
+    queryKey: keys.accounts(owner ?? "", offset),
+    queryFn: () => getJson<AccountsBody>(`/api/accounts?owner=${owner}${offset > 0 ? `&offset=${offset}` : ""}`),
     enabled: enabled && !!owner,
     refetchInterval: 30_000,
   });

@@ -95,7 +95,8 @@ describe("GET /api/desk/<view>", () => {
     const f = vi.fn(async () => json(FEED));
     const res = await handleDesk(new Request(`http://x/api/desk/feed?account=${ACCOUNT}&limit=9999`), "feed", { baseUrl: "http://desk", fetch: f as never });
     expect(res.status).toBe(200);
-    expect((f.mock.calls[0] as unknown as [string])[0]).toBe(`http://desk/feed?account=${ACCOUNT}&limit=500`);
+    // the address is validated and checksummed, the limit capped at the feed maximum
+    expect((f.mock.calls[0] as unknown as [string])[0].toLowerCase()).toBe(`http://desk/feed?account=${ACCOUNT}&limit=500`);
     const body = await res.json();
     expect(body.status).toBe("online");
     expect(body.data.events).toHaveLength(3);

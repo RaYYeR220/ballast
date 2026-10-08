@@ -145,7 +145,8 @@ export type ReadBody<T> =
   | { status: "not-deployed"; detail: string }
   | { status: "unavailable"; detail: string };
 
-export type AccountsBody = ReadBody<{ accounts: AccountView[]; covers: CoverView[]; errors: string[] }>;
+/** `accounts` is one page, newest first; `total` counts all of the owner's credit lines and `more` says older ones exist. */
+export type AccountsBody = ReadBody<{ accounts: AccountView[]; total: number; offset: number; more: boolean; covers: CoverView[]; errors: string[] }>;
 export type LoansBody = ReadBody<{ loans: LoanView[]; errors: string[] }>;
 
 export interface MarketView {

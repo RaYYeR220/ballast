@@ -1,9 +1,10 @@
 /* The desk agent's read API (AGENT_API_URL). Answers are cached for 15 s by Next's fetch cache. When the URL
    is unset, the desk does not answer, or answers with an error, the result is an explicit offline state. */
 import { normalizeEvents, type DeskEvent, type DeskResult, type DeskView } from "@/lib/desk";
+import { readCapped, TooLargeError } from "./guard";
+import { LIMITS } from "./limits";
 
 export const DESK_REVALIDATE_SEC = 15;
-const TIMEOUT_MS = 5000;
 
 const PATHS: Record<Exclude<DeskView, "evidence">, string> = {
   health: "/health",
@@ -47,7 +48,7 @@ export async function deskGet<T = unknown>(view: DeskView, q: DeskQuery, o: Desk
   try {
     res = await f(`${o.baseUrl}${deskPath(view, q)}`, {
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(o.timeoutMs ?? TIMEOUT_MS),
+      signal: AbortSignal.timeout(o.timeoutMs ?? LIMITS.deskTimeoutMs),
       next: { revalidate: o.revalidateSec ?? DESK_REVALIDATE_SEC },
     } as RequestInit);
   } catch (err) {
@@ -56,8 +57,9 @@ export async function deskGet<T = unknown>(view: DeskView, q: DeskQuery, o: Desk
   }
   let body: unknown;
   try {
-    body = await res.json();
-  } catch {
+    body = JSON.parse(await readCapped(res, LIMITS.deskAnswerBytes));
+  } catch (err) {
+    if (err instanceof TooLargeError) return { status: "offline", reason: "error", detail: "the desk's answer was too large to read" };
     return { status: "offline", reason: "error", detail: `the desk answered ${res.status} without JSON` };
   }
   if (!res.ok) {
@@ -70,5 +72,6 @@ export async function deskGet<T = unknown>(view: DeskView, q: DeskQuery, o: Desk
 /** /feed with its events checked and sorted newest first. */
 export async function deskFeed(q: DeskQuery, o: DeskFetchOptions): Promise<DeskResult<{ events: DeskEvent[] }>> {
   const r = await deskGet<unknown>("feed", q, o);
-  return r.status === "online" ? { ...r, data: { events: normalizeEvents(r.data) } } : r;
+  // whatever the desk sends, at most LIMITS.feedEvents events are kept
+  return r.status === "online" ? { ...r, data: { events: normalizeEvents(r.data).slice(0, LIMITS.feedEvents) } } : r;
 }

@@ -2,14 +2,15 @@
 import { Web3Client, transaction } from "@ballast/binance";
 import { getAddress, isAddress, isHex, type Hex, type PublicClient } from "viem";
 import type { ServerEnv } from "../env";
+import { readCapped, TooLargeError } from "../guard";
+import { LIMITS } from "../limits";
 import { shortMessage, simulateTx, type SimulateDeps } from "../simulate";
 
-const MAX_BODY = 64 * 1024;
 const noProbe = () => {};
 
 export function simulateDeps(e: ServerEnv, client: Pick<PublicClient, "call">, fetchImpl?: typeof fetch): SimulateDeps {
   const web3 = e.binance
-    ? new Web3Client({ apiKey: e.binance.apiKey, apiSecret: e.binance.apiSecret, probe: noProbe, fetch: fetchImpl, timeoutMs: 8000, maxRetries: 1 })
+    ? new Web3Client({ apiKey: e.binance.apiKey, apiSecret: e.binance.apiSecret, probe: noProbe, fetch: fetchImpl, timeoutMs: LIMITS.rpcTimeoutMs, maxRetries: 1 })
     : null;
   return {
     chainId: e.chainId,
@@ -21,8 +22,14 @@ export function simulateDeps(e: ServerEnv, client: Pick<PublicClient, "call">, f
 const bad = (error: string) => Response.json({ error }, { status: 400 });
 
 export async function handleSimulate(req: Request, deps: SimulateDeps): Promise<Response> {
-  const text = await req.text();
-  if (text.length > MAX_BODY) return bad("request too large");
+  // the body is read only up to the limit: a declared or streamed body beyond it is refused, not buffered
+  let text: string;
+  try {
+    text = await readCapped(req, LIMITS.bodyBytes);
+  } catch (err) {
+    if (err instanceof TooLargeError) return Response.json({ error: "request too large" }, { status: 413, headers: { "cache-control": "no-store" } });
+    return bad("unreadable request body");
+  }
   let body: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(text);

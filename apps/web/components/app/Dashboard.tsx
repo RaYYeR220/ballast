@@ -37,7 +37,8 @@ export function Dashboard({ config }: { config: AppConfig }) {
   const health = useDeskHealth();
   const deskAgent = config.deskAgent ?? (health.data?.status === "online" ? checksum(health.data.data.agent) : null);
   const onChain = isConnected && walletChain === config.chainId;
-  const accounts = useAccounts(address, onChain && !!deployment);
+  const [offset, setOffset] = useState(0);
+  const accounts = useAccounts(address, onChain && !!deployment, offset);
   const body = accounts.data;
   const list = body?.status === "ok" ? body.accounts : [];
   const [selected, setSelected] = useState<string | null>(null);
@@ -64,9 +65,14 @@ export function Dashboard({ config }: { config: AppConfig }) {
   else content = { kind: "none" };
 
   const refresh = () => {
-    void accounts.refetch();
-    void queries.invalidateQueries({ queryKey: ["token"] });
-    void queries.invalidateQueries({ queryKey: ["desk"] });
+    const again = () => {
+      void accounts.refetch();
+      void queries.invalidateQueries({ queryKey: ["token"] });
+      void queries.invalidateQueries({ queryKey: ["desk"] });
+    };
+    again();
+    // the server shares one head block for up to two seconds: read once more when it has moved on
+    setTimeout(again, 2500);
   };
 
   const clock = now === null ? "" : `${hourLabel(hourOfWeek(now))} New York, ${session(now) === "REGULAR" ? "market open" : "market closed"}`;
@@ -106,6 +112,21 @@ export function Dashboard({ config }: { config: AppConfig }) {
           </div>
         ) : null}
 
+        {body?.status === "ok" && (body.more || body.offset > 0) ? (
+          <p className={s.pager}>
+            Showing {list.length} of your {body.total} credit lines, newest first.
+            {body.more ? (
+              <button type="button" className={s.linkBtn} onClick={() => setOffset(body.offset + list.length)}>
+                Older
+              </button>
+            ) : null}
+            {body.offset > 0 ? (
+              <button type="button" className={s.linkBtn} onClick={() => setOffset(0)}>
+                Newest
+              </button>
+            ) : null}
+          </p>
+        ) : null}
         {list.length > 1 ? (
           <div className={s.switch} role="group" aria-label="Your credit lines">
             {list.map((a) => (

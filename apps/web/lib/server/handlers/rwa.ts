@@ -38,7 +38,8 @@ export async function readRwaStatus(client: Pick<PublicRwaClient, "marketStatus"
   };
 }
 
-const cache = ttlCache<RwaStatusBody>(RWA_TTL_MS);
+// a failed read is replayed for 5 s, so an outage at Binance is not retried by every visitor
+const cache = ttlCache<RwaStatusBody>(RWA_TTL_MS, { errorTtlMs: 5_000 });
 const client = new PublicRwaClient({ probe: () => {}, timeoutMs: 8000 });
 
 export async function handleRwaStatus(c: Pick<PublicRwaClient, "marketStatus" | "assetStatus"> = client): Promise<Response> {
