@@ -64,6 +64,11 @@ export interface PlanisphereProps {
   /** the page-load sweep of the last 30 hours (skipped for reduced motion) */
   sweep?: boolean;
   starOpacity?: number;
+  /** money graticule and first-90-minute wedges (the app's wheel leaves both out) */
+  money?: boolean;
+  wedges?: boolean;
+  /** scale for rim labels and stars */
+  fontScale?: number;
   /** wheel-space marks that turn with the sky (shield, restore, refusal) */
   marks?: (geo: DialGeometry) => ReactNode;
   className?: string;
@@ -103,6 +108,9 @@ export function Planisphere({
   compact: compactProp,
   sweep = true,
   starOpacity,
+  money,
+  wedges,
+  fontScale,
   marks,
   className,
   svgClassName,
@@ -369,7 +377,18 @@ export function Planisphere({
             <g transform={`translate(${r2(c)},${r2(c)})`}>
               <circle r={R + (compact ? 8 : 14)} fill="none" stroke={SKY.p500} strokeWidth={1} opacity={0.6} />
               <g transform={`rotate(${r2(rot)})`}>
-                <Sky id={id} R={R} sectors={sectors} liquidations={liquidations} compact={compact} starOpacity={starOpacity} window={win} />
+                <Sky
+                  id={id}
+                  R={R}
+                  sectors={sectors}
+                  liquidations={liquidations}
+                  compact={compact}
+                  starOpacity={starOpacity}
+                  window={win}
+                  money={money}
+                  wedges={wedges}
+                  fontScale={fontScale}
+                />
                 {marksNode}
               </g>
             </g>
