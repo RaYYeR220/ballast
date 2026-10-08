@@ -184,7 +184,7 @@ export function TxFlow({ steps, from, onComplete, onCancel, cancelLabel = "Back 
         return (
           <li key={st.key} className={s.step} data-state={state}>
             <span className={s.n} aria-hidden="true">
-              {state === "done" ? "✓" : i + 1}
+              {state === "done" ? "\u2713" : i + 1}
             </span>
             <div>
               <b>{st.title}</b>
