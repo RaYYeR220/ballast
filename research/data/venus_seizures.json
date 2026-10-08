@@ -1,0 +1,14 @@
+{
+ "from_block": 101500000,
+ "to_block": 123963563,
+ "vtokens": [
+  "NVDAB",
+  "SKHYB",
+  "SPCXB",
+  "TSLAB"
+ ],
+ "transfer_logs": 1114,
+ "candidate_transfers": 47,
+ "candidate_transactions": 28,
+ "transactions_with_liquidate_borrow": []
+}

@@ -1,0 +1,1218 @@
+[
+ {
+  "time_utc": "2026-06-01 02:23:51",
+  "session": "overnight",
+  "ts": 1780280631,
+  "tx": "0x42e48da91fc1326c6031c99332bc31f32e47d8a553514c304f44b300084a083a",
+  "block": 101609258,
+  "market": "0x997cf874bb5fddc1d4fdf29c0a2d4b3d0780cba48fa1d06c559611c064a476b0"
+ },
+ {
+  "time_utc": "2026-06-01 09:32:56",
+  "session": "pre",
+  "ts": 1780306376,
+  "tx": "0xf7045e2454592d1d4fd3d477f5fb882bccb14f23c92a1a6a68e3de05ef7b4ed9",
+  "block": 101666389,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-01 09:47:11",
+  "session": "pre",
+  "ts": 1780307231,
+  "tx": "0x086ff984a40cc87a7c47ada434dc07284242739c18661e59d3c8e4c5df5f1696",
+  "block": 101668284,
+  "market": "0x7fed7ee489225e577836f7fc0f641359ab801292610b6afce3b47fc6087cb9e3"
+ },
+ {
+  "time_utc": "2026-06-01 11:31:10",
+  "session": "pre",
+  "ts": 1780313470,
+  "tx": "0xd715b58cbbb772c2921f0ab5fc2dfa665ac0c79cbec394e128de87de28a8e499",
+  "block": 101682127,
+  "market": "0x7a72ecec7d2155f0aaa0fc777eed426eae1053defd94ebf215c91caeb53386d2"
+ },
+ {
+  "time_utc": "2026-06-01 15:18:26",
+  "session": "regular",
+  "ts": 1780327106,
+  "tx": "0xe52536bff2a1b3d14178d0108cf49de8218b63b84b060cd6512c5e98a492549f",
+  "block": 101712369,
+  "market": "0x8de2e1f3e3935024a2667d8203983bdff70a1aee0c91665760e02c257d53032f"
+ },
+ {
+  "time_utc": "2026-06-01 16:09:47",
+  "session": "regular",
+  "ts": 1780330187,
+  "tx": "0x850b004e9add397a4323570b81d16edb9683b7e4d9e1367ab9a7ca0d20771e7d",
+  "block": 101719207,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-01 16:10:41",
+  "session": "regular",
+  "ts": 1780330241,
+  "tx": "0x9fe43332789ae3dd4ff66d5e43005c0fb56d0eaef8236dd602a04ea561ce1114",
+  "block": 101719326,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-01 16:10:46",
+  "session": "regular",
+  "ts": 1780330246,
+  "tx": "0x6ef6af9b574445d1ac7e71dfb08a50b27d1218da4d76b06efb5e4999b372fd5d",
+  "block": 101719338,
+  "market": "0x8de2e1f3e3935024a2667d8203983bdff70a1aee0c91665760e02c257d53032f"
+ },
+ {
+  "time_utc": "2026-06-01 16:11:48",
+  "session": "regular",
+  "ts": 1780330308,
+  "tx": "0x4fe0af30f9beeb7764bd809e03a44a307a981433fce795a5a72d1b5f4eff69ae",
+  "block": 101719476,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-01 16:12:22",
+  "session": "regular",
+  "ts": 1780330342,
+  "tx": "0x62ad9d6c5e9b941ea0a62dee5adcb990bd575054e638f976b9ac8b68cc8156e9",
+  "block": 101719550,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-02 06:47:51",
+  "session": "overnight",
+  "ts": 1780382871,
+  "tx": "0xa96011da46cb97c80e7274f200b9b813a8581390a73c638e9974124eeaadbc16",
+  "block": 101835669,
+  "market": "0xaff3852ab9f7562b1894384366b976079efc12aeb872387c3b8d7e629d01961c"
+ },
+ {
+  "time_utc": "2026-06-02 19:31:29",
+  "session": "regular",
+  "ts": 1780428689,
+  "tx": "0x2956833cc96d36e7118d0398bb3d6cab01d198fc7d927663bf91b7a09f5f719f",
+  "block": 101937354,
+  "market": "0x6350ccd3fe864c1c750f2b5d99b81d1fd712250a650808d2f6e17651b1047e37"
+ },
+ {
+  "time_utc": "2026-06-02 19:33:39",
+  "session": "regular",
+  "ts": 1780428819,
+  "tx": "0xe174487926bf39c5add7e97bf7951446686c3782e277290e8ff8c8986337af49",
+  "block": 101937642,
+  "market": "0x975f4cf3db16812d995f60e19bec91a96108d47429237acc8d208bc0519c5b19"
+ },
+ {
+  "time_utc": "2026-06-02 22:51:49",
+  "session": "post",
+  "ts": 1780440709,
+  "tx": "0x863d80d2ebaf4e69ee2484d2c6b892536a65a7bfbe22cae14b3a29fdc8387775",
+  "block": 101964048,
+  "market": "0x2b87aedf2672376147a71cf09d3b7c776f92e6c52d22a12fe1322bb205892961"
+ },
+ {
+  "time_utc": "2026-06-03 03:45:09",
+  "session": "overnight",
+  "ts": 1780458309,
+  "tx": "0x58ee0efb947e11d573b3b3f84864b6a92bbc674ba88a14d54c054ec46896a1c1",
+  "block": 102003099,
+  "market": "0x8de2e1f3e3935024a2667d8203983bdff70a1aee0c91665760e02c257d53032f"
+ },
+ {
+  "time_utc": "2026-06-03 16:24:18",
+  "session": "regular",
+  "ts": 1780503858,
+  "tx": "0x0cacbff225e0ca01a316eb88c74fffdbc59f89b89100c41e3b79daed491a57be",
+  "block": 102104161,
+  "market": "0xaaf06d7c7fd32ac1b478bdf6f068d707ea32982f299b684ef79b1023a51ad3db"
+ },
+ {
+  "time_utc": "2026-06-04 00:40:05",
+  "session": "overnight",
+  "ts": 1780533605,
+  "tx": "0x5374de7b6b79356eec5ce9840803d44703a0a348588cd71e44b77cfd6e624408",
+  "block": 102170190,
+  "market": "0x9ae45397a8063220d4cdb41ad9268d4c173dd18ca778171e9dee0644dfbe4cbd"
+ },
+ {
+  "time_utc": "2026-06-04 01:06:17",
+  "session": "overnight",
+  "ts": 1780535177,
+  "tx": "0x98adebdb2fe25d3be25a574916d6b4396cbd88060156ee695e69984ec589ce3a",
+  "block": 102173676,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-04 01:49:36",
+  "session": "overnight",
+  "ts": 1780537776,
+  "tx": "0xec495f2207c93cf0acf320a1347f5c076af8ae5332db186adea243a326651f21",
+  "block": 102179442,
+  "market": "0xab3827ad876b82fb5af9af8bf3f0bbc8a01e8602389053a71513db72c5f129f7"
+ },
+ {
+  "time_utc": "2026-06-04 01:54:05",
+  "session": "overnight",
+  "ts": 1780538045,
+  "tx": "0xaa8a040bf5663eb39641304a71a92a5f81641be48225101823c7974c9b92e272",
+  "block": 102180039,
+  "market": "0xaaf06d7c7fd32ac1b478bdf6f068d707ea32982f299b684ef79b1023a51ad3db"
+ },
+ {
+  "time_utc": "2026-06-04 02:04:56",
+  "session": "overnight",
+  "ts": 1780538696,
+  "tx": "0xfec6ef5c62362934b7ad2525ecbf493452e61f0200db1def0fea3a0624ea0a84",
+  "block": 102181482,
+  "market": "0x6350ccd3fe864c1c750f2b5d99b81d1fd712250a650808d2f6e17651b1047e37"
+ },
+ {
+  "time_utc": "2026-06-05 06:03:19",
+  "session": "overnight",
+  "ts": 1780639399,
+  "tx": "0x8f50e132c7971032cdcb5ee26548f6365152993beac38e1f7d0d7404e58c3ea2",
+  "block": 102404988,
+  "market": "0x91448288effa647bb24f0ef3eaa999d3e1007dcc76c7cdc6d8136038c7bb8fcb"
+ },
+ {
+  "time_utc": "2026-06-05 06:03:31",
+  "session": "overnight",
+  "ts": 1780639411,
+  "tx": "0x5d4395e715756b357365482bebb0758dc00b457476fde7ddacf18bec79a181ed",
+  "block": 102405015,
+  "market": "0x896579c1926092cc9daee46137dd94ee10a7c56331cf0521bdc5af93aca85d17"
+ },
+ {
+  "time_utc": "2026-06-05 06:19:01",
+  "session": "overnight",
+  "ts": 1780640341,
+  "tx": "0x0dd158a58988d3fe2893341550e81dc7eb9745f110f9d4f983b6b782e7b7e2a6",
+  "block": 102407077,
+  "market": "0x7fe248d8459a88e50e8582c71219edbce1079437e58190aeab41ac503694f0a5"
+ },
+ {
+  "time_utc": "2026-06-05 06:23:07",
+  "session": "overnight",
+  "ts": 1780640587,
+  "tx": "0x275c43f7c3e1ec0a6aeaf6273519182901b84211b0d27960ec19b3c7e5873be1",
+  "block": 102407622,
+  "market": "0x6350ccd3fe864c1c750f2b5d99b81d1fd712250a650808d2f6e17651b1047e37"
+ },
+ {
+  "time_utc": "2026-06-05 06:23:14",
+  "session": "overnight",
+  "ts": 1780640594,
+  "tx": "0x0e9abe8557497a1a434377359505b299f1eb319f2b5c4c8175320029bd7e1dc4",
+  "block": 102407637,
+  "market": "0x642b55769bec1f4e0d8687e24c3db885ae446f6fbb124decae96b6c0ea37f4f1"
+ },
+ {
+  "time_utc": "2026-06-05 16:12:21",
+  "session": "regular",
+  "ts": 1780675941,
+  "tx": "0x8949b1f15b72974236b6ae9867e01bb6ef3bc44a5ed57ffbf8667e905b57c950",
+  "block": 102486050,
+  "market": "0x699b2f053a8d301e47fdde812abaf36268b74d6f8e6b8e2d3164954b5ba8e3e5"
+ },
+ {
+  "time_utc": "2026-06-05 18:51:42",
+  "session": "regular",
+  "ts": 1780685502,
+  "tx": "0xb92305799e2397f37da7426859868bacbcaff4363919ac88c9308c9a4188b797",
+  "block": 102507270,
+  "market": "0x975f4cf3db16812d995f60e19bec91a96108d47429237acc8d208bc0519c5b19"
+ },
+ {
+  "time_utc": "2026-06-05 18:54:46",
+  "session": "regular",
+  "ts": 1780685686,
+  "tx": "0x2aa4960b2732302877f6a3489083c13ff756da347fbd5ae041ca1bfcbbe0b115",
+  "block": 102507679,
+  "market": "0xaaf06d7c7fd32ac1b478bdf6f068d707ea32982f299b684ef79b1023a51ad3db"
+ },
+ {
+  "time_utc": "2026-06-05 19:00:48",
+  "session": "regular",
+  "ts": 1780686048,
+  "tx": "0x1e58cd9823c31e912ea5981569250abf34b3b103b4df8e4d440e756caaeffa30",
+  "block": 102508481,
+  "market": "0xc44acfc487b8fd576fd2ca4625f672ccd7b41b87834c6358c7f7f0e6481fbf10"
+ },
+ {
+  "time_utc": "2026-06-06 04:27:49",
+  "session": "weekend",
+  "ts": 1780720069,
+  "tx": "0x1634e8a977b7f95e181b5e6e1999fcc8e96c3248587907cb3ed03c592aa2492f",
+  "block": 102583956,
+  "market": "0x91448288effa647bb24f0ef3eaa999d3e1007dcc76c7cdc6d8136038c7bb8fcb"
+ },
+ {
+  "time_utc": "2026-06-06 04:34:18",
+  "session": "weekend",
+  "ts": 1780720458,
+  "tx": "0x0956c0905aa0e58b30696e1b6dde9ebf0b8a160b9d507185f35d3ecea33ba045",
+  "block": 102584819,
+  "market": "0x2b87aedf2672376147a71cf09d3b7c776f92e6c52d22a12fe1322bb205892961"
+ },
+ {
+  "time_utc": "2026-06-06 11:36:17",
+  "session": "weekend",
+  "ts": 1780745777,
+  "tx": "0x32f91008fc2f1305ed30dd8810e2d6fb1865ecf061513f761428d21e16a69c61",
+  "block": 102641010,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-08 11:30:17",
+  "session": "pre",
+  "ts": 1780918217,
+  "tx": "0xd008f2924de3457689b8cba877b3c307d8aef07d3d570dbe961ec9c0db58b7f6",
+  "block": 103023745,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-10 06:51:16",
+  "session": "overnight",
+  "ts": 1781074276,
+  "tx": "0x9ad35111c10a1d56370e4a98874d014a7db8f07fb7b06fac070660e566e17e6b",
+  "block": 103370090,
+  "market": "0x6350ccd3fe864c1c750f2b5d99b81d1fd712250a650808d2f6e17651b1047e37"
+ },
+ {
+  "time_utc": "2026-06-11 12:01:17",
+  "session": "pre",
+  "ts": 1781179277,
+  "tx": "0x41e1d528435ed881eb71842cd223581dba7c90369a0b16e8dcc9d805285c9e54",
+  "block": 103603100,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-12 16:31:17",
+  "session": "regular",
+  "ts": 1781281877,
+  "tx": "0x811cf84584aa4061a684c0b5c312960bfe8c24e9c8ff06c701284ff468453fac",
+  "block": 103830832,
+  "market": "0xb060b526bd2fc99150cff9d6f7e7fab88d5d67e35cf262215f986d62a2fba99e"
+ },
+ {
+  "time_utc": "2026-06-13 05:13:17",
+  "session": "weekend",
+  "ts": 1781327597,
+  "tx": "0xd3f84a60304ac2a582792db41b32221dd629c785cc8936d439895a065e1ae250",
+  "block": 103932406,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-14 09:56:17",
+  "session": "weekend",
+  "ts": 1781430977,
+  "tx": "0x85468946ef37fa27a67881f628c7f543584e856b00c1cea3a68a36fc28747af0",
+  "block": 104162084,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-15 18:32:33",
+  "session": "regular",
+  "ts": 1781548353,
+  "tx": "0x2e649262d9eb2a80663aec99da76361963f710c10a0d31a37506a0396daecdca",
+  "block": 104422851,
+  "market": "0x869861f50ecec64d1a75a24ebb118071c5e60122ee263e4ad44546d762c818f9"
+ },
+ {
+  "time_utc": "2026-06-17 04:37:17",
+  "session": "overnight",
+  "ts": 1781671037,
+  "tx": "0xb9fba2cff4ecf1ae1d4bec46886ffd136628b8119e57800197310bc2b06cd7f5",
+  "block": 104695414,
+  "market": "0x523809244d5ec5633a17fee837c16c69a0c6cf3b5596486a6c22b3000ecda5ad"
+ },
+ {
+  "time_utc": "2026-06-17 12:03:19",
+  "session": "pre",
+  "ts": 1781697799,
+  "tx": "0xcee1b8e558ae18aed3e34e5f93756a6c022834a7a71daf00a9fd9eda87c709fd",
+  "block": 104754857,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-17 13:27:47",
+  "session": "pre",
+  "ts": 1781702867,
+  "tx": "0xc3d7ee9f1d86206e3a767ed9eb037393930440e28fd04ff339c83ccb6e71fa6d",
+  "block": 104766115,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-17 13:31:54",
+  "session": "regular",
+  "ts": 1781703114,
+  "tx": "0x19dbdb40c3a7bc744d450cceb4c968d3d803410535c4c87c897cd3f00e06d54d",
+  "block": 104766662,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-17 13:36:55",
+  "session": "regular",
+  "ts": 1781703415,
+  "tx": "0xed7f108aaebc9f30a8ad820716110fe0f782c41add82fdd88b6cf479e5fe5573",
+  "block": 104767332,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-17 13:37:50",
+  "session": "regular",
+  "ts": 1781703470,
+  "tx": "0xe4781b95ae50e4960cf5ce6bd407937ba250e68ecfe6eb792bc7c566ea3f49b0",
+  "block": 104767453,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-17 13:38:07",
+  "session": "regular",
+  "ts": 1781703487,
+  "tx": "0x0d1c235a664a7fc71dcd6093ed410fd73b797db0818596b30910c791bf15a29f",
+  "block": 104767492,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-18 04:12:04",
+  "session": "overnight",
+  "ts": 1781755924,
+  "tx": "0x03b21610fc00ece1a6611decc767f44ad03cef69de24385cf5a946ec5a2020ac",
+  "block": 104883980,
+  "market": "0x95f93825819b67a64610e6adb9ac5f70d5108f5121b9df6551e23a4a7a801b5b"
+ },
+ {
+  "time_utc": "2026-06-18 13:32:00",
+  "session": "regular",
+  "ts": 1781789520,
+  "tx": "0x9335997e1dc795423fdb3ef4c2e93531e0394b9b7120f162b12afbf374150588",
+  "block": 104958612,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-20 18:31:10",
+  "session": "weekend",
+  "ts": 1781980270,
+  "tx": "0x1c11f784ddc859522380d0b3ceb92b0a58124f2e97fab2235516d2412592320d",
+  "block": 105382165,
+  "market": "0x93e0995138222571035a6deadd617efad2f2400d69067a0d1fc74b179657046a"
+ },
+ {
+  "time_utc": "2026-06-21 00:31:10",
+  "session": "weekend",
+  "ts": 1782001870,
+  "tx": "0xce8f9f0c0c610f7b1fbb4f9f5df9337d4c8c7c365084186caf85b40a6b90b67b",
+  "block": 105429958,
+  "market": "0x93e0995138222571035a6deadd617efad2f2400d69067a0d1fc74b179657046a"
+ },
+ {
+  "time_utc": "2026-06-21 12:59:49",
+  "session": "weekend",
+  "ts": 1782046789,
+  "tx": "0x7c135690a94de8e703428cd0abaf4a9ae5f32621d4948d6b64d2d13bd4d8805b",
+  "block": 105529740,
+  "market": "0x2cbed3b86d3cad6fb2d7163287f28561d6f6c90f58513746ef34962c83e80451"
+ },
+ {
+  "time_utc": "2026-06-24 16:51:28",
+  "session": "regular",
+  "ts": 1782319888,
+  "tx": "0x58a5c76c48bb6606dd6cb54e58815a31715234be0d46c278da9dc4808827175d",
+  "block": 106136431,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 16:51:52",
+  "session": "regular",
+  "ts": 1782319912,
+  "tx": "0xa4076c99ce43a3c21cce01e90e102a19087c01dc3c0d62d3893a24494df75e99",
+  "block": 106136486,
+  "market": "0x97252720b962a8f6984a8a1e0d5713ac3308bf7e7ef0deaa7a49769743904b06"
+ },
+ {
+  "time_utc": "2026-06-24 16:52:05",
+  "session": "regular",
+  "ts": 1782319925,
+  "tx": "0x536b9dd702ba3b969e115e39e9fa1e9b546ed5d237ddb485d1574acd9d58c2dc",
+  "block": 106136514,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 17:19:24",
+  "session": "regular",
+  "ts": 1782321564,
+  "tx": "0x0d0406de6a0b01f2fb00145934b58189374d5be0c619929b2569f159c55c062b",
+  "block": 106140154,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 17:20:50",
+  "session": "regular",
+  "ts": 1782321650,
+  "tx": "0xdc9df666f14781b3e9c5f0aa91a9944c7dd40c04c27709d67e48678166022881",
+  "block": 106140345,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 17:45:04",
+  "session": "regular",
+  "ts": 1782323104,
+  "tx": "0xded1d5fa94b21e83b5ae49fe30a22d121f626e14ed43edba876dc44bcd25814b",
+  "block": 106143577,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 17:48:06",
+  "session": "regular",
+  "ts": 1782323286,
+  "tx": "0x058d5bed5c26f90a8c220a381c8c23de49281eb1e22c73521a84b83e6b933d71",
+  "block": 106143978,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-06-24 17:48:31",
+  "session": "regular",
+  "ts": 1782323311,
+  "tx": "0xf7b1cb642430fe72d31954157de6484be02e42fdfe9352899ddbe88d74f7f852",
+  "block": 106144034,
+  "market": "0x0ce1192c618a82e6984f6dbb3dd6e390dfccdab98e50c0be3a617b3d7d6e9c69"
+ },
+ {
+  "time_utc": "2026-06-24 17:48:36",
+  "session": "regular",
+  "ts": 1782323316,
+  "tx": "0xcdfc6aff3affe0f3ff26c6b571d7c346826cf25a2bfac7ec506d2b49c2c093d2",
+  "block": 106144045,
+  "market": "0x7fe248d8459a88e50e8582c71219edbce1079437e58190aeab41ac503694f0a5"
+ },
+ {
+  "time_utc": "2026-06-25 13:53:55",
+  "session": "regular",
+  "ts": 1782395635,
+  "tx": "0xc8ae2395a85d2986bd97453ade3ebf1e0f61ad558e534681bb0c2967479c99f6",
+  "block": 106304703,
+  "market": "0x975f4cf3db16812d995f60e19bec91a96108d47429237acc8d208bc0519c5b19"
+ },
+ {
+  "time_utc": "2026-06-25 13:58:39",
+  "session": "regular",
+  "ts": 1782395919,
+  "tx": "0x7d5408cedff54be2616aa27527ed5a9a6310064d926aca9a053db718bc293cdf",
+  "block": 106305335,
+  "market": "0x95f93825819b67a64610e6adb9ac5f70d5108f5121b9df6551e23a4a7a801b5b"
+ },
+ {
+  "time_utc": "2026-06-26 08:52:45",
+  "session": "pre",
+  "ts": 1782463965,
+  "tx": "0xa670b2754dfe22561e7f40871bd74b7b944dd4fb3e173150ebb6366889e8d914",
+  "block": 106456502,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-26 10:34:25",
+  "session": "pre",
+  "ts": 1782470065,
+  "tx": "0x5105468fa27a4ae791c81ef70ad320f4e44c98771d6b6ab9f1b05b312788d1df",
+  "block": 106470054,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-06-28 14:42:24",
+  "session": "weekend",
+  "ts": 1782657744,
+  "tx": "0x8df277b3292356f7c9f6f4742eb9da9013d35b9e63d1d8dac2e3cbb37f003512",
+  "block": 106886985,
+  "market": "0x9ed14e92e2db39099d2e5bb23f55a64caf03ea63b39af1364387bd7d5832a668"
+ },
+ {
+  "time_utc": "2026-06-28 14:51:42",
+  "session": "weekend",
+  "ts": 1782658302,
+  "tx": "0x72fde1cc9ed5203bef3564e64a3ef33af6eb1d64364650d8d34556c94fc7393a",
+  "block": 106888223,
+  "market": "0xd73b77c1236b90c2c5453e197754eacb535ed120e3ebc77734ff7ba6f0844924"
+ },
+ {
+  "time_utc": "2026-06-28 14:54:25",
+  "session": "weekend",
+  "ts": 1782658465,
+  "tx": "0xcac164ad5a56d5eed19824d5b629a5255b723b70e78d27d258b6567e14eb913f",
+  "block": 106888587,
+  "market": "0x7fe248d8459a88e50e8582c71219edbce1079437e58190aeab41ac503694f0a5"
+ },
+ {
+  "time_utc": "2026-06-28 21:10:56",
+  "session": "weekend",
+  "ts": 1782681056,
+  "tx": "0xce262ee8ce6fcb1540907330885eec074b4e29b3e6d8ef03b0101043561f34b5",
+  "block": 106938773,
+  "market": "0xd73b77c1236b90c2c5453e197754eacb535ed120e3ebc77734ff7ba6f0844924"
+ },
+ {
+  "time_utc": "2026-06-30 10:05:50",
+  "session": "pre",
+  "ts": 1782813950,
+  "tx": "0x58fa5f4d47264d02868f1a8d0646403c59991a36432491b53513e7b8308eee79",
+  "block": 107233941,
+  "market": "0xaaf06d7c7fd32ac1b478bdf6f068d707ea32982f299b684ef79b1023a51ad3db"
+ },
+ {
+  "time_utc": "2026-07-02 05:32:09",
+  "session": "overnight",
+  "ts": 1782970329,
+  "tx": "0x1a3c88132f5c2340386fe5d0fd627496f45ae47a7a05bfa3fa028a0b6dec5c5a",
+  "block": 107581307,
+  "market": "0xe3a95b74409bedf242760e995d61062864a28c7cea15d96911caca6060933324"
+ },
+ {
+  "time_utc": "2026-07-02 06:19:51",
+  "session": "overnight",
+  "ts": 1782973191,
+  "tx": "0x430c7cb1f5be2c577ebded082c0ccaa794993e01c9c921364acffc0735c843c0",
+  "block": 107587658,
+  "market": "0x997cf874bb5fddc1d4fdf29c0a2d4b3d0780cba48fa1d06c559611c064a476b0"
+ },
+ {
+  "time_utc": "2026-07-02 12:20:09",
+  "session": "pre",
+  "ts": 1782994809,
+  "tx": "0x0062432e41473a064017584ef8c3da4bcc683dd02beecef8e3398164433fe3e1",
+  "block": 107635684,
+  "market": "0xca1432913a86b41eb10c66de79fe390b877c811a113755e9efb10f38de862450"
+ },
+ {
+  "time_utc": "2026-07-06 02:28:08",
+  "session": "overnight",
+  "ts": 1783304888,
+  "tx": "0xc766969cdbca54b5c37382e2f3c2f1ebe7bb6bf75d446bf80305c8166f98ede3",
+  "block": 108324562,
+  "market": "0xdee403936c6f4c64095e68301c0b5ea2d49fa36ed204b61d504f55b280079a36"
+ },
+ {
+  "time_utc": "2026-07-06 12:06:11",
+  "session": "pre",
+  "ts": 1783339571,
+  "tx": "0x4e0bd5bc6b0dfbef4ede2ddf53d4e4419080714604a71b1b9c3ea7013a46c388",
+  "block": 108401609,
+  "market": "0xab3827ad876b82fb5af9af8bf3f0bbc8a01e8602389053a71513db72c5f129f7"
+ },
+ {
+  "time_utc": "2026-07-08 02:19:04",
+  "session": "overnight",
+  "ts": 1783477144,
+  "tx": "0x417690b5dcf6a2a3516f9fb7c68998becddf9c248400e0d0fe254717567859bf",
+  "block": 108706576,
+  "market": "0x34b10e29626e1829e24e44bffd0b6795eb901120d9fcb6217973a67589b3b8e4"
+ },
+ {
+  "time_utc": "2026-07-08 08:18:15",
+  "session": "pre",
+  "ts": 1783498695,
+  "tx": "0x152ec31139d166e9d350772d0b8d6968200c6d2e45d37babcf66f248314e093f",
+  "block": 108754455,
+  "market": "0x975f4cf3db16812d995f60e19bec91a96108d47429237acc8d208bc0519c5b19"
+ },
+ {
+  "time_utc": "2026-07-09 01:09:47",
+  "session": "overnight",
+  "ts": 1783559387,
+  "tx": "0x0baa3efdd69a6e4e97a4c9b7fa2c4f4b5455a80143d9af9923d7ef6126498fa3",
+  "block": 108889293,
+  "market": "0x34b10e29626e1829e24e44bffd0b6795eb901120d9fcb6217973a67589b3b8e4"
+ },
+ {
+  "time_utc": "2026-07-09 03:01:56",
+  "session": "overnight",
+  "ts": 1783566116,
+  "tx": "0xedca8686e803b225c38f900f469037a7343cb5ea3812c0dfc13ccdc975d31ca8",
+  "block": 108904244,
+  "market": "0x2134ebce65b342b3bd26ee6236675213b4208a035a4d065a8a38d5c3ada4361a"
+ },
+ {
+  "time_utc": "2026-07-09 10:53:07",
+  "session": "pre",
+  "ts": 1783594387,
+  "tx": "0x18a7bb37d1f83baa9152c445b7dd5856fb3307e16994205607b52fa9de7f3f8d",
+  "block": 108967048,
+  "market": "0x975f4cf3db16812d995f60e19bec91a96108d47429237acc8d208bc0519c5b19"
+ },
+ {
+  "time_utc": "2026-07-13 00:10:53",
+  "session": "overnight",
+  "ts": 1783901453,
+  "tx": "0x3349919df7809515ccf88a75e2d3ebb0b6da4e23eb02f8e3c540efdc5680cbd8",
+  "block": 109649241,
+  "market": "0x34b10e29626e1829e24e44bffd0b6795eb901120d9fcb6217973a67589b3b8e4"
+ },
+ {
+  "time_utc": "2026-07-14 10:02:30",
+  "session": "pre",
+  "ts": 1784023350,
+  "tx": "0x8312992db7b21ee68fafde02b6fc8b1d796fd104be8356c3be6c9ba41a702188",
+  "block": 109920051,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-07-14 15:42:35",
+  "session": "regular",
+  "ts": 1784043755,
+  "tx": "0x1ea156699279aa62478d3c8bb7f946f517683ea4e9d9d425cc2b8d107e8d8bc3",
+  "block": 109965371,
+  "market": "0xdee403936c6f4c64095e68301c0b5ea2d49fa36ed204b61d504f55b280079a36"
+ },
+ {
+  "time_utc": "2026-07-14 23:32:14",
+  "session": "post",
+  "ts": 1784071934,
+  "tx": "0x912487758505d11f85b5f6c30146ad60da93fb8e6436b6d052ddb332b76ec487",
+  "block": 110027980,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-16 05:31:53",
+  "session": "overnight",
+  "ts": 1784179913,
+  "tx": "0x67391bc9be87331e6335477cc9223d76403055f68d1aa84b7bb14310b2874c47",
+  "block": 110267853,
+  "market": "0x5705cc70ce58344db7cdf148da4d91f1458c03ca36145f905ce466ce227ee47e"
+ },
+ {
+  "time_utc": "2026-07-17 03:32:00",
+  "session": "overnight",
+  "ts": 1784259120,
+  "tx": "0xbfa3a1d12c64007e997b153176b800c069170febf53936c1e9d1dfc0baf16989",
+  "block": 110443826,
+  "market": "0x2134ebce65b342b3bd26ee6236675213b4208a035a4d065a8a38d5c3ada4361a"
+ },
+ {
+  "time_utc": "2026-07-17 03:32:14",
+  "session": "overnight",
+  "ts": 1784259134,
+  "tx": "0x54ec45a9c9a82f7ac79993b269c65c23306d0191403784fa7eb0480b098e4c68",
+  "block": 110443857,
+  "market": "0x7942468d613d1d781e16fe1a3d5e357a586f02190aba261b7e4140ac9c699f94"
+ },
+ {
+  "time_utc": "2026-07-17 04:02:29",
+  "session": "overnight",
+  "ts": 1784260949,
+  "tx": "0xd2d1b50b57588f4c8134f148c8814353ad2c58f0f4112db0f436ae32d49a2d16",
+  "block": 110447889,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-07-17 06:48:28",
+  "session": "overnight",
+  "ts": 1784270908,
+  "tx": "0x81e6c6ff2cab59f2c156f5c35695d3ccba146b2ca34709a4f2548e41361e767d",
+  "block": 110470015,
+  "market": "0x01eb3f111eafdb6586604d2a2189eb4109cd060ddfa6293e003fc598ee124df0"
+ },
+ {
+  "time_utc": "2026-07-17 07:32:07",
+  "session": "overnight",
+  "ts": 1784273527,
+  "tx": "0x06aeb75c4faca44db56f0f1e30164a20353e83fdc224b15d5697fd2c20bab637",
+  "block": 110475829,
+  "market": "0x7942468d613d1d781e16fe1a3d5e357a586f02190aba261b7e4140ac9c699f94"
+ },
+ {
+  "time_utc": "2026-07-17 18:00:49",
+  "session": "regular",
+  "ts": 1784311249,
+  "tx": "0xc3e7a59928914754d441f9a626ecf513d9562c686c67057cdb36821c6fb03c91",
+  "block": 110559634,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-07-21 14:02:05",
+  "session": "regular",
+  "ts": 1784642525,
+  "tx": "0x656802ad6f632809c6835ab2fc93a2d68c9ca3b5c269fba23d28601fa29682ca",
+  "block": 111295586,
+  "market": "0x869861f50ecec64d1a75a24ebb118071c5e60122ee263e4ad44546d762c818f9"
+ },
+ {
+  "time_utc": "2026-07-21 16:51:17",
+  "session": "regular",
+  "ts": 1784652677,
+  "tx": "0xb17cd46aa4f94cbeb9b0fcbcbc9269b68bee6000eca7543a5c9c6932073e8419",
+  "block": 111317992,
+  "market": "0x099a8d12861248c9ab5460f21ed1169d3f5447a8432d016c75019037f24ed9cf"
+ },
+ {
+  "time_utc": "2026-07-23 01:35:14",
+  "session": "overnight",
+  "ts": 1784770514,
+  "tx": "0xc5a6c3ca124cda7b0ba58ec1a3be1b5e5e2731dab477dfd694fcab332950273e",
+  "block": 111579634,
+  "market": "0xae82d976f5470fa4fc7c32b4f01069351874516946de7352cb783381a0e94d14"
+ },
+ {
+  "time_utc": "2026-07-24 13:52:33",
+  "session": "regular",
+  "ts": 1784901153,
+  "tx": "0x5e33f20ca975389f9c89199ad689bb88097dc4da6585fa3c2390251a8b1920f0",
+  "block": 111869755,
+  "market": "0x699b2f053a8d301e47fdde812abaf36268b74d6f8e6b8e2d3164954b5ba8e3e5"
+ },
+ {
+  "time_utc": "2026-07-25 14:32:27",
+  "session": "weekend",
+  "ts": 1784989947,
+  "tx": "0x5904ec1fceed679a616808819115f0077741c8e3ecaf34874ba7a4a162d2d3ce",
+  "block": 112067024,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-07-26 13:02:23",
+  "session": "weekend",
+  "ts": 1785070943,
+  "tx": "0xd8fc6c1bfc43ab7dfc9cf905d1d0a29bedef349e2681518f9507209242504be3",
+  "block": 112246967,
+  "market": "0x099a8d12861248c9ab5460f21ed1169d3f5447a8432d016c75019037f24ed9cf"
+ },
+ {
+  "time_utc": "2026-07-27 00:11:54",
+  "session": "overnight",
+  "ts": 1785111114,
+  "tx": "0x128a39393e85521adc3dd2ed492633bb05ab7b047f1043840e5f3e66d7d6e5e9",
+  "block": 112336222,
+  "market": "0xd73b77c1236b90c2c5453e197754eacb535ed120e3ebc77734ff7ba6f0844924"
+ },
+ {
+  "time_utc": "2026-07-27 06:18:19",
+  "session": "overnight",
+  "ts": 1785133099,
+  "tx": "0x5fe7b05310d0601d12b7359f79116649ab0ba21d5210a221f0c79656d01d0423",
+  "block": 112384838,
+  "market": "0x099a8d12861248c9ab5460f21ed1169d3f5447a8432d016c75019037f24ed9cf"
+ },
+ {
+  "time_utc": "2026-07-28 00:49:03",
+  "session": "overnight",
+  "ts": 1785199743,
+  "tx": "0xbe0f96afea15e2b7491f8e3bc120ca9b5c4429facbd8163391d086df5645394b",
+  "block": 112532858,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-07-29 07:02:25",
+  "session": "overnight",
+  "ts": 1785308545,
+  "tx": "0x75a3a2bcbc792302b3ddb65453d281217047f5b23db6df15c518a672ce5d8c9f",
+  "block": 112774506,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 15:32:19",
+  "session": "regular",
+  "ts": 1785339139,
+  "tx": "0xc4dad3af5e08fbbe32a79d7ace496a2218c289e276bcf5823afc872b0e6e448c",
+  "block": 112842466,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:12:11",
+  "session": "regular",
+  "ts": 1785348731,
+  "tx": "0x3067cc6148c68dca48fb8b6c1be25defad31a82f4a26abab6b795c1acdfa2a0a",
+  "block": 112863781,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:12:42",
+  "session": "regular",
+  "ts": 1785348762,
+  "tx": "0x5fabb7ee076b06a223d4d795ad2cf7e9c24672cd57e4ce0170b1a72020c80082",
+  "block": 112863851,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:13:14",
+  "session": "regular",
+  "ts": 1785348794,
+  "tx": "0x75d35edcf079a876abbda52df77569f950506892b2a2dcbe5c0746a63aa0eefb",
+  "block": 112863922,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:13:46",
+  "session": "regular",
+  "ts": 1785348826,
+  "tx": "0x6099fb7880f6b931016b87164a7988836dd4e58eb31abdcf88d4665721e59bf6",
+  "block": 112863993,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:14:11",
+  "session": "regular",
+  "ts": 1785348851,
+  "tx": "0x256f9f635dfb759c9f0f4f674c5aceedd11aaac967026391651514fbd88234c2",
+  "block": 112864048,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:14:43",
+  "session": "regular",
+  "ts": 1785348883,
+  "tx": "0xc633646e1bfb25285fcfa2d864f857bcd6d70fe83088f18e83977f903712615e",
+  "block": 112864119,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:15:15",
+  "session": "regular",
+  "ts": 1785348915,
+  "tx": "0x769ee1d2196b2cd81618ec0bc58773fff04282ac67997ae2e79153811da98f90",
+  "block": 112864190,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:15:47",
+  "session": "regular",
+  "ts": 1785348947,
+  "tx": "0xb12dc36f1061a75b8e187b24f78e8d6b34ad27b9f5143c97bd8393bd50419920",
+  "block": 112864261,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:16:11",
+  "session": "regular",
+  "ts": 1785348971,
+  "tx": "0xc66f94c1b100f2d98e5d7e3b1c28cf356bcbf43a17beff332142befc4818e5cc",
+  "block": 112864315,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:16:42",
+  "session": "regular",
+  "ts": 1785349002,
+  "tx": "0xfcba483641ad041e64e47fc7aceaf6787eb9be9ee2a11d08acd4519750c0f963",
+  "block": 112864385,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:17:14",
+  "session": "regular",
+  "ts": 1785349034,
+  "tx": "0xe8c8c37d3ae98ea3a51b4327021bbdca9c5627c7f5fca2a737dfc4f386d13c13",
+  "block": 112864456,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 18:17:46",
+  "session": "regular",
+  "ts": 1785349066,
+  "tx": "0x9acdbeecaaeda5f43030ef99206e90c7a653cc9476debec69f72d23c748cd169",
+  "block": 112864527,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-29 19:42:52",
+  "session": "regular",
+  "ts": 1785354172,
+  "tx": "0x24e7323145920d16a20e4a1ba11225849081cf0c395f949f8f3fb5d008864abd",
+  "block": 112875871,
+  "market": "0xc87d09294447fd2f9f4d7088790ed1a4ceaf0eaecc5e8cb03ce5849e924c4725"
+ },
+ {
+  "time_utc": "2026-07-30 08:42:58",
+  "session": "pre",
+  "ts": 1785400978,
+  "tx": "0x8738ccf154dd124a17b8c989e8f2c88f7a9665cfbbbd0d82ae2f1d1b6e2245d1",
+  "block": 112979830,
+  "market": "0x01eb3f111eafdb6586604d2a2189eb4109cd060ddfa6293e003fc598ee124df0"
+ },
+ {
+  "time_utc": "2026-07-31 03:37:42",
+  "session": "overnight",
+  "ts": 1785469062,
+  "tx": "0x1e4f790cbd75940b11eee29567b41f5c2483b37d3005d83ba3f47da12abc6659",
+  "block": 113131079,
+  "market": "0x24ef5f94def28b34f08e192a810aecd393ea4969eec031ec268de008e8a3bc70"
+ },
+ {
+  "time_utc": "2026-08-01 18:30:50",
+  "session": "weekend",
+  "ts": 1785609050,
+  "tx": "0x5075eab4f182d831efc71cdcc2729ce0ca5dbe972b9cab43326aa6dc9697698f",
+  "block": 113442067,
+  "market": "0x78d4cf129bf7e4d61a53a3b1c6c6e6ecaaec4a1f3bf1c176b904b2e8ec932bb3"
+ },
+ {
+  "time_utc": "2026-08-03 04:02:35",
+  "session": "overnight",
+  "ts": 1785729755,
+  "tx": "0xe9a9ac7412a65974419566f4e7c89852a4d00428204b2d7b8cdd0ad06a7bf60c",
+  "block": 113710243,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-08-04 07:15:29",
+  "session": "overnight",
+  "ts": 1785827729,
+  "tx": "0x793b712d7b19c2a1992439ecd14eabe457827994ff2ad9205328993be9cecd03",
+  "block": 113927914,
+  "market": "0x2134ebce65b342b3bd26ee6236675213b4208a035a4d065a8a38d5c3ada4361a"
+ },
+ {
+  "time_utc": "2026-08-04 07:24:33",
+  "session": "overnight",
+  "ts": 1785828273,
+  "tx": "0x98a25c2b6c04de84a36e4ede767704bcb0635d733dee5fad97aa9a91b852cb63",
+  "block": 113929122,
+  "market": "0x8de2e1f3e3935024a2667d8203983bdff70a1aee0c91665760e02c257d53032f"
+ },
+ {
+  "time_utc": "2026-08-04 07:27:58",
+  "session": "overnight",
+  "ts": 1785828478,
+  "tx": "0xe148e208749188c339c9c18bff3c95a277977500dd804024ca32b9b24002b2db",
+  "block": 113929577,
+  "market": "0xea00a233473bc0585326eec959623a054798b7543205c5079bab49015a2bf810"
+ },
+ {
+  "time_utc": "2026-08-04 07:44:55",
+  "session": "overnight",
+  "ts": 1785829495,
+  "tx": "0xfa974d0afcc39757971068a746c4ec32a56c265b2e0fd4fc45e93d67677bc723",
+  "block": 113931838,
+  "market": "0xab3827ad876b82fb5af9af8bf3f0bbc8a01e8602389053a71513db72c5f129f7"
+ },
+ {
+  "time_utc": "2026-08-04 09:32:16",
+  "session": "pre",
+  "ts": 1785835936,
+  "tx": "0x74233536b8e4ccba35b6502badc960390daf7cdb6d91a75d87f886ff1eb74f07",
+  "block": 113946149,
+  "market": "0x226935103b730aefad53849e4cf7d92f30083cc417222f395478dabdd9ff3cac"
+ },
+ {
+  "time_utc": "2026-08-05 03:11:31",
+  "session": "overnight",
+  "ts": 1785899491,
+  "tx": "0xeb379c1c09a21719cc82378672a9a2d6afe3ef299b3c6d958db8ccd5be3b1ebe",
+  "block": 114087354,
+  "market": "0xd73b77c1236b90c2c5453e197754eacb535ed120e3ebc77734ff7ba6f0844924"
+ },
+ {
+  "time_utc": "2026-08-05 12:19:21",
+  "session": "pre",
+  "ts": 1785932361,
+  "tx": "0x78d10718cc760840d3c322d03808d180bf6b1a5b0ee9dc42ebd30202bb30f5df",
+  "block": 114160384,
+  "market": "0x8bbc9cd564db82c15d0947d305ebd9f04fe7fc35b4bca0872b65ff4f4947d26e"
+ },
+ {
+  "time_utc": "2026-08-06 00:34:26",
+  "session": "overnight",
+  "ts": 1785976466,
+  "tx": "0x08ba178947c28cee4e7043b3610b372a200afdbf1df6021232fea323114ad068",
+  "block": 114258101,
+  "market": "0xd73b77c1236b90c2c5453e197754eacb535ed120e3ebc77734ff7ba6f0844924"
+ },
+ {
+  "time_utc": "2026-08-06 10:03:31",
+  "session": "pre",
+  "ts": 1786010611,
+  "tx": "0x0da2ad76c96b5a0a71f8428d5cf4a81940936cef2b88a7dd9d3a8f89f5eaaeb7",
+  "block": 114333957,
+  "market": "0x6ef28e9f52ffd5e66b14ba95f3da17b782ce8c4a592218fa32f917ca10f4f054"
+ },
+ {
+  "time_utc": "2026-08-08 08:23:34",
+  "session": "weekend",
+  "ts": 1786177414,
+  "tx": "0xf6950e1c0fa13fcd8fe958401c19da408a91475d993d46b5a5d8c9aaebe6f424",
+  "block": 114704270,
+  "market": "0x099a8d12861248c9ab5460f21ed1169d3f5447a8432d016c75019037f24ed9cf"
+ },
+ {
+  "time_utc": "2026-08-10 15:13:33",
+  "session": "regular",
+  "ts": 1786374813,
+  "tx": "0xd21a288eec60b10781ceb10c9aabb7bdcd45f89e83255e65a5848e5de131c968",
+  "block": 115142827,
+  "market": "0xafcd188164da1954255628930e6b8622bf6e89d2232fe36355c2b28ac8961b70"
+ },
+ {
+  "time_utc": "2026-08-11 00:08:07",
+  "session": "overnight",
+  "ts": 1786406887,
+  "tx": "0xf8b1df724ac3e8a33a06effecaba29efd25e8b41f1107f6538c08d0c0af8dfff",
+  "block": 115214090,
+  "market": "0x8bbc9cd564db82c15d0947d305ebd9f04fe7fc35b4bca0872b65ff4f4947d26e"
+ },
+ {
+  "time_utc": "2026-08-11 11:02:27",
+  "session": "pre",
+  "ts": 1786446147,
+  "tx": "0x3db3d67d1bdbb34cca936a01db577224aaaa0e2c7658c2734f6b60109af01d2f",
+  "block": 115301265,
+  "market": "0x59bdfd8308fa61a080bfb3e8b0e9b1922248336c1d8742d5c40eecfab261685a"
+ },
+ {
+  "time_utc": "2026-08-11 12:12:11",
+  "session": "pre",
+  "ts": 1786450331,
+  "tx": "0xc6cefc3631f3db34abdb8027802b5412eebad842229980b54ef0e626a705c3de",
+  "block": 115310557,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-08-17 18:02:36",
+  "session": "regular",
+  "ts": 1786989756,
+  "tx": "0x879c3cba8f0fb2ed942f41719fa9c5d1c0e1f8947f19407545fb826d653ef483",
+  "block": 116508904,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-08-18 05:02:38",
+  "session": "overnight",
+  "ts": 1787029358,
+  "tx": "0x65a063771ad2859581ccd773c484ead93f797fc8c9b9196298480e426e4ab6af",
+  "block": 116596882,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-08-19 20:51:16",
+  "session": "post",
+  "ts": 1787172676,
+  "tx": "0xbc440fa195c8373a66f4d2fd108a20e07ca63bfa4e29919bc773cbd06115b903",
+  "block": 116915300,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-08-20 15:32:07",
+  "session": "regular",
+  "ts": 1787239927,
+  "tx": "0x039a9e7b1ddaad48d09773649df37ec08b1fff244ecf968fa9541756ffeb0f09",
+  "block": 117064695,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-08-22 03:27:56",
+  "session": "weekend",
+  "ts": 1787369276,
+  "tx": "0x7d0258d6f9d35578033263f3525da933a2649646e90cc326eba00bd9ec1285a9",
+  "block": 117352044,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-08-25 08:28:26",
+  "session": "pre",
+  "ts": 1787646506,
+  "tx": "0x595e8dc9008dd9abb4eb80485cab0644c5eae113490660600993f97fbeefdc69",
+  "block": 117967880,
+  "market": "0x78d8882695ecc12b1cbaf0e09fa681eef7f89984711e34c91a5d99f51fbe28c5"
+ },
+ {
+  "time_utc": "2026-08-25 09:41:31",
+  "session": "pre",
+  "ts": 1787650891,
+  "tx": "0x6b384617df2d874912ec9941fc6aaa2a1972113983afdd609d9a8e8d1e014b82",
+  "block": 117977622,
+  "market": "0x78d8882695ecc12b1cbaf0e09fa681eef7f89984711e34c91a5d99f51fbe28c5"
+ },
+ {
+  "time_utc": "2026-08-31 10:02:46",
+  "session": "pre",
+  "ts": 1788170566,
+  "tx": "0x5a0897dc4810535a03846736d72ddd43bf50512b611188a52a2798d94efdfb67",
+  "block": 119132048,
+  "market": "0xed20ae46f7f909622225cdf9f301854bd46d74f639ab07bba723e5431ab27653"
+ },
+ {
+  "time_utc": "2026-09-01 01:51:38",
+  "session": "overnight",
+  "ts": 1788227498,
+  "tx": "0xaac100f89be3a7c3e0fb2fe23c17002d5495810b4854286c9edade67ec3d3056",
+  "block": 119258526,
+  "market": "0xd9c00925089bfdfa28fd1e9ee734da1461d0b1b9bed9647f6e7ec5acb9d20fc6"
+ },
+ {
+  "time_utc": "2026-09-02 12:02:36",
+  "session": "pre",
+  "ts": 1788350556,
+  "tx": "0x887ee4472b6c4130b7300c1a8f7ba3a160b98e244392807a3ae201df3c5ba7b8",
+  "block": 119531862,
+  "market": "0x7a72ecec7d2155f0aaa0fc777eed426eae1053defd94ebf215c91caeb53386d2"
+ },
+ {
+  "time_utc": "2026-09-03 23:02:06",
+  "session": "post",
+  "ts": 1788476526,
+  "tx": "0xfed99df2d2e065e150d1373f0bea1aec46b9c10379e92e35499d177548bf6a94",
+  "block": 119811207,
+  "market": "0x7942468d613d1d781e16fe1a3d5e357a586f02190aba261b7e4140ac9c699f94"
+ },
+ {
+  "time_utc": "2026-09-04 09:23:16",
+  "session": "pre",
+  "ts": 1788513796,
+  "tx": "0x6d53720b7291f714267a77cff7ff57d350f0fb9698c34023483865f6a1916cab",
+  "block": 119893984,
+  "market": "0x226935103b730aefad53849e4cf7d92f30083cc417222f395478dabdd9ff3cac"
+ },
+ {
+  "time_utc": "2026-09-05 17:09:10",
+  "session": "weekend",
+  "ts": 1788628150,
+  "tx": "0xf2ba73bef811008e044fbdb8059ca75d845903feff4153ac0e8c1fca9c4c13de",
+  "block": 120148015,
+  "market": "0xf4859576d776ccbc5c7848228da8edd47902d351b1195787742bf5a2927dfe8c"
+ },
+ {
+  "time_utc": "2026-09-09 11:02:13",
+  "session": "pre",
+  "ts": 1788951733,
+  "tx": "0x3aa2efe2f8ce609ef551b13572515204119946bbc46c41f337961a1d0efaa904",
+  "block": 120866765,
+  "market": "0x6b2a849bc2bdceb86169ec030f12a4711a1b96752dab959dcfcc7e76a8690012"
+ },
+ {
+  "time_utc": "2026-09-10 10:34:24",
+  "session": "pre",
+  "ts": 1789036464,
+  "tx": "0x0c28c15753c5bc37777311cc243a7137d584724db692f0aaa7c939eb820cfda7",
+  "block": 121054946,
+  "market": "0x9ed14e92e2db39099d2e5bb23f55a64caf03ea63b39af1364387bd7d5832a668"
+ },
+ {
+  "time_utc": "2026-09-14 09:19:39",
+  "session": "pre",
+  "ts": 1789377579,
+  "tx": "0x0feb2ed23a8fdd09da7044eea2f750ed350eb91b4969ee0689ea12b843a6a446",
+  "block": 121812577,
+  "market": "0x9ed14e92e2db39099d2e5bb23f55a64caf03ea63b39af1364387bd7d5832a668"
+ },
+ {
+  "time_utc": "2026-09-21 12:03:15",
+  "session": "pre",
+  "ts": 1789992195,
+  "tx": "0x84e3f0809870503dc68c16bf45d357716638aa8b20e387f8c8182fa2cbc047df",
+  "block": 123177865,
+  "market": "0x9296f6b16f26036cadab212cc3569490637021728d96cd61637e7dc14525630b"
+ },
+ {
+  "time_utc": "2026-09-23 08:31:54",
+  "session": "pre",
+  "ts": 1790152314,
+  "tx": "0xb9cac5193213b5c24c67825162da81cf6298a61768bb16dabe2d9ec7377ba51c",
+  "block": 123533550,
+  "market": "0xdf9ad2d18a115cc0ee9239a174a4f0d1b22d7d1393ec71e37638f8f7be68f78c"
+ },
+ {
+  "time_utc": "2026-09-24 09:34:21",
+  "session": "pre",
+  "ts": 1790242461,
+  "tx": "0xc413756ed8971b7ad098a59025eaf1f25e5575351cd4e999be924f979160532d",
+  "block": 123733772,
+  "market": "0x9ed14e92e2db39099d2e5bb23f55a64caf03ea63b39af1364387bd7d5832a668"
+ }
+]
