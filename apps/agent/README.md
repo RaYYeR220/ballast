@@ -33,24 +33,25 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | Variable | Default | Notes |
 |---|---|---|
 | `CHAIN_ID` | required | `56` BSC, `97` BSC testnet, `31337` local fork |
-| `BSC_RPC_URL` | required | http(s); treated as a secret because providers put keys in the path |
+| `BSC_RPC_URL` | required | treated as a secret because providers put keys in the path; https on chain 56 (http only for a loopback node) |
 | `AGENT_PRIVATE_KEY` | | or the two keystore variables below, not both |
 | `AGENT_KEYSTORE_PATH`, `AGENT_KEYSTORE_PASSWORD` | | Studio keystore; `WALLET_PASSWORD` is accepted as the password |
 | `BINANCE_WEB3_API_KEY`, `BINANCE_WEB3_API_SECRET` | unset | both or neither; unset means keyless public endpoints |
 | `DEPLOYMENT_FILE` | `contracts/deployments/<CHAIN_ID>.json` | |
 | `AGENT_BIND_HOST`, `AGENT_PORT` | `127.0.0.1`, `9000` | Studio A2A/MCP listener; must be loopback on chain 56 |
-| `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy |
-| `X402_DAILY_CAP_USD` | `0.5` | daily ceiling for paid data |
+| `HTTP_HOST`, `HTTP_PORT` | `127.0.0.1`, `8787` | desk read API, fronted by a reverse proxy; must be loopback on chain 56 |
+| `X402_DAILY_CAP_USD` | `0.5` | daily ceiling for paid data; at most 0.5 |
 | `X402_EARNINGS_URL` | unset (off) | x402 earnings-calendar endpoint; `{symbol}`, `{from}`, `{to}` are filled in |
 | `X402_MAX_PRICE_USD` | `0.05` | most one call may cost (at most 0.05) |
 | `X402_NETWORKS` | `eip155:56,eip155:8453` | networks the desk pays on, preferred first |
 | `WEB_ORIGIN` | unset | the one origin the read API answers CORS for |
 | `API_RATE_PER_MIN` | `120` | requests per minute per client IP |
 | `DESK_NOTES` | `auto` | `off` never calls the LLM; `auto` uses the Studio `[llm]` provider when its key is set |
+| `NOTES_DAILY_MAX` | `200` | most LLM calls for notes per UTC day |
 | `STUDIO_TOML` | `app/agent/studio.toml` | where the notes read `[llm]` |
 | `FORK_TICK_SEC` | unset | fork only (`CHAIN_ID=31337`): every loop runs at this interval |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
-| `DATA_DIR` | `apps/agent/var/` | feed and other desk state; outside git |
+| `DATA_DIR` | `apps/agent/var/` | feed, ledger, guardian cursor, evidence; outside git. Test-written at startup: the desk exits non-zero if it cannot write there |
 | `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
 | `DRY_RUN` | `true` | simulate every write, broadcast nothing |
 | `AGENT_PUBLIC_URL`, `APP_URL` | | register only: stand-ins for `--agent-url` and `--web-url` |

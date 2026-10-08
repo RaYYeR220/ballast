@@ -149,7 +149,7 @@ describe("loadConfig", () => {
   });
 
   it("takes bind addresses and ports for both listeners", () => {
-    const c = loadConfig({ ...base, AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100", HTTP_HOST: "0.0.0.0", HTTP_PORT: "8080" });
+    const c = loadConfig({ ...base, CHAIN_ID: "31337", AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100", HTTP_HOST: "0.0.0.0", HTTP_PORT: "8080" });
     expect([c.agentBindHost, c.agentPort, c.httpHost, c.httpPort]).toEqual(["127.0.0.2", 9100, "0.0.0.0", 8080]);
     expect(studioEnv(c)).toEqual({ AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100" });
   });
@@ -258,6 +258,27 @@ describe("desk API, x402 and notes settings", () => {
     expect(issuesOf({ ...base, WEB_ORIGIN: "https://app.example.org/path" })[0]).toMatch(/^WEB_ORIGIN/);
     expect(issuesOf({ ...base, DESK_NOTES: "maybe" })[0]).toMatch(/^DESK_NOTES/);
     expect(issuesOf({ ...base, FORK_TICK_SEC: "10" })).toEqual(["FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)"]);
+  });
+
+  it("caps the daily x402 spend at $0.50", () => {
+    expect(loadConfig({ ...base, X402_DAILY_CAP_USD: "0.5" }).x402DailyCapUsd).toBe(0.5);
+    expect(issuesOf({ ...base, X402_DAILY_CAP_USD: "0.51" })).toEqual(["X402_DAILY_CAP_USD: must be at most 0.5"]);
+  });
+
+  it("on BSC mainnet keeps the read API on loopback and requires https for the RPC and paid data", () => {
+    expect(issuesOf({ ...base, HTTP_HOST: "0.0.0.0" })[0]).toMatch(/^HTTP_HOST: must be a loopback address/);
+    expect(loadConfig({ ...base, CHAIN_ID: "31337", HTTP_HOST: "0.0.0.0" }).httpHost).toBe("0.0.0.0");
+    expect(issuesOf({ ...base, BSC_RPC_URL: "http://rpc.example.org/key-0123456789" })).toEqual(["BSC_RPC_URL: must be https on BSC mainnet (http only for a node on loopback)"]);
+    expect(loadConfig({ ...base, BSC_RPC_URL: "http://127.0.0.1:8545" }).chainId).toBe(56);
+    expect(loadConfig({ ...base, BSC_RPC_URL: "http://[::1]:8545" }).chainId).toBe(56);
+    expect(loadConfig({ ...base, CHAIN_ID: "31337", BSC_RPC_URL: "http://10.0.0.5:8545" }).chainId).toBe(31337);
+    expect(issuesOf({ ...base, X402_EARNINGS_URL: "http://data.example/earnings" })).toEqual(["X402_EARNINGS_URL: must be https on BSC mainnet"]);
+  });
+
+  it("bounds the daily number of note calls", () => {
+    expect(loadConfig(base).notesDailyMax).toBe(200);
+    expect(loadConfig({ ...base, NOTES_DAILY_MAX: "0" }).notesDailyMax).toBe(0);
+    expect(issuesOf({ ...base, NOTES_DAILY_MAX: "1.5" })[0]).toMatch(/^NOTES_DAILY_MAX/);
   });
 
   it("lists every secret value for scrubbing", () => {

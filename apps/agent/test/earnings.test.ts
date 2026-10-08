@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { nextOpen, regularCloseAt } from "@ballast/risk";
 import { EarningsBuyer, earningsSymbols, earningsUrl, mergedEarnings, parseEarningsResponse } from "../src/desk/earnings";
 import { Feed } from "../src/desk/feed";
+import { nextEarningsFor } from "../src/desk/publisher";
 import { X402Error, type X402Response } from "../src/desk/x402";
 
 const DAY = 86_400;
@@ -49,6 +50,24 @@ describe("earnings helpers", () => {
     expect(() => parseEarningsResponse({ nope: 1 }, "NVDA", "2026-10-07")).toThrow(/no list/);
   });
 
+  it("merges the purchase with the operator file per symbol so the earliest upcoming date wins", async () => {
+    const dir = await tmp();
+    const op = path.join(dir, "earnings.json");
+    const paid = path.join(dir, "earnings-paid.json");
+    const at = (y: number, m: number, d: number) => nextOpen(regularCloseAt(Date.UTC(y, m - 1, d) / 1000 / DAY));
+    // NVDA: the operator's estimate is a day late; TSLA: the purchase is the late one.
+    await writeFile(op, JSON.stringify({ earnings: { NVDA: [{ date: "2026-11-19", timing: "amc" }], TSLA: [{ date: "2026-10-21", timing: "amc" }] } }));
+    await writeFile(
+      paid,
+      JSON.stringify({ version: 1, fetchedOn: "2026-10-07", done: [], source: "x", earnings: { NVDA: [{ date: "2026-11-18", timing: "amc" }], TSLA: [{ date: "2026-10-22", timing: "amc" }, { date: "2026-10-21", timing: "amc" }] } }),
+    );
+    const s = await mergedEarnings(op, paid, () => NOON_WED)();
+    expect(s.get("NVDA")).toEqual([at(2026, 11, 18), at(2026, 11, 19)]);
+    expect(s.get("TSLA")).toEqual([at(2026, 10, 21), at(2026, 10, 22)]);
+    expect(nextEarningsFor(s, "NVDA", NOON_WED)).toBe(at(2026, 11, 18));
+    expect(nextEarningsFor(s, "TSLA", NOON_WED)).toBe(at(2026, 10, 21));
+  });
+
   it("uses a fresh purchase with dates per symbol and falls back to the operator file otherwise", async () => {
     const dir = await tmp();
     const op = path.join(dir, "earnings.json");
@@ -66,7 +85,7 @@ describe("earnings helpers", () => {
     );
     const at = (y: number, m: number, d: number) => nextOpen(regularCloseAt(Date.UTC(y, m - 1, d) / 1000 / DAY));
     const s = await mergedEarnings(op, paid, () => NOON_WED)();
-    expect(s.get("NVDA")).toEqual([at(2026, 11, 18)]);
+    expect(s.get("NVDA")).toEqual([at(2026, 11, 18), at(2026, 11, 19)]);
     expect(s.get("TSLA")).toEqual([at(2026, 10, 21)]);
     expect(s.get("AAPL")).toEqual([at(2026, 10, 29)]); // empty purchase: the operator's date stays
     // a stale purchase is ignored
@@ -133,6 +152,26 @@ describe("EarningsBuyer", () => {
     const stored = JSON.parse(await readFile(file, "utf8"));
     expect(stored.earnings.TSLA).toEqual([{ date: "2026-10-21", timing: "amc" }]);
     expect((await b.tick()).ran).toBe(false);
+  });
+
+  it("does not pay twice for a symbol whose paid answer could not be parsed", async () => {
+    const dir = await tmp();
+    const feed = new Feed({ dir, secrets: [], clock: () => NOON_WED });
+    const file = path.join(dir, "earnings-paid.json");
+    const client = fakeClient((url) => {
+      const sym = new URL(url).searchParams.get("ticker")!;
+      const ok = paidResponse(sym, "2026-11-18");
+      return sym === "NVDA" ? { ...ok, body: { unexpected: true } } : ok;
+    });
+    const b = new EarningsBuyer({ client, urlTemplate: "https://2s.io/api/calendar/earnings", file, feed, symbols: () => ["NVDA", "TSLA"], clock: () => NOON_WED });
+    const r1 = await b.tick();
+    expect(r1.bought).toEqual(["TSLA"]);
+    expect(r1.spentUsd).toBeCloseTo(0.005);
+    expect(r1.failed.NVDA).toMatch(/no list/);
+    const r2 = await b.tick();
+    expect(r2.ran).toBe(false);
+    expect(client.urls.filter((u) => u.includes("NVDA"))).toHaveLength(1);
+    expect(JSON.parse(await readFile(file, "utf8")).done).toEqual(["NVDA", "TSLA"]);
   });
 
   it("retries a symbol that failed before any payment, but not one that was paid for", async () => {

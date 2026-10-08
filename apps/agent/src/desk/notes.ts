@@ -7,13 +7,16 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Feed, FeedEvent, FeedKind } from "./feed";
 
-export type NoteModel = (prompt: { system: string; user: string }) => Promise<string>;
+/** One LLM call; `signal` aborts the request when the note times out. */
+export type NoteModel = (prompt: { system: string; user: string }, signal?: AbortSignal) => Promise<string>;
 
 export const NOTES_TICK_SEC = 15;
 const NOTE_KINDS: ReadonlySet<FeedKind> = new Set(["shield", "restore", "refused"]);
 const MAX_PER_TICK = 5;
 const TIMEOUT_MS = 20_000;
 const MAX_CHARS = 320;
+/** LLM calls per UTC day unless configured otherwise. */
+export const DEFAULT_DAILY_MAX = 200;
 
 export const NOTE_SYSTEM =
   "You write the audit log of an automated lending risk desk for tokenized US stocks. Given one event as JSON, " +
@@ -126,12 +129,18 @@ export interface NotesWorkerOptions {
   model: NoteModel;
   secrets?: readonly string[];
   timeoutMs?: number;
+  /** Most model calls per UTC day (failed calls count); events past the budget get no note. */
+  dailyMax?: number;
+  /** Unix seconds. */
+  clock?: () => number;
   log?: (line: string) => void;
 }
 
 export class NotesWorker {
   readonly #o: NotesWorkerOptions;
   #after: number;
+  #day = -1;
+  #calls = 0;
 
   /** Starts after the newest event already in the feed: no backfill burst of LLM calls on a restart. */
   constructor(o: NotesWorkerOptions) {
@@ -151,6 +160,7 @@ export class NotesWorker {
     this.#after = todo.length === MAX_PER_TICK && lastTodo ? lastTodo.seq : (fresh.at(-1) as FeedEvent).seq;
     let written = 0;
     for (const e of todo) {
+      if (!this.#spend()) continue;
       const note = await this.#write(e);
       if (note) {
         await this.#o.store.set(e.seq, note);
@@ -160,15 +170,37 @@ export class NotesWorker {
     return written;
   }
 
+  /** Takes one call from today's budget; false (logged once a day) when it is used up. */
+  #spend(): boolean {
+    const now = (this.#o.clock ?? (() => Math.floor(Date.now() / 1000)))();
+    const day = Math.floor(now / 86_400);
+    if (day !== this.#day) {
+      this.#day = day;
+      this.#calls = 0;
+    }
+    const max = this.#o.dailyMax ?? DEFAULT_DAILY_MAX;
+    if (this.#calls >= max) {
+      if (this.#calls === max) this.#o.log?.(`desk notes: daily budget of ${max} calls used up, no more notes today`);
+      this.#calls = max + 1;
+      return false;
+    }
+    this.#calls++;
+    return true;
+  }
+
   async #write(e: FeedEvent): Promise<string | null> {
     const secrets = this.#o.secrets ?? [];
     const user = scrub(notePrompt(e), secrets);
+    const abort = new AbortController();
     let timer: NodeJS.Timeout | undefined;
     try {
       const text = await Promise.race([
-        this.#o.model({ system: NOTE_SYSTEM, user }),
+        this.#o.model({ system: NOTE_SYSTEM, user }, abort.signal),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("note timed out")), this.#o.timeoutMs ?? TIMEOUT_MS);
+          timer = setTimeout(() => {
+            abort.abort(); // stop the request itself, not only our wait for it
+            reject(new Error("note timed out"));
+          }, this.#o.timeoutMs ?? TIMEOUT_MS);
         }),
       ]);
       return cleanNote(text, secrets);
@@ -200,8 +232,8 @@ export async function studioNoteModel(studioToml: string, log?: (line: string) =
     const cfg = resolveProviderConfig(llm as never); // throws when the provider's key is missing
     const model = resolveModel(llm as never);
     log?.(`desk notes on: ${cfg.provider} ${cfg.modelId}`);
-    return async ({ system, user }) => {
-      const r = await generateText({ model, system, prompt: user, maxOutputTokens: 120, temperature: 0.2, maxRetries: 0 });
+    return async ({ system, user }, signal) => {
+      const r = await generateText({ model, system, prompt: user, maxOutputTokens: 120, temperature: 0.2, maxRetries: 0, ...(signal ? { abortSignal: signal } : {}) });
       return r.text;
     };
   } catch (err) {

@@ -1,7 +1,8 @@
 // Earnings dates for the publisher's nextEarnings. When X402_EARNINGS_URL is set the desk buys the next dates
 // once per trading day from that x402 data endpoint and keeps them in <dataDir>/earnings-paid.json (same
-// format as the operator file). A recent purchase with at least one date wins for its symbol; everything
-// else (purchase off, failed, stale, or empty for a symbol) falls back to the operator file, config/earnings.json.
+// format as the operator file). The publisher sees both sources merged per symbol, so the earliest upcoming
+// date of either wins (shielding a day early costs little; missing an earnings gap does not). With the
+// purchase off, failed or stale, the operator file (config/earnings.json) is used alone.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isTradingDay, localDay, tickers } from "@ballast/risk";
@@ -85,9 +86,10 @@ async function readPaid(file: string): Promise<PaidEarningsFile | null> {
 export const PAID_MAX_AGE_DAYS = 7;
 
 /**
- * The schedule the publisher uses: per symbol, the purchased dates when the purchase is at most
- * PAID_MAX_AGE_DAYS old and has at least one date, else the operator file. A broken operator file throws
- * (the publisher keeps its last good schedule); a broken or stale purchase is ignored.
+ * The schedule the publisher uses: per symbol, the operator's dates and the purchased ones (when the purchase
+ * is at most PAID_MAX_AGE_DAYS old) merged and sorted, so the earliest upcoming date of either source is the
+ * one posted. A broken operator file throws (the publisher keeps its last good schedule); a broken or stale
+ * purchase is ignored.
  */
 export function mergedEarnings(operatorFile: string, paidFile: string | null, clock: () => number = () => Math.floor(Date.now() / 1000)): () => Promise<EarningsSchedule> {
   return async () => {
@@ -103,8 +105,11 @@ export function mergedEarnings(operatorFile: string, paidFile: string | null, cl
     } catch {
       return operator;
     }
-    const out = new Map(operator);
-    for (const [sym, list] of bought) if (list.length > 0) out.set(sym, list);
+    const out = new Map<string, readonly number[]>(operator);
+    for (const [sym, list] of bought) {
+      if (list.length === 0) continue;
+      out.set(sym, [...new Set([...(operator.get(sym) ?? []), ...list])].sort((a, b) => a - b));
+    }
     return out;
   };
 }
@@ -155,11 +160,15 @@ export class EarningsBuyer {
       const url = earningsUrl(this.#o.urlTemplate, sym, today, to);
       try {
         const r = await this.#o.client.get(url);
+        // Paid: this symbol is done for the day whatever the answer turns out to be (never pay twice).
+        if (r.payment) {
+          report.spentUsd += r.payment.usd;
+          state.done.push(sym);
+        }
         const dates = parseEarningsResponse(r.body, sym, today);
         state.earnings[sym] = dates;
-        state.done.push(sym);
+        if (!r.payment) state.done.push(sym);
         report.bought.push(sym);
-        if (r.payment) report.spentUsd += r.payment.usd;
         await this.#o.feed.record({
           kind: "payment",
           source: "x402",

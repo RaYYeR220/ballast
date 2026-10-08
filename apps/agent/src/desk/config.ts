@@ -12,6 +12,8 @@ export type DeskChainId = keyof typeof DESK_CHAINS;
 const REDACTED = "[redacted]";
 /** Hard ceiling on one x402 data call. */
 export const MAX_X402_PRICE_USD = 0.05;
+/** Hard ceiling on all x402 spend per UTC day. */
+export const MAX_X402_DAILY_USD = 0.5;
 /**
  * Environment variable names whose values are secrets wherever they come from (LLM provider keys for the
  * desk notes, cloud credentials): anything ending in _API_KEY, _SECRET, _SECRET_ACCESS_KEY, _TOKEN or _PASSWORD.
@@ -70,6 +72,8 @@ export interface DeskConfig {
   readonly apiRatePerMin: number;
   /** Desk notes from the Studio LLM: "auto" uses it when configured, "off" never calls it. */
   readonly notes: "auto" | "off";
+  /** Most LLM calls the desk notes may make per UTC day. */
+  readonly notesDailyMax: number;
   /** studio.toml whose [llm] section the desk notes use. */
   readonly studioToml: string;
   /** Fork runs only (CHAIN_ID 31337): every loop runs at this interval instead of its own. */
@@ -168,7 +172,9 @@ const envSchema = z.object({
   AGENT_PORT: portVar(9000),
   HTTP_HOST: hostVar("127.0.0.1"),
   HTTP_PORT: portVar(8787),
-  X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  X402_DAILY_CAP_USD: numberVar(MAX_X402_DAILY_USD)
+    .refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount")
+    .refine((n) => !(n > MAX_X402_DAILY_USD), `must be at most ${MAX_X402_DAILY_USD}`),
   X402_EARNINGS_URL: optionalText.refine((v) => v === undefined || isHttpUrl(v.replace(/\{(symbol|from|to)\}/g, "x")), "must be an http(s) URL"),
   X402_MAX_PRICE_USD: numberVar(MAX_X402_PRICE_USD).refine(
     (n) => Number.isFinite(n) && n > 0 && n <= MAX_X402_PRICE_USD,
@@ -184,6 +190,7 @@ const envSchema = z.object({
   WEB_ORIGIN: optionalText.refine((v) => v === undefined || isOrigin(v), "must be an origin like https://app.example.org (no path)"),
   API_RATE_PER_MIN: numberVar(120).refine((n) => Number.isInteger(n) && n >= 1 && n <= 100_000, "must be a whole number from 1"),
   DESK_NOTES: z.preprocess((v) => (blank(v) ?? "auto").toString().trim().toLowerCase(), z.enum(["auto", "off"], { message: "must be auto or off" })),
+  NOTES_DAILY_MAX: numberVar(200).refine((n) => Number.isInteger(n) && n >= 0 && n <= 100_000, "must be a whole number from 0"),
   STUDIO_TOML: optionalText,
   FORK_TICK_SEC: z.preprocess(blank, z.coerce.number().optional()).refine((n) => n === undefined || (Number.isInteger(n) && n >= 1 && n <= 3600), "must be 1..3600 seconds"),
   MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
@@ -278,6 +285,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (e.CHAIN_ID === 56 && !isLoopbackHost(e.AGENT_BIND_HOST)) {
     issues.push("AGENT_BIND_HOST: must be a loopback address on BSC mainnet (the A2A/MCP faces have no auth)");
   }
+  if (e.CHAIN_ID === 56) {
+    // The read API is fronted by a TLS reverse proxy on the same host; it never listens on a public address.
+    if (!isLoopbackHost(e.HTTP_HOST)) issues.push("HTTP_HOST: must be a loopback address on BSC mainnet (a reverse proxy fronts the read API)");
+    // Plain http would expose the RPC key and let anyone on the path rewrite reads or payment challenges.
+    const rpc = new URL(e.BSC_RPC_URL);
+    if (rpc.protocol !== "https:" && !isLoopbackHost(rpc.hostname.replace(/^\[|\]$/g, ""))) issues.push("BSC_RPC_URL: must be https on BSC mainnet (http only for a node on loopback)");
+    if (e.X402_EARNINGS_URL && !e.X402_EARNINGS_URL.startsWith("https://")) issues.push("X402_EARNINGS_URL: must be https on BSC mainnet");
+  }
   if (e.AGENT_PORT === e.HTTP_PORT) issues.push("AGENT_PORT: must differ from HTTP_PORT");
   if (e.FORK_TICK_SEC !== undefined && e.CHAIN_ID !== 31337) issues.push("FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)");
   if (issues.length > 0 || signer === null) throw new ConfigError(issues);
@@ -324,6 +339,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     webOrigin: e.WEB_ORIGIN ? e.WEB_ORIGIN.replace(/\/$/, "") : null,
     apiRatePerMin: e.API_RATE_PER_MIN,
     notes: e.DESK_NOTES,
+    notesDailyMax: e.NOTES_DAILY_MAX,
     studioToml,
     forkTickSec: e.FORK_TICK_SEC ?? null,
     minBnbBalance: e.MIN_BNB_BALANCE,

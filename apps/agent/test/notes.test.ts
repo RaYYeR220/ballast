@@ -87,6 +87,56 @@ describe("NotesWorker", () => {
     expect(seen.join()).not.toContain("super-secret-rpc-key");
   });
 
+  it("aborts the model call itself when the note times out", async () => {
+    const dir = await tmp();
+    const feed = new Feed({ dir, secrets: [] });
+    let signal: AbortSignal | undefined;
+    const worker = new NotesWorker({
+      feed,
+      store: new NotesStore(dir),
+      timeoutMs: 30,
+      model: (_p, s) => {
+        signal = s;
+        return new Promise<string>(() => undefined);
+      },
+    });
+    await feed.record({ kind: "shield", source: "keeper" });
+    expect(await worker.tick()).toBe(0);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("stops calling the model once the daily budget is spent, until the next UTC day", async () => {
+    const dir = await tmp();
+    const feed = new Feed({ dir, secrets: [] });
+    const store = new NotesStore(dir);
+    let now = 20_000 * 86_400 + 100;
+    let calls = 0;
+    const logs: string[] = [];
+    const worker = new NotesWorker({
+      feed,
+      store,
+      dailyMax: 2,
+      clock: () => now,
+      log: (l) => logs.push(l),
+      model: async () => {
+        calls++;
+        if (calls === 1) throw new Error("provider down"); // a failed call still spends budget
+        return "Noted.";
+      },
+    });
+    for (let i = 0; i < 4; i++) await feed.record({ kind: "shield", source: "keeper" });
+    expect(await worker.tick()).toBe(1);
+    expect(calls).toBe(2);
+    expect(logs.filter((l) => l.includes("daily budget"))).toHaveLength(1);
+    await feed.record({ kind: "restore", source: "keeper" });
+    expect(await worker.tick()).toBe(0);
+    expect(calls).toBe(2);
+    now += 86_400;
+    await feed.record({ kind: "restore", source: "keeper" });
+    expect(await worker.tick()).toBe(1);
+    expect(calls).toBe(3);
+  });
+
   it("is off when studio.toml has no usable provider", async () => {
     const dir = await tmp();
     const logs: string[] = [];
