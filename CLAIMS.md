@@ -9,28 +9,29 @@ Every statement the README and the other documents make, with the kind of eviden
 | REPRODUCIBLE | A command in this repository gives the result on your machine. The command is in the row. |
 | VERIFIED-LIVE | A transaction or a URL shows it. The link is in the row or in [PROOF.md](PROOF.md). |
 | MODELED | The output of a model or an argument. The assumptions are in the row. |
-| MEASURED | Our own measurement from public data. Sources and method are in the row. The script and the row-level table are not in this repository, so you cannot re-run it from here. |
 | NOT-CLAIMED | Something we do not say. Listed so that nobody assumes it. |
-
-The first three and the last are the usual ledger. MEASURED is there because some of our headline numbers fit none of the others honestly: they are not models, and without the scanner in the repository they are not reproducible either.
 
 Commands assume the repository root, `pnpm install` done, and Foundry installed. `forge` commands run in `contracts/`.
 
 ## A. The measurement
 
+The study, its scripts and its data are in [research/](research/README.md). `python research/check_figures.py` recomputes every figure below from the committed data, with no network and no dependency, and exits non-zero if one differs. "Re-run" in a row means the download steps in `research/README.md`, which rebuild that data from the chain and from public market data.
+
 | # | Claim | Tier | Evidence |
 |---|---|---|---|
-| A1 | 120 liquidations of bStock collateral on Lista Lending between BSC blocks 101,500,000 and 123,963,563 (2026-05-31 to 2026-09-25); none between Friday 20:00 and Sunday 20:00 New York time. | MEASURED | `Liquidate` events of Lista Moolah, `0x8f73b65b4caaf64fba2af91cc5d4a2a1318e5d8c`, topic0 `0xa4946ede45d0c6f06a0f5ce92c9ad3b4751452d2fe0e25010783bcab57a67e41`. Each market id resolved with `idToMarketParams` and kept when the collateral is a bStock. Block times converted to US Eastern. To recount you need an archive RPC and your own filter; the events are public. |
-| A2 | Those 120 liquidations repaid $31.6k of debt and left no bad debt. | MEASURED | Same events (`repaidAssets`, `badDebtAssets`). Loans are stablecoins counted at $1. |
-| A3 | 87 of the 120 are dust-sized positions of one account opened at the liquidation threshold (about $1.0k in total). The other 33, the "organic" set, repaid $30.6k. | MEASURED | Same events, grouped by borrower. We publish no address and no row-level table. |
-| A4 | 81% of organic repaid dollars fell in the first 90 minutes after the regular open ($24.8k of $30.6k); 59% in the first 90 minutes after a weekend or holiday ($17.9k). | MEASURED | Same events, bucketed by time since 09:30 New York time on the day of the liquidation. |
-| A5 | Venus seized no bStock collateral in the same period. | MEASURED | Transfer logs of the four bStock vTokens checked for `LiquidateBorrow`, and Venus's public liquidations API. |
-| A6 | p99 close-to-open down-gap: 4.4% weekday overnight, 5.5% weekend, 4.3% holiday, 17.9% around earnings. | MEASURED | Daily split-adjusted prices from Yahoo Finance, 2020-06-01 to 2026-09-24, 36 US tickers with at least 5 years of history. Gap = (open + ex-dividend cash) / previous close - 1; the quantile is taken over max(0, -gap). Earnings nights from the Nasdaq earnings calendar. Sample sizes 42,678 / 9,997 / 2,160 / 788. |
-| A7 | The per-ticker gap buffers the contracts use. | REPRODUCIBLE | They are in the repository: `node -e "for (const t of require('./config/bsc-mainnet.json').tickers) console.log(t.symbol, JSON.stringify(t.gapBps))"`. How they were derived is A6, per ticker. |
-| A8 | The NYSE regular session is 32.5 of 168 hours; the market is closed about 81% of the week. | REPRODUCIBLE | Arithmetic: 5 sessions of 6.5 hours. The session boundaries are in `config/nyse-calendar.json`. |
-| A9 | The closure dataset holds 3,378 closures of 77 bStocks: 2,688 overnight, 597 weekend, 93 holiday. | REPRODUCIBLE | `node -e "const w=require('./data/closure-windows.json');const t={};for(const r of w)t[r.type]=(t[r.type]||0)+1;console.log(w.length,new Set(w.map(r=>r.sym)).size,t)"`. The file was built from Binance public klines and Yahoo daily prices; that builder is not in the repository (`data/README.md` describes the fields). |
-| A10 | Backtest on an LLTV 0.75 market: from a starting LTV of 0.70 the shield fires in 652 of 697 windows, repays 2.6% of the debt on average and cuts liquidations from 5 to 2; from 0.72 it fires in all 697, repays 5.1% and cuts 27 to 2. | MODELED, REPRODUCIBLE | `pnpm backtest`. Assumptions, from `data/README.md`: the cushion always covers the shield, no collateral is sold, no minimum loan, earnings nights are not flagged in the data, oracle lag and the bStock premium are ignored, only the 12 tickers with a configured buffer are replayed, one sample of about three and a half months. |
-| A11 | A shielded loan "survives the gap". | MODELED | It survives a gap up to the ticker's p99 buffer for that window with health factor 1.05 to spare. A larger gap still liquidates it: A10 has two such cases. |
+| A1 | 120 liquidations of bStock collateral on Lista Lending between BSC blocks 101,500,000 and 123,963,563 (2026-05-31 to 2026-09-25); none between Friday 20:00 and Sunday 20:00 New York time. | REPRODUCIBLE | `python research/check_figures.py`, from `research/data/liquidations_moolah_bstock_ctx.json`: one row per `Liquidate` event with its transaction hash, session recomputed from the timestamp. Re-run: `scan_logs.py liq`, `liq_analysis.py`, `liq_context.py`; needs an archive RPC. Our re-run on 2026-10-08 returned the same file byte for byte. |
+| A2 | Those 120 liquidations repaid $31.6k of debt and left no bad debt. | REPRODUCIBLE | Same command, same file (`repaid_usd`, `bad_debt_usd`). Stablecoin loans count as $1. |
+| A3 | 87 of the 120 are dust-sized positions of one account opened at the liquidation threshold (about $1.0k in total, 52 markets). The other 33, the "organic" set, repaid $30.6k. | REPRODUCIBLE | Same command. The rule that separates the seed account (20 or more liquidations, median under $50) is in `research/liq_stats.py` and is ours; see the caveats in `research/README.md`. |
+| A4 | 81% of organic repaid dollars fell in the first 90 minutes after the regular open ($24.8k of $30.6k); 59% in the first 90 minutes after a weekend or holiday ($17.9k). | REPRODUCIBLE | Same command. Three liquidations carry the 59%: the percentages describe a small sample. |
+| A5 | Venus seized no bStock collateral in the same period. | REPRODUCIBLE | Re-run: `scan_logs.py venus`, then `venus_seizures.py`, with an archive RPC. The checker only reads the recorded result (`research/data/venus_seizures.json`): the proof is in transaction receipts, which it cannot recompute offline. |
+| A6 | p99 close-to-open down-gap: 4.4% weekday overnight, 5.5% weekend, 4.3% holiday, 17.9% around earnings (36 tickers, 2020-06-01 to 2026-09-24; 42,678 / 9,997 / 2,160 / 788 closures). | REPRODUCIBLE | `python research/check_figures.py`, from the 62,213 gap rows in `research/data/gap_windows.csv`. Re-run: `fetch_yahoo.py`, `fetch_earnings.py`, `gaps.py`. Earnings nights are inferred, see the caveats. |
+| A7 | The per-ticker gap buffers the contracts use are the per-ticker p99 of that study. | REPRODUCIBLE | Same command: it compares all 48 values in `config/bsc-mainnet.json` with the study. |
+| A8 | The NYSE regular session is 32.5 of 168 hours; the market is closed about 81% of the week (81.6% of the sample period, which had three holidays). | REPRODUCIBLE | Same command. Arithmetic, and the calendar in `research/session.py`. |
+| A9 | The closure dataset holds 3,378 closures of 77 bStocks: 2,688 overnight, 597 weekend, 93 holiday. | REPRODUCIBLE | Same command, from `data/closure-windows.json`. Re-run: `fetch_klines.py`, `fetch_yahoo.py`, `weekend.py`; our re-run on 2026-10-08 returned the same file byte for byte. |
+| A10 | On Saturday and Sunday a bStock's price says little about Monday's open: R2 against the Monday gap is at most 0.2 until the US overnight venues reopen on Sunday at 20:00 New York time. At 09:00 on Monday it is 0.94 and the correlation is 0.97 (597 weekends, 77 bStocks). | REPRODUCIBLE | Same command, from `research/data/weekend_timing_points.json`. "Price" is the Binance spot price of the bStock, used as a proxy for the lending oracle. |
+| A11 | The 152 Moolah liquidations in markets without a bStock, same period, same liquidators: 18 on a weekend (12%). | REPRODUCIBLE | Same command, from `research/data/liquidations_moolah_other.json`. |
+| A12 | Backtest on an LLTV 0.75 market: from a starting LTV of 0.70 the shield fires in 652 of 697 windows, repays 2.6% of the debt on average and cuts liquidations from 5 to 2; from 0.72 it fires in all 697, repays 5.1% and cuts 27 to 2. | MODELED, REPRODUCIBLE | `pnpm backtest`. Assumptions, from `data/README.md`: the cushion always covers the shield, no collateral is sold, no minimum loan, earnings nights are not flagged in the data, oracle lag and the bStock premium are ignored, only the 12 tickers with a configured buffer are replayed, one sample of about three and a half months. |
+| A13 | A shielded loan "survives the gap". | MODELED | It survives a gap up to the ticker's p99 buffer for that window with health factor 1.05 to spare. A larger gap still liquidates it: A12 has two such cases. |
 
 ## B. Contracts
 
@@ -105,8 +106,8 @@ These become VERIFIED-LIVE when, and only when, [PROOF.md](PROOF.md) shows the a
 | E8 | That the keyed Binance Web3 API has been run live from this code. It has not: no key was available. |
 | E9 | That Market, Trading, Wallet, DeFi or b402 are used by the product. They are client code with tests. |
 | E10 | That an x402 payment has ever been made. The buyer is off by default and has only met a stand-in merchant in tests. |
-| E11 | That the headline measurement can be re-run from this repository. See the MEASURED rows. |
-| E12 | Anything about specific open positions on Lista or Venus. We publish aggregates only. |
+| E11 | That the measurement is more than it is: three and a half months, $31.6k of liquidations, Binance prices standing in for the lending oracle. The caveats are in `research/README.md`. |
+| E12 | Anything about positions that are open on Lista or Venus today. The published rows are past liquidations; the part of the study on open positions is not published. |
 | E13 | That a language model decides anything. It writes notes after the event. |
 | E14 | That the contracts are audited. |
 | E15 | That the desk is highly available. It is one process with one hot key. |

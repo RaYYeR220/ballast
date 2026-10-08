@@ -9,6 +9,7 @@ It is built for BNB Chain: bStock collateral on Lista Lending and Venus.
 | To check everything in five minutes | [JUDGES.md](JUDGES.md) |
 | Addresses, transactions, test counts | [PROOF.md](PROOF.md), rendered from data by `pnpm proof` |
 | The evidence behind each statement | [CLAIMS.md](CLAIMS.md) |
+| The study behind the numbers: scripts, data, a checker | [research/README.md](research/README.md) |
 | What is real and what is mocked | [MOCKS.md](MOCKS.md) |
 | To use the Session Oracle in your own protocol | [docs/session-oracle.md](docs/session-oracle.md) |
 
@@ -25,7 +26,7 @@ We counted every liquidation of bStock collateral on BNB Chain from the first bS
 
 Loans are not lost while the market is shut. Risk builds up while it is closed and is realised when it reopens. So Ballast acts before the close, does not trust the first 90 minutes after the open, and treats earnings as a window of its own.
 
-"Organic" leaves out 87 liquidations of dust-sized positions (about $1.0k in total) that a single account opened at the liquidation threshold. The other 33 repaid $30.6k. These numbers are our own measurement from public data. The scanner and the row-level table are not in this repository; [CLAIMS.md](CLAIMS.md) says what can be re-run and what cannot.
+"Organic" leaves out 87 liquidations of dust-sized positions (about $1.0k in total) that a single account opened at the liquidation threshold. The other 33 repaid $30.6k. The scripts, the row-level data and the caveats are in [research/](research/README.md), and one command recomputes every number above from that data: `python research/check_figures.py`.
 
 ## What Ballast does
 
@@ -201,6 +202,8 @@ A fork test creates two identical SPYB/USD1 markets at an 85% liquidation LTV, o
 cd contracts && forge test --match-path "test/fork/SessionAwareFeed.fork.t.sol" -vv
 ```
 
+Why a band at all: over 597 weekends the token's Saturday and Sunday price explained at most 0.2 (R2) of the stock's Monday gap, and only once the US venues were trading again did it converge, to a correlation of 0.97 by 09:00 New York time on Monday. A price that carries that little information should not be able to liquidate anyone on its own.
+
 Interface, read patterns, adapter wiring and the MCP tools are in [docs/session-oracle.md](docs/session-oracle.md).
 
 ## Binance Web3 API usage
@@ -254,15 +257,18 @@ forge test --no-match-path "test/fork/*"         # contract unit tests, no netwo
 forge test --match-path "test/fork/*"            # fork tests against real BSC mainnet state
 ```
 
-The fork tests fork BSC at the chain head through `https://bsc-rpc.publicnode.com` and take about 20 seconds after the first compile. Set `BSC_RPC_URL` to use another endpoint, and `FORK_BLOCK` to pin a block (that needs an archive endpoint). `pnpm contracts:test` and `pnpm contracts:test:fork` are the same two commands for a POSIX shell; on Windows use Git Bash or WSL for those, or the `forge` lines above.
+The fork tests fork BSC at the chain head through `https://bsc-rpc.publicnode.com` and take about 20 seconds after the first compile. Set `BSC_RPC_URL` to use another endpoint, and `FORK_BLOCK` to pin a block (that needs an archive endpoint). `pnpm contracts:test` and `pnpm contracts:test:fork` run the same two commands from the repository root.
 
 Current counts and the date of the last full run are in [PROOF.md](PROOF.md), section 3.
 
-**The backtest**
+**The measurement and the backtest**
 
 ```bash
-pnpm backtest          # replays data/closure-windows.json, rewrites data/backtest-lltv75.json
+python research/check_figures.py     # recomputes every figure of the measurement from the committed data
+pnpm backtest                        # replays data/closure-windows.json, rewrites data/backtest-lltv75.json
 ```
+
+The checker needs Python 3.9 or newer and nothing else. Rebuilding its data from the chain and from public market data is described in [research/README.md](research/README.md).
 
 **The fork demo.** One Lista account, one CushionVault cover and one guard job, kept by a desk on a local fork, with the clock moved by hand. It needs an RPC endpoint that keeps serving the forked block for the length of the demo: an archive endpoint or a provider key. The keyless public endpoints stop answering for that block after a few minutes.
 
@@ -330,6 +336,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json` and stops with "no deployment f
 | `skill` | Agent skill for the MCP tools |
 | `scripts` | `proof.ts` (renders PROOF.md), `verify-onchain.ts` (checks a deployment), `demo/fork-demo.ts`, `export-abis.ts` |
 | `config` | BSC addresses and per-ticker gap buffers, the NYSE calendar, the operator's earnings schedule |
+| `research` | The measurement: scanner and gap-study scripts, their data, and `check_figures.py` |
 | `data` | Closure windows of 77 bStocks, the backtest result, and the inputs of PROOF.md |
 | `deploy` | systemd unit, environment template and server guide for the desk |
 
@@ -337,7 +344,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json` and stops with "no deployment f
 
 - **Mainnet.** Nothing is on mainnet unless PROOF.md lists it. The mainnet cycle is planned on a small Venus position. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
 - **The damage so far is small.** The 120 liquidations repaid $31.6k in total and left no bad debt. Ballast is built for where the data says the risk concentrates, not in answer to a loss that has already happened.
-- **The measurement cannot be re-run from this repository.** The liquidation scanner and its row-level output are not published here. The closure-window dataset and the backtest are.
+- **The measurement is small and uses a proxy.** Three and a half months, $31.6k of liquidations, and Binance spot prices standing in for the lending oracle. Re-running the scans needs an archive node. `research/README.md` lists the caveats.
 - **Gap buffers are statistics.** A p99 is exceeded one time in a hundred. In the backtest two shielded positions were still liquidated, both on earnings nights that the dataset does not flag.
 - **Earnings dates come from a hand-kept file.** `config/earnings.json` says so itself: every date except one is an estimate. The x402 purchase path that would replace it is off and has never paid a live merchant.
 - **One publisher key, one owner.** The overlay publisher is a single bounded key, not an oracle network. `SessionOracle` and `SessionAwareFeed` have an owner who can list tickers, change parameters inside fixed bounds, and replace the price source and the publisher. There is no timelock.

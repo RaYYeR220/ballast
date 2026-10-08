@@ -92,6 +92,7 @@ From the repository root:
 | PROOF.md is exactly what the data renders | `pnpm proof --check` |
 | The deployment matches the chain, the config and a local build | `pnpm contracts:build`, then `BSC_RPC_URL=https://bsc-dataseed.bnbchain.org pnpm verify:onchain` |
 | The keyless Binance endpoint the publisher depends on answers | `curl -s "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/market/token/rwa/asset/market/status/ai?chainId=56&contractAddress=0x02fca66c1d1afb4e2a7884261eb00f63598a7436"` |
+| Every figure of the measurement recomputes from the committed data | `python research/check_figures.py` |
 | The backtest numbers | `pnpm backtest` |
 
 ## Where to look
@@ -103,5 +104,6 @@ From the repository root:
 | How are Agent Studio, ERC-8004 and ERC-8183 used? | README, "Agent Studio, ERC-8004 and ERC-8183" |
 | Can I use the Session Oracle without the rest? | [docs/session-oracle.md](docs/session-oracle.md) |
 | Is this number measured, modeled or proven? | [CLAIMS.md](CLAIMS.md) |
+| How was the measurement done, and can I redo it? | [research/README.md](research/README.md) |
 | What did the tests mock? | [MOCKS.md](MOCKS.md) |
 | What does it not do? | README, "Honest limits", and CLAIMS.md section E |

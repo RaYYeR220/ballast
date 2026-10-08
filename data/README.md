@@ -6,6 +6,8 @@ Fields: `sym` (bStock), `und` (underlying), `type`, `d0`/`d1` (last session day 
 
 Sources: Binance public klines (`/api/v3/klines`, bStock/USDT pairs) and underlying prices from Yahoo Finance (v8 chart endpoint, daily bars, split-adjusted).
 
+Built by `research/fetch_klines.py`, `research/fetch_yahoo.py` and `research/weekend.py`. The rest of the study (the liquidation scan, the weekend timing, the gap quantiles) and its data are in `research/`, and `python research/check_figures.py` recomputes every published figure, including the ones taken from this file. Any liquidation dataset that appears in this directory in another shape, for a chart for instance, is derived from `research/data/liquidations_moolah_bstock_ctx.json`.
+
 ## Backtest model
 
 `pnpm backtest` replays the windows through `packages/risk/src/backtest.ts` and writes `backtest-lltv75.json`. For each window a position is opened at `startLtv` on an LLTV-0.75 market. Worst move = `min(gap, max_dn, 0)`. Unprotected: liquidated if `startLtv / (1 + worst) > lltv`. Protected: before the close the planner repays down to HF 1.05 against the ticker's p99 gap for that window type (`config/bsc-mainnet.json`), then the same liquidation test runs on the reduced debt.
