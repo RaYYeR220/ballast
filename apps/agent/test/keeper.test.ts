@@ -1144,19 +1144,51 @@ describe("Keeper and a slow or halted sender (R38)", () => {
     expect(feed.list({ kind: "alert" }).map((e) => e.reason)).toContainEqual(expect.stringMatching(/no cushion/));
   });
 
-  it("alerts once that collateral sales are disabled when the sender has no Binance key", async () => {
+  it("with sales disabled plans the cushion only up front: no sale planned or simulated, one alert per lead window", async () => {
     const { world, sender, feed, keeper } = await setup();
     sender.sales = "disabled";
     world.accounts = [lista({ cushion: 10n * E18 })];
-    sender.outcome.set("shieldDeleverage", "fallback"); // what a keyless sender does: plan the sale, send the repay
     sender.logs.set("shieldRepay", [shieldedLog(1800n * E18, 1790n * E18)]);
     await keeper.tick();
+    // the sale is never built, simulated or handed to the sender as an intent
+    expect(sender.sims.map((c) => c.fn)).toEqual(["shieldRepay"]);
+    expect(sender.sent).toMatchObject([{ fn: "shieldRepay", args: [10n * E18], mev: false, fallback: false }]);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    const shield = feed.list({ kind: "shield" })[0]!;
+    expect(shield.plan).toMatchObject({ kind: "repay+deleverage", step: { fn: "shieldRepay" } });
+    expect(shield.data ?? {}).not.toHaveProperty("fallbackFor");
+    // later ticks in the same lead window: nothing refused, no second alert
+    world.accounts = [lista({ cushion: 0n, debt: 1790n * E18 })];
     world.oracle = oracle(LEAD + 300);
     await keeper.tick();
-    const disabled = feed.list({ kind: "alert" }).filter((e) => /collateral sales are disabled: no Binance key/.test(e.reason ?? ""));
-    expect(disabled).toHaveLength(1);
-    expect(feed.list({ kind: "refused" }).map((e) => e.error?.name)).toEqual(["SaleNotSent"]);
-    expect(feed.list({ kind: "shield" }).at(-1)).toMatchObject({ plan: { step: { fn: "shieldRepay" } }, data: { fallbackFor: "shieldDeleverage" } });
+    world.oracle = oracle(LEAD + 1200);
+    await keeper.tick();
+    expect(sender.sims.map((c) => c.fn)).toEqual(["shieldRepay"]);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    const alerts = feed.list({ kind: "alert" }).map((e) => e.reason ?? "");
+    expect(alerts.filter((r) => /collateral sales are disabled: no Binance key/.test(r))).toHaveLength(1);
+    const perAccount = feed.list({ kind: "alert", account: ACCOUNT }).filter((e) => /cushion alone cannot.*sales are disabled/.test(e.reason ?? ""));
+    expect(perAccount).toHaveLength(1);
+    expect(perAccount[0]).toMatchObject({ window: { startsAt: CLOSE } });
+  });
+
+  it("with sales disabled alerts again in the next lead window, and sells again once sales are back", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    sender.sales = "disabled";
+    world.accounts = [lista({ cushion: 0n })];
+    await keeper.tick();
+    expect(sender.sims).toEqual([]);
+    expect(sender.sent).toEqual([]);
+    const nextClose = regularCloseAt(WED + 1);
+    world.oracle = oracle(nextClose - 1800, { windowAhead: { window: "OVERNIGHT", startsAt: nextClose, endsAt: regularOpenAt(WED + 2), gapBps: 417 } });
+    await keeper.tick();
+    const perAccount = feed.list({ kind: "alert", account: ACCOUNT }).filter((e) => /sales are disabled/.test(e.reason ?? ""));
+    expect(perAccount.map((e) => e.window?.startsAt).sort()).toEqual([CLOSE, nextClose].sort());
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    sender.sales = "protected";
+    world.oracle = oracle(nextClose - 1500, { windowAhead: { window: "OVERNIGHT", startsAt: nextClose, endsAt: regularOpenAt(WED + 2), gapBps: 417 } });
+    await keeper.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["shieldDeleverage"]);
   });
 
   it("does not lose a transaction a sender mined without asking for the plan", async () => {

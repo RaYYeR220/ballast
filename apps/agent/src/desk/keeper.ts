@@ -267,6 +267,11 @@ interface Decision {
 export interface DecideOptions {
   /** Never sell: a repay+deleverage plan sends only its cushion part (the sale is backed off or just failed). */
   cushionOnly?: boolean;
+  /**
+   * The sender cannot sell at all (no protected endpoint): a repay+deleverage plan is cushion-only from the
+   * start, with an alert that the cushion is not enough. No sale is built, simulated or handed to the sender.
+   */
+  salesDisabled?: boolean;
 }
 
 const minBig = (a: bigint, b: bigint) => (a < b ? a : b);
@@ -384,6 +389,17 @@ function decideShield(state: AccountState, oracle: PlanOracle, pathFor: (s: Acco
     };
   }
   // repay+deleverage: one keeper shieldDeleverage spends the cushion first, then sells if still above shieldLtv.
+  if (o.salesDisabled) {
+    const step = cushionOnly();
+    return {
+      plan,
+      step,
+      alert: {
+        type: "sales-disabled",
+        message: `the cushion alone cannot reach HF ${plan.targetHfAfterGap} after a ${plan.gapBps} bps gap and collateral sales are disabled (no Binance key); ${repaid(step)}; the owner decides.`,
+      },
+    };
+  }
   if (o.cushionOnly) {
     const step = cushionOnly();
     return step ? { plan, step } : { plan, step, noop: "the sale is on hold and there is no cushion to repay with" };
@@ -772,6 +788,8 @@ export class Keeper {
     if (phase.phase === "lead") {
       const key = `${address}|shield`;
       const saleOnHold = (this.#backoff.get(`${key}|sale`) ?? 0) > snap.at;
+      // No protected endpoint: a sale would never be signed, so it is not planned in the first place.
+      const salesDisabled = () => this.#o.sender.state?.().sales === "disabled";
       const target: Target = {
         key,
         account: address,
@@ -791,8 +809,8 @@ export class Keeper {
           return step?.fn === "shieldRepay" ? step : null;
         },
       };
-      const decision = decideShield(state, snap, pathFor, { cushionOnly: saleOnHold });
-      if (saleOnHold && decision.plan.kind === "repay+deleverage") {
+      const decision = decideShield(state, snap, pathFor, { cushionOnly: saleOnHold, salesDisabled: salesDisabled() });
+      if (saleOnHold && !salesDisabled() && decision.plan.kind === "repay+deleverage") {
         await this.#noop(target, `the collateral sale is on hold until ${this.#backoff.get(`${key}|sale`)} after a failure; cushion only`, phase.window);
       }
       await this.#act(target, decision, state, phase.window, report);
