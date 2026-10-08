@@ -58,7 +58,11 @@ async function head(c: ReadClient, o: ReadOptions) {
   return { ts: b.timestamp, at: Number(b.timestamp), blockNumber: b.number as bigint };
 }
 
-const pin = async (c: ReadClient, o: ReadOptions) => o.blockNumber ?? (await c.getBlockNumber());
+/**
+ * The block every read of one call is pinned to. getBlock is used rather than getBlockNumber because viem
+ * caches the block number (cacheTime, 4 s by default): a re-read right before a transaction must see the head.
+ */
+const pin = async (c: ReadClient, o: ReadOptions) => o.blockNumber ?? ((await c.getBlock({ blockTag: "latest" })).number as bigint);
 
 // ------------------------------------------------------------------ session
 

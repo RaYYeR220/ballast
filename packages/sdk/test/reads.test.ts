@@ -246,6 +246,16 @@ describe("listAccounts", () => {
     const chain = new FakeChain().on(d.factory, ballastFactoryAbi, "accountCount", [], 0n);
     expect(await listAccounts(chain.client(), d)).toEqual([]);
   });
+
+  it("pins every call to a fresh head, never to viem's cached block number", async () => {
+    const chain = new FakeChain().on(d.factory, ballastFactoryAbi, "accountCount", [], 0n);
+    const client = chain.client(); // default cacheTime: getBlockNumber would answer from cache for 4 s
+    await listAccounts(client, d);
+    chain.blockNumber += 1n;
+    await listAccounts(client, d);
+    const blocks = chain.requests.filter((r) => r.method === "eth_call").map((r) => r.block);
+    expect(blocks).toEqual([toHex(chain.blockNumber - 1n), toHex(chain.blockNumber)]);
+  });
 });
 
 describe("listCovers", () => {

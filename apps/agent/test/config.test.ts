@@ -1,7 +1,7 @@
 import path from "node:path";
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
-import { ConfigError, isLoopbackHost, loadConfig, redactUrl, studioEnv } from "../src/desk/config";
+import { ConfigError, deskSecrets, isLoopbackHost, loadConfig, redactUrl, studioEnv } from "../src/desk/config";
 
 const PK = `0x${"4f".repeat(32)}`;
 const RPC = "https://bsc-mainnet.example.org/v1/rpc-key-0123456789abcdef";
@@ -30,6 +30,8 @@ describe("loadConfig", () => {
     expect(c.httpHost).toBe("127.0.0.1");
     expect(c.httpPort).toBe(8787);
     expect(c.x402DailyCapUsd).toBe(0.5);
+    expect(c.minBnbBalance).toBe(0.003);
+    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([1, 20, 4, 0.003]);
     expect(c.dryRun).toBe(true);
     expect(c.deploymentFile.endsWith(path.join("contracts", "deployments", "56.json"))).toBe(true);
     expect(c.dataDir.endsWith(path.join("apps", "agent", "var"))).toBe(true);
@@ -45,6 +47,11 @@ describe("loadConfig", () => {
         CHAIN_ID: "31337",
         HTTP_PORT: "9100",
         X402_DAILY_CAP_USD: "0.25",
+        MIN_BNB_BALANCE: "0.01",
+        MAX_GAS_PRICE_GWEI: "3",
+        RECEIPT_TIMEOUT_SEC: "30",
+        MAX_BUMPS: "2",
+        MAX_FEE_BNB_PER_HOUR: "0.02",
         DRY_RUN: "false",
         DEPLOYMENT_FILE: "deploy/fork.json",
         DATA_DIR: "state",
@@ -57,6 +64,8 @@ describe("loadConfig", () => {
     expect(c.chainId).toBe(31337);
     expect(c.httpPort).toBe(9100);
     expect(c.x402DailyCapUsd).toBe(0.25);
+    expect(c.minBnbBalance).toBe(0.01);
+    expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([3, 30, 2, 0.02]);
     expect(c.dryRun).toBe(false);
     expect(c.deploymentFile).toBe(path.join(cwd, "deploy", "fork.json"));
     expect(c.dataDir).toBe(path.join(cwd, "state"));
@@ -130,6 +139,10 @@ describe("loadConfig", () => {
     expect(issuesOf({ ...base, HTTP_PORT: "70000" })).toEqual(["HTTP_PORT: must be a port number"]);
     expect(issuesOf({ ...base, X402_DAILY_CAP_USD: "-1" })).toEqual(["X402_DAILY_CAP_USD: must be a non-negative amount"]);
     expect(issuesOf({ ...base, DRY_RUN: "maybe" })).toEqual(["DRY_RUN: must be true or false"]);
+    expect(issuesOf({ ...base, MAX_GAS_PRICE_GWEI: "0" })).toHaveLength(1);
+    expect(issuesOf({ ...base, RECEIPT_TIMEOUT_SEC: "1" })).toHaveLength(1);
+    expect(issuesOf({ ...base, MAX_BUMPS: "2.5" })).toHaveLength(1);
+    expect(issuesOf({ ...base, MAX_FEE_BNB_PER_HOUR: "-1" })).toHaveLength(1);
   });
 
   it("keeps the Studio faces on loopback on mainnet", () => {
@@ -146,7 +159,7 @@ describe("loadConfig", () => {
   });
 
   it("takes bind addresses and ports for both listeners", () => {
-    const c = loadConfig({ ...base, AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100", HTTP_HOST: "0.0.0.0", HTTP_PORT: "8080" });
+    const c = loadConfig({ ...base, CHAIN_ID: "31337", AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100", HTTP_HOST: "0.0.0.0", HTTP_PORT: "8080" });
     expect([c.agentBindHost, c.agentPort, c.httpHost, c.httpPort]).toEqual(["127.0.0.2", 9100, "0.0.0.0", 8080]);
     expect(studioEnv(c)).toEqual({ AGENT_BIND_HOST: "127.0.0.2", AGENT_PORT: "9100" });
   });
@@ -193,10 +206,15 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");
+  });
+
+  it("lists every secret for the feed scrubber", () => {
+    expect(deskSecrets(configs[0]!)).toEqual(expect.arrayContaining([RPC, "v1/rpc-key-0123456789abcdef", PK, secrets.key, secrets.apiKey, secrets.apiSecret]));
+    expect(deskSecrets(configs[1]!)).toEqual(expect.arrayContaining([`${RPC}?token=abc`, "v1/rpc-key-0123456789abcdef?token=abc", secrets.password]));
   });
 
   it("recognises loopback hosts", () => {
@@ -209,5 +227,75 @@ describe("secret handling", () => {
     expect(redactUrl("https://bsc-rpc.publicnode.com")).toBe("https://bsc-rpc.publicnode.com");
     expect(redactUrl("https://bsc-rpc.publicnode.com/")).toBe("https://bsc-rpc.publicnode.com");
     expect(redactUrl("nonsense")).toBe("[redacted]");
+  });
+});
+
+describe("desk API, x402 and notes settings", () => {
+  it("defaults: x402 earnings off, $0.05 per call, BSC then Base, no CORS origin, notes auto", () => {
+    const c = loadConfig(base);
+    expect(c.x402).toEqual({ earningsUrl: null, maxPriceUsd: 0.05, networks: ["eip155:56", "eip155:8453"] });
+    expect(c.webOrigin).toBeNull();
+    expect(c.apiRatePerMin).toBe(120);
+    expect(c.notes).toBe("auto");
+    expect(c.studioToml.endsWith(path.join("apps", "agent", "app", "agent", "studio.toml"))).toBe(true);
+    expect(c.forkTickSec).toBeNull();
+  });
+
+  it("parses explicit values", () => {
+    const c = loadConfig({
+      ...base,
+      CHAIN_ID: "31337",
+      X402_EARNINGS_URL: "https://data.example/api/earnings?ticker={symbol}&from={from}&to={to}",
+      X402_MAX_PRICE_USD: "0.01",
+      X402_NETWORKS: "eip155:56",
+      WEB_ORIGIN: "https://ballast.example.org/",
+      API_RATE_PER_MIN: "30",
+      DESK_NOTES: "OFF",
+      FORK_TICK_SEC: "15",
+    });
+    expect(c.x402).toEqual({ earningsUrl: "https://data.example/api/earnings?ticker={symbol}&from={from}&to={to}", maxPriceUsd: 0.01, networks: ["eip155:56"] });
+    expect(c.webOrigin).toBe("https://ballast.example.org");
+    expect(c.apiRatePerMin).toBe(30);
+    expect(c.notes).toBe("off");
+    expect(c.forkTickSec).toBe(15);
+  });
+
+  it("rejects an x402 price above $0.05, bad networks, origins with paths and fork ticks off the fork", () => {
+    expect(issuesOf({ ...base, X402_MAX_PRICE_USD: "0.06" })[0]).toMatch(/^X402_MAX_PRICE_USD/);
+    expect(issuesOf({ ...base, X402_MAX_PRICE_USD: "0" })[0]).toMatch(/^X402_MAX_PRICE_USD/);
+    expect(issuesOf({ ...base, X402_NETWORKS: "base" })[0]).toMatch(/^X402_NETWORKS/);
+    expect(issuesOf({ ...base, X402_EARNINGS_URL: "ftp://x" })[0]).toMatch(/^X402_EARNINGS_URL/);
+    expect(issuesOf({ ...base, WEB_ORIGIN: "https://app.example.org/path" })[0]).toMatch(/^WEB_ORIGIN/);
+    expect(issuesOf({ ...base, DESK_NOTES: "maybe" })[0]).toMatch(/^DESK_NOTES/);
+    expect(issuesOf({ ...base, FORK_TICK_SEC: "10" })).toEqual(["FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)"]);
+  });
+
+  it("caps the daily x402 spend at $0.50", () => {
+    expect(loadConfig({ ...base, X402_DAILY_CAP_USD: "0.5" }).x402DailyCapUsd).toBe(0.5);
+    expect(issuesOf({ ...base, X402_DAILY_CAP_USD: "0.51" })).toEqual(["X402_DAILY_CAP_USD: must be at most 0.5"]);
+  });
+
+  it("on BSC mainnet keeps the read API on loopback and requires https for the RPC and paid data", () => {
+    expect(issuesOf({ ...base, HTTP_HOST: "0.0.0.0" })[0]).toMatch(/^HTTP_HOST: must be a loopback address/);
+    expect(loadConfig({ ...base, CHAIN_ID: "31337", HTTP_HOST: "0.0.0.0" }).httpHost).toBe("0.0.0.0");
+    expect(issuesOf({ ...base, BSC_RPC_URL: "http://rpc.example.org/key-0123456789" })).toEqual(["BSC_RPC_URL: must be https on BSC mainnet (http only for a node on loopback)"]);
+    expect(loadConfig({ ...base, BSC_RPC_URL: "http://127.0.0.1:8545" }).chainId).toBe(56);
+    expect(loadConfig({ ...base, BSC_RPC_URL: "http://[::1]:8545" }).chainId).toBe(56);
+    expect(loadConfig({ ...base, CHAIN_ID: "31337", BSC_RPC_URL: "http://10.0.0.5:8545" }).chainId).toBe(31337);
+    expect(issuesOf({ ...base, X402_EARNINGS_URL: "http://data.example/earnings" })).toEqual(["X402_EARNINGS_URL: must be https on BSC mainnet"]);
+  });
+
+  it("bounds the daily number of note calls", () => {
+    expect(loadConfig(base).notesDailyMax).toBe(200);
+    expect(loadConfig({ ...base, NOTES_DAILY_MAX: "0" }).notesDailyMax).toBe(0);
+    expect(issuesOf({ ...base, NOTES_DAILY_MAX: "1.5" })[0]).toMatch(/^NOTES_DAILY_MAX/);
+  });
+
+  it("lists every secret value for scrubbing", () => {
+    const c = loadConfig({ ...base, BINANCE_WEB3_API_KEY: "binance-key-1", BINANCE_WEB3_API_SECRET: "binance-secret-1" });
+    const s = deskSecrets(c, { PIEVERSE_LLM_API_KEY: "pv-llm-key-123", OTHER_LLM_API_KEY: "", CLOUD_SESSION_TOKEN: "cloud-token-456", DATA_DIR: "/var/lib/ballast" });
+    expect(s).toEqual(expect.arrayContaining([RPC, "rpc-key-0123456789abcdef", "binance-key-1", "binance-secret-1", PK, PK.slice(2), "pv-llm-key-123", "cloud-token-456"]));
+    expect(s).not.toContain("");
+    expect(s).not.toContain("/var/lib/ballast");
   });
 });

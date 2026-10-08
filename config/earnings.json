@@ -1,4 +1,65 @@
 {
-  "note": "Earnings schedule for the Session Oracle publisher, maintained by the operator. Per symbol, a list of { \"date\": \"YYYY-MM-DD\" (US Eastern), \"timing\": \"bmo\" | \"amc\" } or { \"realisedAt\": <unix seconds of the regular open where the gap lands> }. Dates already past are ignored. The publisher re-reads this file every run.",
-  "earnings": {}
+  "note": "Earnings schedule for the Session Oracle publisher, maintained by the operator. Per symbol, a list of { \"date\": \"YYYY-MM-DD\" (US Eastern), \"timing\": \"bmo\" | \"amc\" } or { \"realisedAt\": <unix seconds of the regular open where the gap lands> }. Dates already past are ignored. The publisher re-reads this file every run. Every date except TSLA's is an estimate and must be re-checked by the operator weekly.",
+  "earnings": {
+    "TSLA": [
+      {
+        "date": "2026-10-21",
+        "timing": "amc"
+      }
+    ],
+    "GOOGL": [
+      {
+        "date": "2026-10-28",
+        "timing": "amc"
+      }
+    ],
+    "META": [
+      {
+        "date": "2026-10-28",
+        "timing": "amc"
+      }
+    ],
+    "MSFT": [
+      {
+        "date": "2026-10-28",
+        "timing": "amc"
+      }
+    ],
+    "AAPL": [
+      {
+        "date": "2026-10-29",
+        "timing": "amc"
+      }
+    ],
+    "AMZN": [
+      {
+        "date": "2026-10-29",
+        "timing": "amc"
+      }
+    ],
+    "COIN": [
+      {
+        "date": "2026-10-29",
+        "timing": "amc"
+      }
+    ],
+    "MSTR": [
+      {
+        "date": "2026-10-29",
+        "timing": "amc"
+      }
+    ],
+    "NVDA": [
+      {
+        "date": "2026-11-18",
+        "timing": "amc"
+      }
+    ],
+    "CRCL": [
+      {
+        "date": "2026-11-13",
+        "timing": "bmo"
+      }
+    ]
+  }
 }

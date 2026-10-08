@@ -10,6 +10,15 @@ export const DESK_CHAINS = { 56: "bsc", 97: "bsc-testnet", 31337: "bsc-fork" } a
 export type DeskChainId = keyof typeof DESK_CHAINS;
 
 const REDACTED = "[redacted]";
+/** Hard ceiling on one x402 data call. */
+export const MAX_X402_PRICE_USD = 0.05;
+/** Hard ceiling on all x402 spend per UTC day. */
+export const MAX_X402_DAILY_USD = 0.5;
+/**
+ * Environment variable names whose values are secrets wherever they come from (LLM provider keys for the
+ * desk notes, cloud credentials): anything ending in _API_KEY, _SECRET, _SECRET_ACCESS_KEY, _TOKEN or _PASSWORD.
+ */
+export const SECRET_VAR = /(_API_KEY|_SECRET|_SECRET_ACCESS_KEY|_SESSION_TOKEN|_TOKEN|_PASSWORD|PRIVATE_KEY)$/;
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 /** A string that never prints itself: logs, JSON.stringify and util.inspect all see "[redacted]". */
@@ -55,6 +64,30 @@ export interface DeskConfig {
   readonly httpHost: string;
   readonly httpPort: number;
   readonly x402DailyCapUsd: number;
+  /** Paid earnings dates over x402: off (url null) unless X402_EARNINGS_URL is set. */
+  readonly x402: { earningsUrl: string | null; maxPriceUsd: number; networks: readonly string[] };
+  /** The only origin the read API answers CORS requests for (the web app); null sends no CORS headers. */
+  readonly webOrigin: string | null;
+  /** Requests per minute per client IP on the read API. */
+  readonly apiRatePerMin: number;
+  /** Desk notes from the Studio LLM: "auto" uses it when configured, "off" never calls it. */
+  readonly notes: "auto" | "off";
+  /** Most LLM calls the desk notes may make per UTC day. */
+  readonly notesDailyMax: number;
+  /** studio.toml whose [llm] section the desk notes use. */
+  readonly studioToml: string;
+  /** Fork runs only (CHAIN_ID 31337): every loop runs at this interval instead of its own. */
+  readonly forkTickSec: number | null;
+  /** Alert when the desk key holds less BNB than this. */
+  readonly minBnbBalance: number;
+  /** The sender never signs above this gas price. */
+  readonly maxGasPriceGwei: number;
+  /** How long the sender waits for a receipt before replacing a transaction. */
+  readonly receiptTimeoutSec: number;
+  /** Replacement rounds per nonce before the sender halts. */
+  readonly maxBumps: number;
+  /** Fee budget (gas limit x gas price of everything signed) per rolling hour; above it the sender halts. */
+  readonly maxFeeBnbPerHour: number;
   readonly dryRun: boolean;
   /** One line that is safe to log. */
   describe(): string;
@@ -147,11 +180,55 @@ const envSchema = z.object({
   AGENT_PORT: portVar(9000),
   HTTP_HOST: hostVar("127.0.0.1"),
   HTTP_PORT: portVar(8787),
-  X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  X402_DAILY_CAP_USD: numberVar(MAX_X402_DAILY_USD)
+    .refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount")
+    .refine((n) => !(n > MAX_X402_DAILY_USD), `must be at most ${MAX_X402_DAILY_USD}`),
+  X402_EARNINGS_URL: optionalText.refine((v) => v === undefined || isHttpUrl(v.replace(/\{(symbol|from|to)\}/g, "x")), "must be an http(s) URL"),
+  X402_MAX_PRICE_USD: numberVar(MAX_X402_PRICE_USD).refine(
+    (n) => Number.isFinite(n) && n > 0 && n <= MAX_X402_PRICE_USD,
+    `must be above 0 and at most ${MAX_X402_PRICE_USD}`,
+  ),
+  X402_NETWORKS: z.preprocess(
+    (v) => blank(v) ?? "eip155:56,eip155:8453",
+    z
+      .string()
+      .transform((v) => v.split(",").map((x) => x.trim()).filter(Boolean))
+      .refine((l) => l.length > 0 && l.every((x) => /^eip155:\d+$/.test(x)), "must be a comma list of eip155:<chainId>"),
+  ),
+  WEB_ORIGIN: optionalText.refine((v) => v === undefined || isOrigin(v), "must be an origin like https://app.example.org (no path)"),
+  API_RATE_PER_MIN: numberVar(120).refine((n) => Number.isInteger(n) && n >= 1 && n <= 100_000, "must be a whole number from 1"),
+  DESK_NOTES: z.preprocess((v) => (blank(v) ?? "auto").toString().trim().toLowerCase(), z.enum(["auto", "off"], { message: "must be auto or off" })),
+  NOTES_DAILY_MAX: numberVar(200).refine((n) => Number.isInteger(n) && n >= 0 && n <= 100_000, "must be a whole number from 0"),
+  STUDIO_TOML: optionalText,
+  FORK_TICK_SEC: z.preprocess(blank, z.coerce.number().optional()).refine((n) => n === undefined || (Number.isInteger(n) && n >= 1 && n <= 3600), "must be 1..3600 seconds"),
+  MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  // Sized for BSC: sub-second blocks, gas at a small fraction of a gwei.
+  MAX_GAS_PRICE_GWEI: numberVar(1).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
+  RECEIPT_TIMEOUT_SEC: numberVar(20).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
+  MAX_BUMPS: numberVar(4).refine((n) => Number.isInteger(n) && n >= 0 && n <= 10, "must be a whole number from 0 to 10"),
+  MAX_FEE_BNB_PER_HOUR: numberVar(0.003).refine((n) => Number.isFinite(n) && n > 0 && n <= 10, "must be an amount of BNB, above 0 and at most 10"),
   DRY_RUN: flagVar(true),
 });
 
 type Env = z.infer<typeof envSchema>;
+
+function isHttpUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isOrigin(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.origin === v.replace(/\/$/, "");
+  } catch {
+    return false;
+  }
+}
 
 function resolveSigner(e: Env, cwd: string, issues: string[]): SignerSource | null {
   const keystorePassword = e.AGENT_KEYSTORE_PASSWORD ?? e.WALLET_PASSWORD;
@@ -221,7 +298,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (e.CHAIN_ID === 56 && !isLoopbackHost(e.AGENT_BIND_HOST)) {
     issues.push("AGENT_BIND_HOST: must be a loopback address on BSC mainnet (the A2A/MCP faces have no auth)");
   }
+  if (e.CHAIN_ID === 56) {
+    // The read API is fronted by a TLS reverse proxy on the same host; it never listens on a public address.
+    if (!isLoopbackHost(e.HTTP_HOST)) issues.push("HTTP_HOST: must be a loopback address on BSC mainnet (a reverse proxy fronts the read API)");
+    // Plain http would expose the RPC key and let anyone on the path rewrite reads or payment challenges.
+    const rpc = new URL(e.BSC_RPC_URL);
+    if (rpc.protocol !== "https:" && !isLoopbackHost(rpc.hostname.replace(/^\[|\]$/g, ""))) issues.push("BSC_RPC_URL: must be https on BSC mainnet (http only for a node on loopback)");
+    if (e.X402_EARNINGS_URL && !e.X402_EARNINGS_URL.startsWith("https://")) issues.push("X402_EARNINGS_URL: must be https on BSC mainnet");
+  }
   if (e.AGENT_PORT === e.HTTP_PORT) issues.push("AGENT_PORT: must differ from HTTP_PORT");
+  if (e.FORK_TICK_SEC !== undefined && e.CHAIN_ID !== 31337) issues.push("FORK_TICK_SEC: only allowed on the local fork (CHAIN_ID 31337)");
   if (issues.length > 0 || signer === null) throw new ConfigError(issues);
 
   const chainId = e.CHAIN_ID;
@@ -230,6 +316,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     : path.join(REPO_ROOT, "contracts", "deployments", `${chainId}.json`);
   const dataDir = e.DATA_DIR ? path.resolve(cwd, e.DATA_DIR) : path.join(REPO_ROOT, "apps", "agent", "var");
   const earningsFile = e.EARNINGS_FILE ? path.resolve(cwd, e.EARNINGS_FILE) : path.join(REPO_ROOT, "config", "earnings.json");
+  const studioToml = e.STUDIO_TOML ? path.resolve(cwd, e.STUDIO_TOML) : path.join(REPO_ROOT, "apps", "agent", "app", "agent", "studio.toml");
+  const earningsUrl = e.X402_EARNINGS_URL ?? null;
 
   const summary = [
     `chain=${chainId} (${DESK_CHAINS[chainId]})`,
@@ -241,6 +329,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `agent=${e.AGENT_BIND_HOST}:${e.AGENT_PORT}`,
     `http=${e.HTTP_HOST}:${e.HTTP_PORT}`,
     `x402Cap=$${e.X402_DAILY_CAP_USD}/day`,
+    `x402Earnings=${earningsUrl ? redactUrl(earningsUrl) : "off"}`,
+    `webOrigin=${e.WEB_ORIGIN ?? "none"}`,
+    `notes=${e.DESK_NOTES}`,
     `dryRun=${e.DRY_RUN}`,
   ].join(" ");
 
@@ -257,6 +348,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     httpHost: e.HTTP_HOST,
     httpPort: e.HTTP_PORT,
     x402DailyCapUsd: e.X402_DAILY_CAP_USD,
+    x402: Object.freeze({ earningsUrl, maxPriceUsd: e.X402_MAX_PRICE_USD, networks: Object.freeze([...e.X402_NETWORKS]) }),
+    webOrigin: e.WEB_ORIGIN ? e.WEB_ORIGIN.replace(/\/$/, "") : null,
+    apiRatePerMin: e.API_RATE_PER_MIN,
+    notes: e.DESK_NOTES,
+    notesDailyMax: e.NOTES_DAILY_MAX,
+    studioToml,
+    forkTickSec: e.FORK_TICK_SEC ?? null,
+    minBnbBalance: e.MIN_BNB_BALANCE,
+    maxGasPriceGwei: e.MAX_GAS_PRICE_GWEI,
+    receiptTimeoutSec: e.RECEIPT_TIMEOUT_SEC,
+    maxBumps: e.MAX_BUMPS,
+    maxFeeBnbPerHour: e.MAX_FEE_BNB_PER_HOUR,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
@@ -269,4 +372,41 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
  */
 export function studioEnv(config: Pick<DeskConfig, "agentBindHost" | "agentPort">): { AGENT_BIND_HOST: string; AGENT_PORT: string } {
   return { AGENT_BIND_HOST: config.agentBindHost, AGENT_PORT: String(config.agentPort) };
+}
+
+/**
+ * Every secret value the desk holds, for scrubbing the feed and API responses: the RPC URL (with its path
+ * and query, whole and in long pieces, where providers put keys), the private key (with and without 0x) or
+ * keystore password, the Binance credentials and every other secret-named variable in `env` (SECRET_VAR).
+ */
+export function deskSecrets(config: Pick<DeskConfig, "rpcUrl" | "signer" | "binance">, env: Record<string, string | undefined> = process.env): string[] {
+  const out = new Set<string>();
+  const rpc = config.rpcUrl.reveal();
+  out.add(rpc);
+  try {
+    const u = new URL(rpc);
+    const rest = `${u.pathname.replace(/^\/+|\/+$/g, "")}${u.search}`;
+    if (rest.length >= 8) out.add(rest);
+    for (const part of u.pathname.split("/")) if (part.length >= 12) out.add(part);
+    for (const [, v] of u.searchParams) if (v.length >= 12) out.add(v);
+    if (u.password) out.add(u.password);
+  } catch {
+    // validated at load: unreachable
+  }
+  if (config.signer.kind === "private-key") {
+    const k = config.signer.privateKey.reveal();
+    out.add(k);
+    out.add(k.replace(/^0x/i, ""));
+  } else {
+    out.add(config.signer.password.reveal());
+  }
+  if (config.binance) {
+    out.add(config.binance.apiKey.reveal());
+    out.add(config.binance.apiSecret.reveal());
+  }
+  for (const [k, raw] of Object.entries(env)) {
+    const v = raw?.trim();
+    if (v && v.length >= 8 && SECRET_VAR.test(k)) out.add(v);
+  }
+  return [...out].filter((v) => v.length > 0);
 }
