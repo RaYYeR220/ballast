@@ -4,15 +4,16 @@
 import { defi } from "@ballast/binance";
 import { bscExternal, type ReadClient } from "@ballast/sdk";
 import type { Address } from "viem";
-import type { MarketView, TokenView } from "@/lib/views";
+import type { DefiSummary, MarketView, StocksBody, TokenView } from "@/lib/views";
 import { BINANCE_BSC, binanceMessage, web3Client } from "../binance";
+import { lendingPositions, walletStocks } from "../binance-data";
 import { ttlCache } from "../cache";
 import type { DeploymentStatus } from "../deployment";
 import type { ServerEnv } from "../env";
 import { BusyError, readGate, withDeadline } from "../guard";
 import { LIMITS } from "../limits";
 import { addressParam, badRequest, intParam, optionalAddress, query } from "../params";
-import { head, isKnownToken, readAccounts, readLoans, readMarkets, readToken, type AccountsPage } from "../reads";
+import { head, isKnownToken, readAccounts, readLoans, readMarkets, readStocks, readToken, type AccountsPage } from "../reads";
 import { shortMessage } from "../simulate";
 
 const NO_STORE = { "cache-control": "no-store" };
@@ -79,11 +80,7 @@ export async function handleAccounts(req: Request, s: DeploymentStatus, c: ReadC
   }
 }
 
-export interface DefiSummary {
-  status: "ok" | "unavailable" | "not-configured";
-  protocols: { id: string; valueUsd: string }[];
-  detail?: string;
-}
+export type { DefiSummary };
 
 /** Per-protocol totals from the DeFi API's nested position list (addressList > protocolList), at most 50 rows. */
 export function summarizeDefi(data: unknown): { id: string; valueUsd: string }[] {
@@ -105,11 +102,12 @@ export function summarizeDefi(data: unknown): { id: string; valueUsd: string }[]
 
 async function defiPositions(e: ServerEnv, user: Address, fetchImpl?: typeof fetch): Promise<DefiSummary> {
   const web3 = e.chainId === 56 ? web3Client(e, fetchImpl) : null;
-  if (!web3) return { status: "not-configured", protocols: [] };
+  if (!web3) return { status: "not-configured", protocols: [], lending: [] };
   try {
-    return { status: "ok", protocols: summarizeDefi(await defi.positions(web3, [user], [BINANCE_BSC])) };
+    const data = await defi.positions(web3, [user], [BINANCE_BSC]);
+    return { status: "ok", protocols: summarizeDefi(data), lending: lendingPositions(data) };
   } catch (err) {
-    return { status: "unavailable", protocols: [], detail: binanceMessage(err) };
+    return { status: "unavailable", protocols: [], lending: [], detail: binanceMessage(err) };
   }
 }
 
@@ -132,7 +130,7 @@ export async function handleLoans(req: Request, e: ServerEnv, c: ReadClient, fet
     );
     return Response.json({ status: "ok", chainId: e.chainId, ...r.chain, defi: r.defi }, { headers: NO_STORE });
   } catch (err) {
-    return failed(err, { defi: { status: "unavailable", protocols: [] } satisfies DefiSummary });
+    return failed(err, { defi: { status: "unavailable", protocols: [], lending: [] } satisfies DefiSummary });
   }
 }
 
@@ -180,5 +178,44 @@ export async function handleToken(req: Request, c: ReadClient): Promise<Response
   } catch (err) {
     if (err instanceof BusyError) return failed(err);
     return Response.json({ status: "unavailable", detail: shortMessage(err) }, { headers: NO_STORE });
+  }
+}
+
+const stocksCache = ttlCache<StocksBody>(20_000, { errorTtlMs: 2_000, replayError });
+
+/**
+ * The tokenized stocks a wallet holds, for the collateral picker. On BNB Chain with Binance keys the Wallet API
+ * answers (all issuers, with prices); when it is not set up or fails, the same tokens are read from the chain
+ * and the answer says so.
+ */
+export async function handleWalletStocks(req: Request, e: ServerEnv, c: ReadClient, fetchImpl?: typeof fetch): Promise<Response> {
+  const q = query(req);
+  if (q instanceof Response) return q;
+  const user = addressParam(q, "user");
+  if (user instanceof Response) return user;
+  try {
+    const body = await stocksCache.get(`${clientId(c)}|${e.chainId}|${user}`, async (): Promise<StocksBody> => {
+      const web3 = e.chainId === 56 ? web3Client(e, fetchImpl) : null;
+      let binance: "unavailable" | "not-configured" = "not-configured";
+      let detail: string | undefined;
+      if (web3) {
+        try {
+          return { status: "ok", source: "binance", binance: "ok", stocks: await walletStocks(web3, user) };
+        } catch (err) {
+          binance = "unavailable";
+          detail = binanceMessage(err);
+        }
+      }
+      try {
+        const stocks = await bounded(() => readStocks(c, user));
+        return { status: "ok", source: "chain", binance, ...(detail ? { detail } : {}), stocks };
+      } catch (err) {
+        if (err instanceof BusyError) throw err;
+        return { status: "unavailable", binance, detail: `chain read failed: ${shortMessage(err)}` };
+      }
+    });
+    return Response.json(body, { headers: NO_STORE });
+  } catch (err) {
+    return failed(err);
   }
 }

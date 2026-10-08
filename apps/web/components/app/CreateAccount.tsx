@@ -6,8 +6,9 @@ import { useId, useState } from "react";
 import { parseEventLogs, type Address } from "viem";
 import { defaultMandate, mandateProblems, pctToBps } from "@/lib/mandate";
 import { createAccountStep, deleveragePathStep, type TxStep } from "@/lib/steps";
-import type { MarketView } from "@/lib/views";
+import type { MarketView, StocksBody } from "@/lib/views";
 import { mandateInputs, MandateFields, type MandateInputs } from "./fields";
+import { StockPicker } from "./StockPicker";
 import { TxFlow, type TxReceiptLite } from "./TxFlow";
 import s from "./app.module.css";
 
@@ -28,11 +29,14 @@ export interface CreateAccountFormProps {
   owner: Address;
   deskAgent: Address | null;
   markets: MarketView[];
+  /** the wallet's tokenized stocks, for picking the collateral; omitted where they are not read */
+  stocks?: StocksBody;
+  stocksLoading?: boolean;
   onCreated?: (account: Address | null) => void;
   onCancel?: () => void;
 }
 
-export function CreateAccountForm({ deployment, owner, deskAgent, markets, onCreated, onCancel }: CreateAccountFormProps) {
+export function CreateAccountForm({ deployment, owner, deskAgent, markets, stocks, stocksLoading = false, onCreated, onCancel }: CreateAccountFormProps) {
   const usable = markets.filter((m) => !m.error && m.lltvBps !== null && (m.venue === "venus" || m.marketParams));
   const [marketId, setMarketId] = useState(usable[0]?.id ?? "");
   const market = usable.find((m) => m.id === marketId) ?? null;
@@ -100,6 +104,19 @@ export function CreateAccountForm({ deployment, owner, deskAgent, markets, onCre
 
   return (
     <form className={s.form} onSubmit={review} aria-label="Open a credit line">
+      {stocks || stocksLoading ? (
+        <StockPicker
+          stocks={stocks}
+          loading={stocksLoading}
+          selected={marketId}
+          // a bStock may have a market on both venues: the first one this form can use is chosen, and the list below shows it
+          onPick={(id) => {
+            const token = markets.find((x) => x.id === id)?.collateralToken;
+            const pick = usable.find((x) => x.id === id) ?? usable.find((x) => x.collateralToken === token);
+            if (pick) chooseMarket(pick.id);
+          }}
+        />
+      ) : null}
       <div className={s.fields}>
         <div className={s.field}>
           <label htmlFor={selectId}>Market</label>

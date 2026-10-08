@@ -42,7 +42,7 @@ describe("simulateTx", () => {
     const binance = vi.fn(async () => ({ status: "SUCCESS" as const, failReason: null, balanceChanges: [], allowanceChanges: [] }));
     const call = vi.fn(async () => "0x");
     const r = await simulateTx(simTx, deps({ binance, call }));
-    expect(r).toEqual({ via: "binance", ok: true, balanceChanges: [] });
+    expect(r).toEqual({ via: "binance", ok: true, balanceChanges: [], allowanceChanges: [] });
     expect(binance).toHaveBeenCalledWith({ binanceChainId: "56", evmTx: { from: FROM, to: ACCOUNT, value: "0", data: tx.data } });
     expect(call).not.toHaveBeenCalled();
   });

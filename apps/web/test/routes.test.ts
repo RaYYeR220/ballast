@@ -403,7 +403,7 @@ describe("GET /api/loans", () => {
     const { client } = fakeReads(moolahReads);
     const body = await (await handleLoans(new Request(`http://x/api/loans?user=${OWNER}`), env, client)).json();
     expect(body.status).toBe("ok");
-    expect(body.defi).toEqual({ status: "not-configured", protocols: [] });
+    expect(body.defi).toEqual({ status: "not-configured", protocols: [], lending: [] });
     expect(body.loans).toHaveLength(1);
     expect(body.loans[0]).toMatchObject({ venue: "lista", symbol: "NVDA", collateralSymbol: "NVDAB", loanSymbol: "USD1", lltvBps: 7500, ltvBps: 5000 });
     expect(body.loans[0].key).toBe(listaCoverKey(MP as never));

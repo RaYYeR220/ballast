@@ -204,6 +204,13 @@ button.pill:hover { border-color: var(--p-400); }
 .slip .ctx { display: block; color: var(--text-2); }
 .slip .ft { margin-top: var(--s-3); padding-top: 12px; border-top: 1px solid var(--rule-2); display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--text-2); }
 
+/* the wallet's tokenized stocks */
+.stockList { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--rule); }
+.stockList li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: 14.5px; }
+.stockList b { font-weight: 500; }
+.stockList .linkBtn { font-size: 14px; }
+.stockList .linkBtn[aria-pressed="true"] { color: var(--text-2); }
+
 /* covers */
 .coverList { list-style: none; padding: 0; margin: 0 0 var(--s-3); }
 .coverList li { padding: 12px 0; border-bottom: 1px solid var(--rule); display: grid; gap: 4px; }

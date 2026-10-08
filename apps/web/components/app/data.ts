@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { DeskEvent, DeskHealth, DeskResult } from "@/lib/desk";
-import type { AccountsBody, LoansBody, MarketsBody, TokenView } from "@/lib/views";
+import type { AccountsBody, DefiSummary, LoansBody, MarketsBody, StocksBody, TokenView } from "@/lib/views";
 
 async function getJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
@@ -51,9 +51,19 @@ export function useAccounts(owner: string | undefined, enabled: boolean, offset 
 export function useLoans(user: string | undefined, enabled: boolean) {
   return useQuery({
     queryKey: keys.loans(user ?? ""),
-    queryFn: () => getJson<LoansBody & { defi?: { status: string; protocols: { id: string; valueUsd: string }[] } }>(`/api/loans?user=${user}`),
+    queryFn: () => getJson<LoansBody & { defi?: DefiSummary }>(`/api/loans?user=${user}`),
     enabled: enabled && !!user,
     staleTime: 60_000,
+  });
+}
+
+/** The tokenized stocks the wallet holds (Binance Wallet API, or the chain when Binance is not answering). */
+export function useWalletStocks(user: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ["stocks", user?.toLowerCase() ?? ""],
+    queryFn: () => getJson<StocksBody>(`/api/wallet-stocks?user=${user}`),
+    enabled: enabled && !!user,
+    staleTime: 30_000,
   });
 }
 

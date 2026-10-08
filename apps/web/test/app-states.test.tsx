@@ -10,13 +10,19 @@ import { DeskPill } from "../components/app/AppBar";
 import { DeskNotes, RefusalLog, WatchLog } from "../components/app/DeskPanels";
 import { comingSentence, healthStatus, HealthPanel } from "../components/app/HealthPanel";
 import { gaugeScale, layoutBelow } from "../components/app/Gauge";
+import { CreateAccountForm } from "../components/app/CreateAccount";
 import { AmountField } from "../components/app/fields";
+import { StockPicker } from "../components/app/StockPicker";
+import { TxRunnerContext } from "../components/app/TxFlow";
+import { deleveragePathFor, marketById } from "../lib/markets";
+import type { MarketView, StocksBody } from "../lib/views";
+import { DEPLOYMENT } from "./helpers";
 import { errorSignature, RefusalCard } from "../components/app/RefusalCard";
 import type { AppConfig } from "../lib/app-config";
 import { bsc } from "../lib/chains";
 import type { DeskEvent, DeskResult } from "../lib/desk";
 import { plannedRows } from "../lib/feed-rows";
-import { E18, KEEPER, TUE_1100, VIEW } from "./fixtures";
+import { E18, KEEPER, nvda, OWNER, TUE_1100, VIEW } from "./fixtures";
 
 const TX = `0x${"ab".repeat(32)}`;
 const OFF_UNSET: DeskResult<{ events: DeskEvent[] }> = { status: "offline", reason: "not-configured", detail: "no desk agent is set up for this site" };
@@ -370,5 +376,78 @@ describe("amount fields say how they read the input", () => {
     cleanup();
     field("");
     expect(screen.queryByText(/Reads as|Not an amount/)).toBeNull();
+  });
+});
+
+describe("your tokenized stocks", () => {
+  const ondo = "0xA9ee28c80F960b889dFbD1902055218cBa016f75" as const;
+  const held: StocksBody = {
+    status: "ok",
+    source: "binance",
+    binance: "ok",
+    stocks: [
+      { symbol: "NVDA", issuer: "bStock", token: nvda.collateralToken, tokenSymbol: "NVDAB", rawBalance: (10n * E18).toString(), priceUsd: "231.55", market: { id: "lista:NVDAB_USD1", label: "Lista NVDAB / USD1, Venus NVDAB / USDT" } },
+      { symbol: "NVDA", issuer: "Ondo", token: ondo, tokenSymbol: "NVDAon", rawBalance: (2n * E18).toString(), priceUsd: "230", market: null },
+    ],
+  };
+
+  it("offers a bStock with a market as collateral and marks the rest as having no market", () => {
+    const onPick = vi.fn();
+    render(<StockPicker stocks={held} loading={false} selected={null} onPick={onPick} />);
+    const rows = within(screen.getByRole("group", { name: "Your tokenized stocks" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.textContent).toContain("10 NVDAB");
+    expect(rows[0]!.textContent).toContain("NVDA as a bStock, about $2,316");
+    expect(rows[1]!.textContent).toContain("2 NVDAon");
+    expect(rows[1]!.textContent).toContain("no market");
+    expect(within(rows[1]!).queryByRole("button")).toBeNull();
+    fireEvent.click(within(rows[0]!).getByRole("button", { name: "Use as collateral" }));
+    expect(onPick).toHaveBeenCalledWith("lista:NVDAB_USD1");
+    expect(screen.getByText("From the Binance Wallet API.")).toBeTruthy();
+  });
+
+  it("says where the list came from when Binance did not answer, and when the wallet holds none", () => {
+    render(<StockPicker stocks={{ ...held, source: "chain", binance: "unavailable", detail: "40304 restricted" }} loading={false} selected={null} onPick={() => {}} />);
+    expect(screen.getByText("Binance API unavailable: read from BNB Chain instead, without prices.")).toBeTruthy();
+    cleanup();
+    render(<StockPicker stocks={{ status: "ok", source: "binance", binance: "ok", stocks: [] }} loading={false} selected={null} onPick={() => {}} />);
+    expect(screen.getByText(/holds none of the tokenized stocks Ballast knows/)).toBeTruthy();
+    cleanup();
+    render(<StockPicker stocks={{ status: "unavailable", binance: "unavailable", detail: "x" }} loading={false} selected={null} onPick={() => {}} />);
+    expect(screen.getByText("Binance API unavailable, and BNB Chain did not answer either.")).toBeTruthy();
+    cleanup();
+    render(<StockPicker stocks={undefined} loading selected={null} onPick={() => {}} />);
+    expect(screen.getByText("Reading your holdings...")).toBeTruthy();
+  });
+
+  it("picking a stock sets the market and its mandate defaults in the create form", () => {
+    const spy = marketById("lista:SPYB_USD1")!;
+    const market = (m: typeof spy, lltvBps: number): MarketView => ({
+      id: m.id,
+      venue: m.venue,
+      label: m.label,
+      symbol: m.symbol,
+      collateralSymbol: m.collateralSymbol,
+      loanSymbol: m.loanSymbol,
+      collateralToken: m.collateralToken,
+      loanToken: m.loanToken,
+      lltvBps,
+      marketParams: { loanToken: m.loanToken, collateralToken: m.collateralToken, oracle: KEEPER, irm: KEEPER, lltv: (BigInt(lltvBps) * 10n ** 14n).toString() },
+      path: deleveragePathFor(m),
+    });
+    const runner = { chainId: 56, simulate: vi.fn(), send: vi.fn(), wait: vi.fn() };
+    render(
+      <TxRunnerContext.Provider value={runner as never}>
+        <CreateAccountForm deployment={DEPLOYMENT} owner={OWNER} deskAgent={KEEPER} markets={[market(spy, 8500), market(nvda, 7500)]} stocks={held} />
+      </TxRunnerContext.Provider>,
+    );
+    expect((screen.getByLabelText("Market") as HTMLSelectElement).value).toBe("lista:SPYB_USD1");
+    expect((screen.getByLabelText("Max loan to value") as HTMLInputElement).value).toBe("68");
+    fireEvent.click(screen.getByRole("button", { name: "Use as collateral" }));
+    expect((screen.getByLabelText("Market") as HTMLSelectElement).value).toBe("lista:NVDAB_USD1");
+    expect((screen.getByLabelText("Max loan to value") as HTMLInputElement).value).toBe("60");
+    expect(screen.getByRole("button", { name: "Selected" })).toBeTruthy();
+    // picking a stock simulates and sends nothing
+    expect(runner.simulate).not.toHaveBeenCalled();
   });
 });

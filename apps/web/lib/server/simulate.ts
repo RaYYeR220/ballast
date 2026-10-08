@@ -67,7 +67,7 @@ export async function simulateTx(tx: SimTx, deps: SimulateDeps): Promise<SimResu
     return { ...sim, note: `Binance simulation unavailable, eth_call ran instead (${shortMessage(err)})` };
   }
   if (r.status === "SUCCESS") {
-    return { via: "binance", ok: true, balanceChanges: r.balanceChanges ?? [] };
+    return { via: "binance", ok: true, balanceChanges: (r.balanceChanges ?? []).slice(0, 20), allowanceChanges: (r.allowanceChanges ?? []).slice(0, 20) };
   }
   const reason = r.failReason ?? "simulation failed";
   let replay: SimResult;

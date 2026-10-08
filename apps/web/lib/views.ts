@@ -184,3 +184,46 @@ export interface TokenView {
   balance: string;
   allowance: string | null;
 }
+
+/** A tokenized stock the wallet holds. Only a bStock with a market can back a credit line here. */
+export interface HeldStock {
+  /** ticker, e.g. NVDA */
+  symbol: string;
+  issuer: "bStock" | "Ondo" | "xStock";
+  token: Address;
+  tokenSymbol: string;
+  /** token units (18 decimals) */
+  rawBalance: string;
+  /** USD per token as Binance prices it; null when read from the chain */
+  priceUsd: string | null;
+  market: { id: string; label: string } | null;
+}
+
+/**
+ * `source` says who answered: the Binance Wallet API, or BNB Chain when Binance is not set up or did not
+ * answer (`binance` then says which, with the reason in `detail`).
+ */
+export type StocksBody =
+  | { status: "ok"; source: "binance" | "chain"; binance: "ok" | "unavailable" | "not-configured"; detail?: string; stocks: HeldStock[] }
+  | { status: "unavailable"; binance: "unavailable" | "not-configured"; detail: string };
+
+/** One lending position as the Binance DeFi API reports it (amounts are its own decimal strings). */
+export interface DefiLending {
+  venue: "lista" | "venus";
+  protocol: string;
+  /** value of everything the wallet has in the protocol, as Binance prices it */
+  valueUsd: string | null;
+  /** "1,630.8 USD1" style amounts */
+  borrowed: string[];
+  supplied: string[];
+  /** reported under the Lista market contract or the Venus comptroller this app reads */
+  onOurMarkets: boolean;
+}
+
+export interface DefiSummary {
+  status: "ok" | "unavailable" | "not-configured";
+  protocols: { id: string; valueUsd: string }[];
+  /** Lista and Venus positions among them */
+  lending: DefiLending[];
+  detail?: string;
+}

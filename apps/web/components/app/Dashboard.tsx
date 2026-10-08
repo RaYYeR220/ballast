@@ -17,7 +17,7 @@ import { AccountActions } from "./AccountActions";
 import { AppBar, MobileTabs } from "./AppBar";
 import { CoversPanel } from "./CoversPanel";
 import { CreateAccountForm } from "./CreateAccount";
-import { useAccounts, useDeskFeed, useDeskHealth, useMarkets, useMinuteClock } from "./data";
+import { useAccounts, useDeskFeed, useDeskHealth, useMarkets, useMinuteClock, useWalletStocks } from "./data";
 import { DeskNotes, RefusalLog, WatchLog } from "./DeskPanels";
 import { HealthPanel, type HealthContent } from "./HealthPanel";
 import { WeekPanel } from "./WeekPanel";
@@ -54,7 +54,9 @@ export function Dashboard({ config }: { config: AppConfig }) {
   const [creating, setCreating] = useState(false);
   const view = list.find((a) => sameAddr(a.address, selected)) ?? list[0] ?? null;
   const feed = useDeskFeed(view ? view.address : null);
-  const markets = useMarkets(onChain && !!deployment && (creating || (body?.status === "ok" && list.length === 0)));
+  const opening = onChain && !!deployment && (creating || (body?.status === "ok" && list.length === 0));
+  const markets = useMarkets(opening);
+  const stocks = useWalletStocks(address, opening);
 
   const events = feed.data?.status === "online" ? feed.data.data.events : NO_EVENTS;
   const loanDecimals = view?.loanDecimals;
@@ -199,6 +201,8 @@ export function Dashboard({ config }: { config: AppConfig }) {
                   owner={address}
                   deskAgent={deskAgent}
                   markets={markets.data.markets}
+                  stocks={stocks.data}
+                  stocksLoading={stocks.isLoading}
                   onCreated={(account) => {
                     setCreating(false);
                     if (account) setSelected(account);

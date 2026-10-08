@@ -21,7 +21,8 @@ import {
 } from "@ballast/sdk";
 import { encodeAbiParameters, erc20Abi, formatUnits, getAddress, keccak256, type Address, type Hex } from "viem";
 import { deleveragePathFor, MARKETS, tokenSymbol, type CatalogMarket } from "@/lib/markets";
-import type { AccountView, CoverView, LoanView, MarketParamsView, MarketView, TokenView } from "@/lib/views";
+import type { AccountView, CoverView, HeldStock, LoanView, MarketParamsView, MarketView, TokenView } from "@/lib/views";
+import { STOCK_TOKENS } from "./binance-data";
 import { LIMITS } from "./limits";
 import { shortMessage } from "./simulate";
 import { accountView } from "./views";
@@ -392,4 +393,19 @@ export async function readToken(c: Client, token: Address, owner: Address, spend
     spender ? c.readContract({ address: token, abi: erc20Abi, blockNumber, functionName: "allowance", args: [owner, spender] }) : Promise.resolve(null),
   ]);
   return { token, symbol: tokenSymbol(token) ?? "token", decimals, balance: balance.toString(), allowance: allowance === null ? null : allowance.toString() };
+}
+
+// ------------------------------------------------------------------- stocks
+
+/** The configured stock tokens (every ticker, every issuer) the wallet holds, read on chain: no prices. */
+export async function readStocks(c: Client, user: Address, o: { head?: Head } = {}): Promise<HeldStock[]> {
+  const { blockNumber } = o.head ?? (await head(c));
+  const all = [...STOCK_TOKENS.values()];
+  const balances = await mapLimit(all, 12, (t) =>
+    c.readContract({ address: t.token, abi: erc20Abi, blockNumber, functionName: "balanceOf", args: [user] }).catch(() => 0n),
+  );
+  return all.flatMap((t, i) => {
+    const raw = balances[i] ?? 0n;
+    return raw > 0n ? [{ ...t, tokenSymbol: t.issuer === "bStock" ? `${t.symbol}B` : `${t.symbol} (${t.issuer})`, rawBalance: raw.toString(), priceUsd: null }] : [];
+  });
 }

@@ -17,6 +17,7 @@ export interface SimResult {
   error?: SimError;
   note?: string;
   balanceChanges?: { contractAddress: string; tokenType: string; change: string; owner: string }[];
+  allowanceChanges?: { tokenAddress: string; owner: string; spender: string; preAmount: string; postAmount: string }[];
 }
 
 export interface SimRequest {
@@ -40,7 +41,7 @@ const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
  * Only tokens this app knows are named (all 18 decimals on BNB Chain, like BNB itself); the simulator reports
  * raw token units. Empty when the simulator gave no balance changes (eth_call gives none).
  */
-export function balanceChangeText(sim: Pick<SimResult, "balanceChanges">, owner: string): string {
+export function balanceChangeText(sim: Pick<SimResult, "balanceChanges" | "allowanceChanges">, owner: string): string {
   const parts: string[] = [];
   for (const c of sim.balanceChanges ?? []) {
     if (c.owner?.toLowerCase() !== owner.toLowerCase()) continue;
@@ -54,7 +55,16 @@ export function balanceChangeText(sim: Pick<SimResult, "balanceChanges">, owner:
     parts.push(`${raw < 0n ? "-" : "+"}${amount} ${symbol}`);
     if (parts.length === 4) break;
   }
-  return parts.length > 0 ? `Your wallet: ${parts.join(", ")}` : "";
+  const out = parts.length > 0 ? [`Your wallet: ${parts.join(", ")}`] : [];
+  // an approval moves no tokens: what changes is how much the spender may pull
+  for (const a of (sim.allowanceChanges ?? []).slice(0, 2)) {
+    const symbol = tokenSymbol(a.tokenAddress ?? "");
+    if (a.owner?.toLowerCase() !== owner.toLowerCase() || !symbol || !/^\d+$/.test(a.postAmount ?? "")) continue;
+    const n = Number(formatUnits(BigInt(a.postAmount), 18));
+    const amount = n > 1e15 ? "an unlimited amount of" : n.toLocaleString("en-US", { maximumFractionDigits: 6 });
+    out.push(`Allowance after: ${amount} ${symbol} for ${a.spender.slice(0, 6)}...${a.spender.slice(-4)}`);
+  }
+  return out.join(". ");
 }
 
 /** POSTs one transaction to /api/simulate. Throws when the simulator itself is unavailable. */

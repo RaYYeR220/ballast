@@ -9,11 +9,23 @@ import { parseAmount } from "@/lib/amount";
 import { sameAddr } from "@/lib/desk";
 import { pctBps, shortHex, units } from "@/lib/format";
 import { openCoverSteps, topUpCoverSteps, withdrawCoverSteps, type TxStep } from "@/lib/steps";
-import type { CoverView, LoanView } from "@/lib/views";
+import type { CoverView, DefiSummary, LoanView } from "@/lib/views";
 import { fetchToken, useLoans } from "./data";
 import { AmountField } from "./fields";
 import { TxFlow } from "./TxFlow";
 import s from "./app.module.css";
+
+/** Who answered the question "which loans does this wallet have": the Binance DeFi API, or only the chain. */
+export function importSource(defi: DefiSummary): string {
+  if (defi.status === "ok") {
+    const n = defi.lending.length;
+    return n === 0
+      ? "The Binance DeFi API reports no Lista or Venus lending position for this wallet. The list below is read from BNB Chain."
+      : `The Binance DeFi API reports ${n} lending ${n === 1 ? "position" : "positions"} for this wallet. A loan this app can cover is confirmed on BNB Chain below.`;
+  }
+  if (defi.status === "unavailable") return "Binance API unavailable. Loans are read from BNB Chain only.";
+  return "Loans are read from BNB Chain.";
+}
 
 type Form =
   | { kind: "open"; loan: LoanView }
@@ -175,12 +187,32 @@ export function CoversPanel(p: {
           ) : (
             <p className={s.muted}>No cover is open for this wallet.</p>
           )}
-          <h3 style={{ marginTop: 16 }}>Loans you can cover</h3>
+          <h3 style={{ marginTop: 16 }}>Import an existing loan</h3>
           {loans.isLoading ? <p className={s.offline}>Looking for your loans on Lista and Venus...</p> : null}
+          {defi ? <p className={s.hint}>{importSource(defi)}</p> : null}
+          {defi?.status === "ok" && defi.lending.length > 0 ? (
+            <ul className={s.coverList}>
+              {defi.lending.map((l, i) => (
+                <li key={`${l.protocol}-${i}`}>
+                  <div>
+                    <b>{l.protocol}</b>
+                    <span className={s.muted}>{l.valueUsd ? `$${Number(l.valueUsd).toLocaleString("en-US", { maximumFractionDigits: 2 })} in all` : ""}</span>
+                  </div>
+                  <span className={s.faint}>
+                    {l.borrowed.length > 0 ? `borrowed ${l.borrowed.join(", ")}` : "nothing borrowed, so nothing to cover"}
+                    {l.supplied.length > 0 ? `; supplied ${l.supplied.join(", ")}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {body && body.status !== "ok" ? <p className={s.offline}>Your loans could not be read: {body.detail}.</p> : null}
           {loans.isError ? <p className={s.offline}>Your loans could not be read: {(loans.error as Error).message}.</p> : null}
           {body?.status === "ok" && open.length === 0 ? (
-            <p className={s.offline}>No uncovered loan on the configured Lista markets or on Venus for this address.</p>
+            <p className={s.offline}>
+              BNB Chain shows no uncovered loan for this address on the Lista bStock markets or on Venus with a bStock as collateral, the loans a cover
+              can protect.
+            </p>
           ) : null}
           {open.length > 0 ? (
             <ul className={s.coverList}>
@@ -201,11 +233,6 @@ export function CoversPanel(p: {
                 </li>
               ))}
             </ul>
-          ) : null}
-          {defi?.status === "ok" ? (
-            <p className={s.hint}>
-              The Binance DeFi API sees {defi.protocols.length === 0 ? "no DeFi positions" : `positions on ${defi.protocols.map((x) => x.id).join(", ")}`} for this address.
-            </p>
           ) : null}
         </>
       )}
