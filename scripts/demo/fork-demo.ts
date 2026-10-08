@@ -2,9 +2,13 @@
 // the desk, a guardian job over the account, and clock warps to watch the desk shield before a close and
 // settle the job after its window.
 //
-//   tsx scripts/demo/fork-demo.ts setup        # after Deploy.s.sol on the fork
+//   tsx scripts/demo/fork-demo.ts identity     # optional, before Deploy.s.sol: registers the desk's ERC-8004
+//                                              # identity and prints its id (deploy with PUBLISHER_AGENT_ID=<id>)
+//   tsx scripts/demo/fork-demo.ts setup        # after Deploy.s.sol on the fork (AGENT_ID=<id> reuses the identity)
 //   tsx scripts/demo/fork-demo.ts warp lead    # 59 min before the next regular close
 //   tsx scripts/demo/fork-demo.ts warp end     # just past the guardian window
+//   tsx scripts/demo/fork-demo.ts automine off # stop mining: the desk's next send stays unmined (stuck-send drill)
+//   tsx scripts/demo/fork-demo.ts automine on  # mine what is pending and resume
 //   tsx scripts/demo/fork-demo.ts status
 //
 // Env: FORK_RPC (default http://127.0.0.1:8545), DEPLOYMENT_FILE (default contracts/deployments/31337.json),
@@ -122,14 +126,38 @@ async function freezeListaPrices(payer: PrivateKeyAccount) {
   console.log(`  FORK ONLY: froze ${prices.size} Lista oracle prices behind a mock at ${sources.join(", ")}`);
 }
 
+// FORK ONLY: the well-known anvil keys carry EIP-7702 delegations on BSC mainnet (sweeper contracts), and
+// the ERC-8004 registry mints with safeMint, which a delegated account may refuse. Make them plain EOAs.
+async function plainEoa(addresses: Address[]) {
+  for (const a of addresses) {
+    const code = await pub.getCode({ address: a });
+    if (code && code !== "0x") {
+      await test.setCode({ address: a, bytecode: "0x" });
+      console.log(`  FORK ONLY: cleared the EIP-7702 delegation on ${a}`);
+    }
+  }
+}
+
+/** The desk's ERC-8004 identity on the fork (the guardian checks the provider against it). */
+async function registerIdentity(identityRegistry: Address, agent: PrivateKeyAccount): Promise<bigint> {
+  const reg = await send(agent, { to: identityRegistry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: ['data:application/json,{"name":"ballast-desk-fork"}'] }), value: 0n }, "register agent identity");
+  const minted = parseEventLogs({ abi: erc721Transfer, logs: reg.logs }).find((l) => l.args.to.toLowerCase() === agent.address.toLowerCase());
+  if (!minted) throw new Error("no identity minted");
+  return minted.args.tokenId;
+}
+
+async function assertFork() {
+  const id = await pub.getChainId();
+  if (id !== 31337) throw new Error(`refusing to run on chain ${id}: this demo is for the local fork only`);
+}
+
 function listaMarket(key: string): MarketParams {
   const m = cfg.lista.markets[key];
   return { loanToken: cfg.tokens.USD1, collateralToken: m.collateralToken, oracle: cfg.lista.stockOracle, irm: cfg.lista.irm, lltv: BigInt(m.lltv) };
 }
 
 async function setup(d: Deployment) {
-  const id = await pub.getChainId();
-  if (id !== 31337) throw new Error(`refusing to run on chain ${id}: this demo is for the local fork only`);
+  await assertFork();
   const agent = privateKeyToAccount(AGENT_KEY);
   const user = privateKeyToAccount(USER_KEY);
   const mp = listaMarket("NVDAB_USD1");
@@ -139,22 +167,9 @@ async function setup(d: Deployment) {
 
   await freezeListaPrices(agent);
 
-  // FORK ONLY: the well-known anvil keys carry EIP-7702 delegations on BSC mainnet (sweeper contracts), and
-  // the ERC-8004 registry mints with safeMint, which a delegated account may refuse. Make them plain EOAs.
-  for (const a of [agent.address, user.address]) {
-    const code = await pub.getCode({ address: a });
-    if (code && code !== "0x") {
-      await test.setCode({ address: a, bytecode: "0x" });
-      console.log(`  FORK ONLY: cleared the EIP-7702 delegation on ${a}`);
-    }
-  }
-
-  // The desk's ERC-8004 identity on the fork (the guardian checks the provider against it).
-  const reg = await send(agent, { to: d.external.identityRegistry, data: encodeFunctionData({ abi: identityRegistryAbi, functionName: "register", args: ['data:application/json,{"name":"ballast-desk-fork"}'] }), value: 0n }, "register agent identity");
-  const minted = parseEventLogs({ abi: erc721Transfer, logs: reg.logs }).find((l) => l.args.to.toLowerCase() === agent.address.toLowerCase());
-  if (!minted) throw new Error("no identity minted");
-  const agentId = minted.args.tokenId;
-  console.log(`  agentId ${agentId}`);
+  await plainEoa([agent.address, user.address]);
+  const agentId = process.env.AGENT_ID ? BigInt(process.env.AGENT_ID) : await registerIdentity(d.external.identityRegistry, agent);
+  console.log(`  agentId ${agentId}${process.env.AGENT_ID ? " (given)" : ""}`);
 
   await fundFromWhale(nvdab, user.address, 20n * E18);
   await fundFromWhale(usd1, user.address, 1000n * E18);
@@ -230,8 +245,23 @@ async function status(d: Deployment) {
 }
 
 async function main() {
-  const d = loadDeployment(31337, { file: process.env.DEPLOYMENT_FILE });
   const [cmd, arg] = process.argv.slice(2);
+  if (cmd === "identity") {
+    // Before the deployment exists: only the config is needed.
+    await assertFork();
+    const agent = privateKeyToAccount(AGENT_KEY);
+    await plainEoa([agent.address]);
+    console.log(`agentId ${await registerIdentity(cfg.erc8004.identity, agent)}`);
+    return;
+  }
+  if (cmd === "automine" && (arg === "on" || arg === "off")) {
+    await assertFork();
+    await test.setAutomine(arg === "on");
+    if (arg === "on") await test.mine({ blocks: 1 });
+    console.log(`automine ${arg}${arg === "on" ? ": pending transactions mined" : ": transactions stay in the mempool until it is turned on again"}`);
+    return;
+  }
+  const d = loadDeployment(31337, { file: process.env.DEPLOYMENT_FILE });
   if (cmd === "setup") return setup(d);
   if (cmd === "status") return status(d);
   if (cmd === "warp") {
@@ -241,7 +271,7 @@ async function main() {
     if (arg === "end") return warp(demo.end + 90);
     if (arg && /^\d+$/.test(arg)) return warp(Number(arg));
   }
-  console.error("usage: fork-demo.ts setup | warp lead | warp end | warp <unix> | status");
+  console.error("usage: fork-demo.ts identity | setup | warp lead | warp end | warp <unix> | automine on|off | status");
   process.exit(2);
 }
 
