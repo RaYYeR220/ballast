@@ -12,6 +12,9 @@ importers:
 
   .:
     devDependencies:
+      '@ballast/binance':
+        specifier: workspace:*
+        version: link:packages/binance
       '@ballast/risk':
         specifier: workspace:*
         version: link:packages/risk

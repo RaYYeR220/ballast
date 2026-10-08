@@ -16,6 +16,7 @@
     "verify:onchain": "tsx scripts/verify-onchain.ts"
   },
   "devDependencies": {
+    "@ballast/binance": "workspace:*",
     "@ballast/risk": "workspace:*",
     "@ballast/sdk": "workspace:*",
     "viem": "^2.57.3",
