@@ -1,158 +1,182 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { encodeErrorResult, keccak256, parseEther, parseTransaction, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { listaAccountAbi } from "@ballast/sdk";
+import { listaAccountAbi, type TxRequest } from "@ballast/sdk";
+import { loadConfig } from "../src/desk/config";
 import { Feed } from "../src/desk/feed";
-import { ChainSender, GasWatch, NonceManager, nonceManagerFor, safeMessage, type BinanceTxApi, type SenderClient, type TxBuilder } from "../src/desk/tx";
+import {
+  ChainSender,
+  DEFAULT_LIMITS,
+  GasWatch,
+  classifyBroadcastError,
+  safeMessage,
+  senderLimits,
+  senderOptions,
+  type BinanceTxApi,
+  type ChainSenderOptions,
+  type SendResult,
+  type SenderClient,
+  type TxBuilder,
+} from "../src/desk/tx";
 
 const account = privateKeyToAccount(`0x${"4f".repeat(32)}`);
 const TO = "0x00000000000000000000000000000000000000a1" as const;
-const tx = { to: TO, data: "0x1234" as Hex, value: 0n };
+const tx: TxRequest = { to: TO, data: "0x1234", value: 0n };
+const repay: TxRequest = { to: TO, data: "0xbeef", value: 0n };
 const notInWindow = encodeErrorResult({ abi: listaAccountAbi, errorName: "NotInShieldWindow" });
+const GWEI = 10n ** 9n;
 
-function revertError(data: Hex) {
-  // The shape viem produces for an eth_call revert: the revert data sits on a cause.
+function revert(data: Hex) {
+  // The shape viem produces for a revert: the revert data sits on a cause.
   const cause = Object.assign(new Error("execution reverted"), { name: "ExecutionRevertedError", data });
   return Object.assign(new Error("call reverted"), { name: "CallExecutionError", cause });
 }
+const named = (name: string, message: string, extra: object = {}) => Object.assign(new Error(message), { name, ...extra });
+const rpcError = (message: string) => named("RpcRequestError", "RPC Request failed.", { shortMessage: "RPC Request failed.", details: message, code: -32000 });
+const notFound = () => named("TransactionNotFoundError", "not found");
 
-const notFound = (what: string) => Object.assign(new Error(`${what} not found`), { name: "TransactionReceiptNotFoundError" });
-const timeout = () => Object.assign(new Error("Timed out while waiting for transaction"), { name: "WaitForTransactionReceiptTimeoutError" });
+type Parsed = ReturnType<typeof parseTransaction> & { hash: Hex; raw: Hex };
 
-function stubClient(o: Partial<Record<keyof SenderClient, unknown>> = {}, counts = { pending: 7, latest: 7 }) {
-  const sent: Hex[] = [];
-  const client = {
-    call: vi.fn(async () => ({ data: "0x" })),
-    estimateGas: vi.fn(async () => 100_000n),
-    getGasPrice: vi.fn(async () => 100_000_000n),
-    getTransactionCount: vi.fn(async ({ blockTag }: { blockTag: "pending" | "latest" }) => counts[blockTag]),
-    getTransaction: vi.fn(async () => Promise.reject(Object.assign(new Error("tx not found"), { name: "TransactionNotFoundError" }))),
-    getTransactionReceipt: vi.fn(async () => Promise.reject(notFound("receipt"))),
-    getBalance: vi.fn(async () => parseEther("1")),
-    sendRawTransaction: vi.fn(async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
-      sent.push(serializedTransaction);
-      return keccak256(serializedTransaction);
-    }),
-    waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => ({ status: "success", transactionHash: hash, gasUsed: 90_000n, effectiveGasPrice: 100_000_000n, blockNumber: 5n })),
-    ...o,
-  };
-  return { client: client as unknown as SenderClient, raw: client, sent };
-}
+/**
+ * A node with a mempool of one key. `accept` decides what happens to each broadcast: "mine" it at once, "hold"
+ * it in the mempool, or throw. Time only moves when the sender sleeps.
+ */
+class Node {
+  latest = 7;
+  network = 1n * GWEI;
+  balance = parseEther("1");
+  time = 1_000_000;
+  /** Unmined transactions by nonce (the node keeps the best-paying one). */
+  mempool = new Map<number, Parsed>();
+  mined = new Map<string, "success" | "reverted">();
+  /** Every raw transaction the public RPC was asked to broadcast, accepted or not. */
+  rpc: Parsed[] = [];
+  /** A broadcast at a nonce ahead of the latest one: the sender signed behind an unmined transaction. */
+  ahead: number[] = [];
+  accept: (t: Parsed) => "mine" | "hold" = () => "mine";
+  /** How an accepted transaction ends when it is mined on arrival. */
+  outcome: "success" | "reverted" = "success";
+  estimate: (t: TxRequest) => bigint = () => 100_000n;
+  /** Called on every sleep, after the clock moved. */
+  onSleep: () => void = () => {};
+  failLatest = false;
 
-function stubBinance(o: Partial<BinanceTxApi> = {}) {
-  const calls: { method: string; body: Record<string, unknown> }[] = [];
-  const api: BinanceTxApi = {
-    simulate: async (body) => {
-      calls.push({ method: "simulate", body: body as never });
-      return { status: "SUCCESS", failReason: null, balanceChanges: [], allowanceChanges: [] };
-    },
-    broadcast: async (body) => {
-      calls.push({ method: "broadcast", body: body as never });
-      return { orderId: "1", txHash: keccak256(body.signedTransaction as Hex) };
-    },
-    ...o,
-  };
-  return { api, calls };
-}
+  parse(raw: Hex): Parsed {
+    return { ...parseTransaction(raw), hash: keccak256(raw), raw };
+  }
 
-describe("NonceManager", () => {
-  it("serializes concurrent sends and hands out consecutive nonces", async () => {
-    let active = 0;
-    let maxActive = 0;
-    const m = new NonceManager(async () => 10, async () => 10);
-    const job = (ms: number) =>
-      m.run(async (nonce) => {
-        active++;
-        maxActive = Math.max(maxActive, active);
-        await new Promise((r) => setTimeout(r, ms));
-        active--;
-        return { consumed: true, value: nonce };
-      });
-    const nonces = await Promise.all([job(15), job(1), job(5)]);
-    expect(nonces).toEqual([10, 11, 12]);
-    expect(maxActive).toBe(1);
-  });
+  mine(t: Parsed, status: "success" | "reverted" = "success") {
+    this.mined.set(t.hash, status);
+    this.mempool.delete(t.nonce as number);
+    this.latest = (t.nonce as number) + 1;
+  }
 
-  it("reuses a nonce that was not consumed and resyncs after a failure", async () => {
-    let chain = 3;
-    const m = new NonceManager(async () => chain, async () => chain);
-    expect(await m.run(async (n) => ({ consumed: false, value: n }))).toBe(3);
-    expect(await m.run(async (n) => ({ consumed: true, value: n }))).toBe(3);
-    await expect(m.run(async () => Promise.reject(new Error("rpc down")))).rejects.toThrow("rpc down");
-    chain = 9; // another sender in the process used the key meanwhile
-    expect(await m.run(async (n) => ({ consumed: true, value: n }))).toBe(9);
-  });
+  /** Puts a transaction in the mempool (or mines it) as if a node had received it. */
+  receive(raw: Hex) {
+    const t = this.parse(raw);
+    const nonce = t.nonce as number;
+    if (nonce < this.latest) throw rpcError("nonce too low");
+    if (nonce > this.latest) this.ahead.push(nonce);
+    const held = this.mempool.get(nonce);
+    if (held && (t.gasPrice as bigint) * 10n < (held.gasPrice as bigint) * 11n) throw rpcError("replacement transaction underpriced");
+    if ((t.gas as bigint) * (t.gasPrice as bigint) > this.balance) throw rpcError("insufficient funds for gas * price + value");
+    if (this.accept(t) === "mine") this.mine(t, this.outcome);
+    else this.mempool.set(nonce, t);
+    return t;
+  }
 
-  it("never goes below the chain's pending nonce", async () => {
-    let chain = 1;
-    const m = new NonceManager(async () => chain, async () => chain);
-    await m.run(async (n) => ({ consumed: true, value: n }));
-    chain = 5;
-    expect(await m.run(async (n) => ({ consumed: true, value: n }))).toBe(5);
-  });
-
-  it("is shared per address within the process", () => {
-    const fetch = async () => 0;
-    expect(nonceManagerFor(account.address, fetch, fetch)).toBe(nonceManagerFor(account.address.toLowerCase() as Hex, fetch, fetch));
-  });
-
-  it("at startup, replaces our own transaction still pending at the latest nonce (no wedge)", async () => {
-    const m = new NonceManager(async () => 9, async () => 7, async (n) => (n === 7 ? 300n : 0n));
-    expect(await m.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 7, replacing: 300n });
-    // Only the first run seeds; afterwards the chain decides.
-    expect(await m.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 9 });
-  });
-
-  it("does not seed when nothing is pending or without a seed source", async () => {
-    const quiet = new NonceManager(async () => 7, async () => 7, async () => 300n);
-    expect(await quiet.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 7 });
-    const blind = new NonceManager(async () => 9, async () => 7);
-    expect(await blind.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 9 });
-  });
-
-  it("speeds up a stuck time-critical send first and gives the next send the following nonce", async () => {
-    let pending = 5;
-    const m = new NonceManager(async () => pending, async () => 5);
-    const retries: unknown[] = [];
-    const retry = async (slot: unknown) => {
-      retries.push(slot);
-      return { consumed: true, value: "sped up", stuck: { gasPrice: 120n } };
+  client(): SenderClient {
+    const c = {
+      call: async () => ({ data: "0x" }),
+      estimateGas: async (a: { to: Hex; data: Hex; value: bigint }) => this.estimate({ to: a.to, data: a.data, value: a.value }),
+      getGasPrice: async () => this.network,
+      getTransactionCount: async ({ blockTag }: { blockTag: "pending" | "latest" }) => {
+        if (blockTag === "latest" && this.failLatest) throw named("HttpRequestError", "fetch failed");
+        if (blockTag === "latest") return this.latest;
+        let n = this.latest;
+        while (this.mempool.has(n)) n++;
+        return n;
+      },
+      getTransaction: async ({ hash }: { hash: Hex }) => {
+        const t = [...this.mempool.values()].find((x) => x.hash === hash);
+        if (!t && !this.mined.has(hash)) throw notFound();
+        return { hash, nonce: t?.nonce, gasPrice: t?.gasPrice };
+      },
+      getTransactionReceipt: async ({ hash }: { hash: Hex }) => {
+        const status = this.mined.get(hash);
+        if (!status) throw named("TransactionReceiptNotFoundError", "receipt not found");
+        return { status, transactionHash: hash, gasUsed: 90_000n, effectiveGasPrice: 1n * GWEI, blockNumber: 5n, logs: [{ address: TO, topics: ["0x01"], data: "0x" }] };
+      },
+      getBalance: async () => this.balance,
+      sendRawTransaction: async ({ serializedTransaction }: { serializedTransaction: Hex }) => {
+        this.rpc.push(this.parse(serializedTransaction));
+        return this.receive(serializedTransaction).hash;
+      },
     };
-    await m.run(async () => ({ consumed: true, value: null, stuck: { gasPrice: 100n, retry } }));
-    pending = 6;
-    expect(await m.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 6 });
-    expect(retries).toEqual([{ nonce: 5, replacing: 100n }]);
-    // Still stuck after the speed-up: the next run speeds it up again from its new price.
-    await m.run(async () => ({ consumed: false, value: null }));
-    expect(retries).toEqual([{ nonce: 5, replacing: 100n }, { nonce: 5, replacing: 120n }]);
-  });
+    return c as unknown as SenderClient;
+  }
+}
 
-  it("lets the next send take the nonce when the stuck intent is no longer needed", async () => {
-    const m = new NonceManager(async () => 5, async () => 5);
-    const retry = async () => ({ consumed: false, value: null }); // the rebuilt plan aborts
-    await m.run(async () => ({ consumed: true, value: null, stuck: { gasPrice: 100n, retry } }));
-    expect(await m.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 5, replacing: 100n });
+function sender(node: Node, o: Partial<ChainSenderOptions> = {}) {
+  return new ChainSender({
+    client: node.client(),
+    account,
+    chainId: 31337,
+    dryRun: false,
+    now: () => node.time,
+    sleep: async (ms) => {
+      node.time += ms;
+      node.onSleep();
+    },
+    ...o,
   });
+}
 
-  it("forgets a stuck send once the chain's latest nonce passed it", async () => {
-    let latest = 5;
-    const m = new NonceManager(async () => latest, async () => latest);
-    let retried = false;
-    await m.run(async () => ({ consumed: true, value: null, stuck: { gasPrice: 100n, retry: async () => ((retried = true), { consumed: true, value: null }) } }));
-    latest = 6;
-    expect(await m.run(async (n, slot) => ({ consumed: true, value: slot }))).toEqual({ nonce: 6 });
-    expect(retried).toBe(false);
-  });
-});
+function binance(node: Node, o: { failAfter?: number; relay?: boolean } = {}) {
+  const broadcasts: Parsed[] = [];
+  const api: BinanceTxApi = {
+    simulate: async () => ({ status: "SUCCESS", failReason: null, balanceChanges: [], allowanceChanges: [] }),
+    broadcast: async (body) => {
+      const raw = body.signedTransaction as Hex;
+      broadcasts.push(node.parse(raw));
+      if (o.failAfter !== undefined && broadcasts.length > o.failAfter) {
+        if (o.relay) node.receive(raw); // relayed although the API answered with an error
+        throw new Error("HTTP 503");
+      }
+      node.receive(raw);
+      return { orderId: "1", txHash: keccak256(raw) };
+    },
+  };
+  return { api, broadcasts };
+}
+
+const okOf = (r: SendResult) => {
+  if (!r.ok) throw new Error(`expected a sent transaction, got ${r.stage}`);
+  return r;
+};
 
 describe("ChainSender.simulate", () => {
+  const sim = (o: { call?: () => Promise<unknown>; binanceStatus?: "SUCCESS" | "FAILED"; binanceThrows?: boolean; chainId?: number } = {}) => {
+    const node = new Node();
+    const client = { ...node.client(), ...(o.call ? { call: o.call } : {}) } as unknown as SenderClient;
+    const calls: unknown[] = [];
+    const api: BinanceTxApi = {
+      simulate: async (body) => {
+        calls.push(body);
+        if (o.binanceThrows) throw Object.assign(new Error("HTTP 403 code 40304"), { code: "40304" });
+        return { status: o.binanceStatus ?? "SUCCESS", failReason: o.binanceStatus === "FAILED" ? "unsupported opcode" : null, balanceChanges: [], allowanceChanges: [] };
+      },
+      broadcast: async () => ({ orderId: "1", txHash: "0x" }),
+    };
+    return { s: new ChainSender({ client, account, chainId: o.chainId ?? 56, dryRun: false, binance: o.binanceStatus || o.binanceThrows ? api : null }), calls };
+  };
+  const reverting = async () => Promise.reject(revert(notInWindow));
+
   it("uses eth_call without a Binance key and decodes a revert", async () => {
-    const { client } = stubClient({ call: vi.fn(async () => Promise.reject(revertError(notInWindow))) });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false });
-    expect(await s.simulate(tx)).toEqual({
+    expect(await sim({ call: reverting }).s.simulate(tx)).toEqual({
       via: "rpc",
       ok: false,
       error: { name: "NotInShieldWindow", message: expect.stringContaining("close to a market closure"), args: [] },
@@ -160,186 +184,165 @@ describe("ChainSender.simulate", () => {
   });
 
   it("uses the Binance Transaction API on mainnet when keyed", async () => {
-    const { client, raw } = stubClient();
-    const { api, calls } = stubBinance();
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
+    const { s, calls } = sim({ binanceStatus: "SUCCESS" });
     expect(await s.simulate(tx)).toEqual({ via: "binance", ok: true });
-    expect(calls[0]).toEqual({
-      method: "simulate",
-      body: { binanceChainId: "56", evmTx: { from: account.address, to: TO, value: "0", data: "0x1234" } },
-    });
-    expect(raw.call).not.toHaveBeenCalled();
+    expect(calls[0]).toEqual({ binanceChainId: "56", evmTx: { from: account.address, to: TO, value: "0", data: "0x1234" } });
   });
 
   it("decodes a Binance simulation failure with an eth_call replay", async () => {
-    const { client } = stubClient({ call: vi.fn(async () => Promise.reject(revertError(notInWindow))) });
-    const { api } = stubBinance({
-      simulate: async () => ({ status: "FAILED", failReason: "execution reverted", balanceChanges: [], allowanceChanges: [] }),
-    });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
-    const r = await s.simulate(tx);
-    expect(r).toMatchObject({ via: "binance", ok: false, error: { name: "NotInShieldWindow" } });
+    expect(await sim({ binanceStatus: "FAILED", call: reverting }).s.simulate(tx)).toMatchObject({ via: "binance", ok: false, error: { name: "NotInShieldWindow" } });
   });
 
   it("lets eth_call decide when Binance reports a failure the replay does not reproduce, flagging it", async () => {
-    const { client } = stubClient();
-    const { api } = stubBinance({
-      simulate: async () => ({ status: "FAILED", failReason: "unsupported opcode", balanceChanges: [], allowanceChanges: [] }),
-    });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
-    expect(await s.simulate(tx)).toEqual({ via: "rpc", ok: true, disagree: true, note: expect.stringContaining("unsupported opcode") });
+    expect(await sim({ binanceStatus: "FAILED" }).s.simulate(tx)).toEqual({ via: "rpc", ok: true, disagree: true, note: expect.stringContaining("unsupported opcode") });
   });
 
   it("in strict mode (restores) fails on any disagreement, in both directions", async () => {
-    const failing = stubBinance({ simulate: async () => ({ status: "FAILED", failReason: "x", balanceChanges: [], allowanceChanges: [] }) });
-    const s1 = new ChainSender({ client: stubClient().client, account, chainId: 56, dryRun: false, binance: failing.api });
-    expect(await s1.simulate(tx, { strict: true })).toMatchObject({ ok: false, disagree: true, error: { name: "SimulatorsDisagree" } });
-
-    const reverting = stubClient({ call: vi.fn(async () => Promise.reject(revertError(notInWindow))) });
-    const s2 = new ChainSender({ client: reverting.client, account, chainId: 56, dryRun: false, binance: stubBinance().api });
+    expect(await sim({ binanceStatus: "FAILED" }).s.simulate(tx, { strict: true })).toMatchObject({ ok: false, disagree: true, error: { name: "SimulatorsDisagree" } });
+    const s2 = sim({ binanceStatus: "SUCCESS", call: reverting }).s;
     expect(await s2.simulate(tx)).toEqual({ via: "binance", ok: true }); // not strict: Binance alone
-    expect(await s2.simulate(tx, { strict: true })).toMatchObject({
-      ok: false,
-      disagree: true,
-      error: { name: "SimulatorsDisagree", message: expect.stringContaining("close to a market closure") },
-    });
-
-    const agreeing = new ChainSender({ client: stubClient().client, account, chainId: 56, dryRun: false, binance: stubBinance().api });
-    expect(await agreeing.simulate(tx, { strict: true })).toEqual({ via: "binance", ok: true });
+    expect(await s2.simulate(tx, { strict: true })).toMatchObject({ ok: false, disagree: true, error: { name: "SimulatorsDisagree", message: expect.stringContaining("close to a market closure") } });
+    expect(await sim({ binanceStatus: "SUCCESS" }).s.simulate(tx, { strict: true })).toEqual({ via: "binance", ok: true });
   });
 
   it("keeps Binance's reason when the RPC replay is down", async () => {
-    const { client } = stubClient({ call: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
-    const { api } = stubBinance({
-      simulate: async () => ({ status: "FAILED", failReason: "execution reverted", balanceChanges: [], allowanceChanges: [] }),
-    });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
-    expect(await s.simulate(tx)).toEqual({ via: "binance", ok: false, error: { name: "SimulationFailed", message: "execution reverted" } });
+    const down = async () => Promise.reject(new Error("fetch failed"));
+    expect(await sim({ binanceStatus: "FAILED", call: down }).s.simulate(tx)).toEqual({ via: "binance", ok: false, error: { name: "SimulationFailed", message: "unsupported opcode" } });
   });
 
   it("falls back to eth_call when the Binance API is unavailable (geo block) and says so", async () => {
-    const { client } = stubClient();
-    const { api } = stubBinance({ simulate: async () => Promise.reject(Object.assign(new Error("HTTP 403 code 40304"), { code: "40304" })) });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api });
-    expect(await s.simulate(tx)).toEqual({ via: "rpc", ok: true, note: expect.stringContaining("40304") });
+    expect(await sim({ binanceThrows: true }).s.simulate(tx)).toEqual({ via: "rpc", ok: true, note: expect.stringContaining("40304") });
   });
 
-  it("never asks Binance to simulate a fork", async () => {
-    const { client } = stubClient();
-    const { api, calls } = stubBinance();
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, binance: api });
-    expect((await s.simulate(tx)).via).toBe("rpc");
-    expect(calls).toEqual([]);
+  it("never asks Binance to simulate a fork, and rethrows RPC outages", async () => {
+    const fork = sim({ binanceStatus: "SUCCESS", chainId: 31337 });
+    expect((await fork.s.simulate(tx)).via).toBe("rpc");
+    expect(fork.calls).toEqual([]);
+    await expect(sim({ call: async () => Promise.reject(new Error("fetch failed")) }).s.simulate(tx)).rejects.toThrow("fetch failed");
+  });
+});
+
+describe("classifyBroadcastError", () => {
+  it.each([
+    [rpcError("already known"), "known"],
+    [rpcError("nonce too low: next nonce 9, tx nonce 7"), "nonce-too-low"],
+    [rpcError("replacement transaction underpriced"), "underpriced"],
+    [rpcError("transaction underpriced"), "underpriced"],
+    [rpcError("insufficient funds for gas * price + value"), "insufficient-funds"],
+    [named("HttpRequestError", "HTTP request failed.", { status: 502 }), "possibly-sent"],
+    [named("TimeoutError", "The request took too long to respond."), "possibly-sent"],
+    [new Error("fetch failed"), "possibly-sent"],
+    [Object.assign(new Error("request failed"), { cause: new Error("read ECONNRESET") }), "possibly-sent"],
+    [rpcError("exceeds block gas limit"), "rejected"],
+    [rpcError("invalid sender"), "rejected"],
+  ])("%s -> %s", (err, kind) => {
+    expect(classifyBroadcastError(err)).toBe(kind);
   });
 
-  it("rethrows RPC outages instead of recording them as refusals", async () => {
-    const { client } = stubClient({ call: vi.fn(async () => Promise.reject(new Error("fetch failed"))) });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false });
-    await expect(s.simulate(tx)).rejects.toThrow("fetch failed");
+  it("reads the class from a wrapped cause", () => {
+    const wrapped = Object.assign(new Error("Transaction failed"), { cause: rpcError("nonce too low") });
+    expect(classifyBroadcastError(wrapped)).toBe("nonce-too-low");
   });
 });
 
 describe("ChainSender.send", () => {
-  it("signs locally and broadcasts a sale through Binance with MEV protection", async () => {
-    const { client, sent } = stubClient();
-    const { api, calls } = stubBinance();
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api, nonces: new NonceManager(async () => 7, async () => 7) });
-    const r = await s.send(tx, { mevProtect: true });
-    const body = calls.find((c) => c.method === "broadcast")!.body;
-    expect(body).toMatchObject({ binanceChainId: "56", address: account.address, enableMevProtection: true });
-    const signed = body.signedTransaction as Hex;
-    expect(parseTransaction(signed)).toMatchObject({ to: TO, nonce: 7, chainId: 56, gas: 120_000n, gasPrice: 100_000_000n });
+  it("signs locally at 1.1x the network price and reports the receipt", async () => {
+    const node = new Node();
+    const s = sender(node);
+    const r = okOf(await s.send(tx));
+    const sent = node.rpc[0]!;
+    expect(sent).toMatchObject({ to: TO, nonce: 7, chainId: 31337, gas: 120_000n, gasPrice: 1_100_000_000n, data: "0x1234" });
     expect(r).toEqual({
       ok: true,
-      txHash: keccak256(signed),
-      via: "binance",
       status: "success",
+      txHash: sent.hash,
+      via: "rpc",
       nonce: 7,
-      gasPrice: 100_000_000n,
+      gasPrice: 1_100_000_000n,
+      minedAs: "intent",
       gasUsed: 90_000n,
-      effectiveGasPrice: 100_000_000n,
+      effectiveGasPrice: 1n * GWEI,
       blockNumber: 5n,
-      logs: [],
+      logs: [{ address: TO, topics: ["0x01"], data: "0x" }],
     });
-    expect(sent).toEqual([]);
-    expect(JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? String(v) : v))).not.toContain(signed.slice(2, 60));
+    expect(JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? String(v) : v))).not.toContain(sent.raw.slice(2, 60));
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null, spentLastHourWei: 120_000n * 1_100_000_000n });
   });
 
-  it("sends everything else through the RPC even when keyed", async () => {
-    const { client, sent } = stubClient();
-    const { api, calls } = stubBinance();
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api, nonces: new NonceManager(async () => 7, async () => 7) });
-    expect(await s.send(tx)).toMatchObject({ ok: true, via: "rpc", status: "success" });
-    expect(calls.filter((c) => c.method === "broadcast")).toEqual([]);
-    expect(sent).toHaveLength(1);
+  it("never signs above the gas price cap", async () => {
+    const node = new Node();
+    node.network = 20n * GWEI;
+    await sender(node).send(tx);
+    expect(node.rpc[0]!.gasPrice).toBe(DEFAULT_LIMITS.maxGasPriceWei);
+    expect(DEFAULT_LIMITS.maxGasPriceWei).toBe(5n * GWEI);
   });
 
-  it("builds the transaction inside the critical section and aborts without using the nonce", async () => {
-    const { client, sent } = stubClient();
-    const nonces = new NonceManager(async () => 3, async () => 3);
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, nonces });
-    const order: string[] = [];
-    const slow = s.send(async () => {
-      order.push("build 1");
-      await new Promise((r) => setTimeout(r, 10));
-      return tx;
-    });
-    const aborted = s.send(async () => {
-      order.push("build 2");
-      return null;
-    });
-    expect(await slow).toMatchObject({ ok: true, nonce: 3 });
-    expect(await aborted).toEqual({ ok: false, stage: "aborted" });
-    expect(order).toEqual(["build 1", "build 2"]);
-    expect(sent).toHaveLength(1);
-    expect(await s.send(tx)).toMatchObject({ nonce: 4 });
-  });
-
-  it("sends the same signed transaction through the RPC when the Binance broadcast fails", async () => {
-    const { client, sent } = stubClient();
-    const { api } = stubBinance({ broadcast: async () => Promise.reject(new Error("HTTP 403 code 40304")) });
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: false, binance: api, nonces: new NonceManager(async () => 7, async () => 7) });
-    const r = await s.send(tx, { mevProtect: true });
-    expect(r).toMatchObject({ ok: true, via: "rpc", note: expect.stringContaining("40304") });
-    expect(sent).toHaveLength(1);
-    expect(r.ok && r.txHash).toBe(keccak256(sent[0]!));
-  });
-
-  it("uses the RPC without a key and consumes nonces in order", async () => {
-    const { client, sent } = stubClient();
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, nonces: new NonceManager(async () => 0, async () => 0) });
-    await Promise.all([s.send(tx), s.send(tx)]);
-    expect(sent.map((raw) => parseTransaction(raw).nonce)).toEqual([0, 1]);
-  });
-
-  it("reports a revert at gas estimation without consuming the nonce", async () => {
-    const { client, sent } = stubClient({ estimateGas: vi.fn(async () => Promise.reject(revertError(notInWindow))) });
-    const nonces = new NonceManager(async () => 4, async () => 4);
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, nonces });
+  it("aborts without signing when the builder returns null, and reports a revert at estimation", async () => {
+    const node = new Node();
+    const s = sender(node);
+    expect(await s.send(async () => null)).toEqual({ ok: false, stage: "aborted" });
+    node.estimate = () => {
+      throw revert(notInWindow);
+    };
     expect(await s.send(tx)).toMatchObject({ ok: false, stage: "estimate", error: { name: "NotInShieldWindow" } });
-    expect(sent).toEqual([]);
-    expect(await nonces.run(async (n) => ({ consumed: false, value: n }))).toBe(4);
+    expect(node.rpc).toEqual([]);
+    node.estimate = () => 100_000n;
+    expect(okOf(await s.send(tx)).nonce).toBe(7);
   });
 
   it("reports an on-chain revert from the receipt", async () => {
-    const { client } = stubClient({
-      waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => ({ status: "reverted", transactionHash: hash, gasUsed: 50_000n, effectiveGasPrice: 1n, blockNumber: 6n })),
-    });
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, nonces: new NonceManager(async () => 0, async () => 0) });
-    expect(await s.send(tx)).toMatchObject({ ok: true, status: "reverted" });
-  });
-
-  it("throws a broadcast failure (the caller records it)", async () => {
-    const { client } = stubClient({ sendRawTransaction: vi.fn(async () => Promise.reject(new Error("insufficient funds for gas"))) });
-    const s = new ChainSender({ client, account, chainId: 31337, dryRun: false, nonces: new NonceManager(async () => 0, async () => 0) });
-    await expect(s.send(tx)).rejects.toThrow(/broadcast failed: insufficient funds/);
+    const node = new Node();
+    node.outcome = "reverted";
+    expect(await sender(node).send(tx)).toMatchObject({ ok: true, status: "reverted", minedAs: "intent" });
   });
 
   it("refuses to send in DRY_RUN", async () => {
-    const { client, raw } = stubClient();
-    const s = new ChainSender({ client, account, chainId: 56, dryRun: true });
+    const node = new Node();
+    const s = sender(node, { dryRun: true });
     await expect(s.send(tx)).rejects.toThrow(/DRY_RUN/);
-    expect(raw.sendRawTransaction).not.toHaveBeenCalled();
+    expect(await s.recover()).toBeNull();
+    expect(node.rpc).toEqual([]);
+  });
+
+  it("keeps ONE transaction in flight: nonce N+1 is never signed while N is unmined", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    node.onSleep = () => {
+      // Each held transaction is mined 6 s after it arrived.
+      for (const t of [...node.mempool.values()]) if (node.time - held.get(t.hash)! >= 6_000) node.mine(t);
+    };
+    const held = new Map<string, number>();
+    const client = node.client();
+    const wrapped = {
+      ...client,
+      sendRawTransaction: async (a: { serializedTransaction: Hex }) => {
+        held.set(keccak256(a.serializedTransaction), node.time);
+        return (client.sendRawTransaction as (x: typeof a) => Promise<Hex>)(a);
+      },
+    } as unknown as SenderClient;
+    const s = sender(node, { client: wrapped });
+    const results = await Promise.all([s.send(tx), s.send(tx), s.send(tx)]);
+    expect(results.map((r) => okOf(r).nonce)).toEqual([7, 8, 9]);
+    expect(results.every((r) => okOf(r).status === "success")).toBe(true);
+    expect(node.ahead).toEqual([]);
+    expect(node.rpc).toHaveLength(3);
+  });
+
+  it("builds inside the queue: a later send plans against the state the earlier one left", async () => {
+    const node = new Node();
+    const s = sender(node);
+    const order: string[] = [];
+    const first = s.send(async () => {
+      order.push(`build 1 at latest ${node.latest}`);
+      return tx;
+    });
+    const second = s.send(async () => {
+      order.push(`build 2 at latest ${node.latest}`);
+      return null;
+    });
+    expect(okOf(await first).nonce).toBe(7);
+    expect(await second).toEqual({ ok: false, stage: "aborted" });
+    expect(order).toEqual(["build 1 at latest 7", "build 2 at latest 8"]);
   });
 
   it("keeps raw transactions and request bodies out of error messages", () => {
@@ -353,108 +356,522 @@ describe("ChainSender.send", () => {
     expect(m).toContain("nonce too low");
     expect(safeMessage(new Error(`bad ${raw}`))).toBe("bad 0x[400 hex chars]");
   });
+
+  it("turns the desk config into limits", () => {
+    expect(senderLimits({ maxGasPriceGwei: 5, receiptTimeoutSec: 45, maxBumps: 4, maxFeeBnbPerHour: 0.01 })).toEqual(DEFAULT_LIMITS);
+    const config = loadConfig({ CHAIN_ID: "31337", BSC_RPC_URL: "http://127.0.0.1:8545", AGENT_PRIVATE_KEY: `0x${"4f".repeat(32)}`, DATA_DIR: "/srv/desk" });
+    expect(senderOptions(config)).toEqual({ limits: DEFAULT_LIMITS, stateFile: path.join(path.resolve("/srv/desk"), "sender.json") });
+    expect(senderLimits({ maxGasPriceGwei: 0.5, receiptTimeoutSec: 30, maxBumps: 2, maxFeeBnbPerHour: 0.0000001 })).toEqual({
+      maxGasPriceWei: 500_000_000n,
+      receiptTimeoutMs: 30_000,
+      maxBumps: 2,
+      maxFeeWeiPerHour: 100_000_000_000n,
+    });
+  });
 });
 
-describe("ChainSender after a receipt timeout", () => {
-  /** A sender whose first receipt wait times out; `later` answers the waits after that. */
-  function stuck(o: Partial<Record<keyof SenderClient, unknown>> = {}, counts = { pending: 7, latest: 7 }, later: () => Promise<unknown> = async () => Promise.reject(timeout())) {
-    let waits = 0;
-    const stub = stubClient(
-      {
-        waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => {
-          waits++;
-          if (waits === 1) throw timeout();
-          const r = await later();
-          return { ...(r as object), transactionHash: hash };
-        }),
-        ...o,
+describe("ChainSender: a transaction that is not mined in time", () => {
+  it("rebuilds the same intent and replaces it at the same nonce for 12.5% more", async () => {
+    const node = new Node();
+    node.accept = (t) => ((t.gasPrice as bigint) > 1_300_000_000n ? "mine" : "hold"); // only the second replacement is good enough
+    const rounds: number[] = [];
+    const build: TxBuilder = async ({ round }) => {
+      rounds.push(round);
+      return tx;
+    };
+    const s = sender(node);
+    const started = node.time;
+    const r = okOf(await s.send(build));
+    expect(rounds).toEqual([0, 1, 2]);
+    expect(node.rpc.map((t) => [t.nonce, t.gasPrice])).toEqual([
+      [7, 1_100_000_000n],
+      [7, 1_237_500_000n],
+      [7, 1_392_187_500n],
+    ]);
+    expect(r).toMatchObject({ status: "success", nonce: 7, txHash: node.rpc[2]!.hash, minedAs: "intent", gasPrice: 1_392_187_500n });
+    // Two full receipt waits passed before the replacements.
+    expect(node.time - started).toBeGreaterThanOrEqual(2 * DEFAULT_LIMITS.receiptTimeoutMs);
+    expect(node.ahead).toEqual([]);
+  });
+
+  it("follows the network when it moved above the bump", async () => {
+    const node = new Node();
+    node.accept = (t) => ((t.gasPrice as bigint) >= 3n * GWEI ? "mine" : "hold");
+    node.onSleep = () => {
+      node.network = 3n * GWEI;
+    };
+    await sender(node).send(tx);
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([1_100_000_000n, 3_300_000_000n]);
+  });
+
+  it("replaces it with a 0-value transfer to itself when the intent is no longer needed", async () => {
+    const node = new Node();
+    node.accept = (t) => (t.to === account.address.toLowerCase() ? "mine" : "hold");
+    const s = sender(node);
+    const r = okOf(await s.send(async ({ round }) => (round === 0 ? tx : null)));
+    const cancel = node.rpc[1]!;
+    expect(cancel).toMatchObject({ nonce: 7, to: account.address.toLowerCase(), gas: 21_000n, gasPrice: 1_237_500_000n });
+    expect(cancel.value ?? 0n).toBe(0n);
+    expect(cancel.data ?? "0x").toBe("0x");
+    expect(r).toMatchObject({ status: "dropped", minedAs: "cancel", txHash: cancel.hash, note: expect.stringMatching(/no longer needed/) });
+  });
+
+  it("cancels when the rebuilt transaction would revert now", async () => {
+    const node = new Node();
+    node.accept = (t) => (t.to === account.address.toLowerCase() ? "mine" : "hold");
+    let calls = 0;
+    node.estimate = () => {
+      if (++calls > 1) throw revert(notInWindow);
+      return 100_000n;
+    };
+    expect(await sender(node).send(tx)).toMatchObject({ status: "dropped", minedAs: "cancel" });
+  });
+
+  it("reports the earlier transaction when that is the one that was mined after all", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    let slept = 0;
+    node.onSleep = () => {
+      // The first transaction is mined just after its replacement went out.
+      if (node.rpc.length === 2 && ++slept === 2) node.mine(node.rpc[0]!);
+    };
+    const r = okOf(await sender(node).send(tx));
+    expect(r).toMatchObject({ status: "success", txHash: node.rpc[0]!.hash, gasPrice: 1_100_000_000n });
+  });
+
+  it("leaves the outstanding transaction alone when the rebuild throws, and tries again next time", async () => {
+    const node = new Node();
+    node.accept = (t) => ((t.gasPrice as bigint) > 1_100_000_000n ? "mine" : "hold");
+    const rounds: number[] = [];
+    const r = okOf(
+      await sender(node).send(async ({ round }) => {
+        rounds.push(round);
+        if (round === 1) throw new Error("fetch failed");
+        return tx;
+      }),
+    );
+    expect(rounds).toEqual([0, 1, 2]);
+    expect(node.rpc).toHaveLength(2); // nothing was signed in the failed round, and no cancel
+    expect(node.rpc[1]!.to).toBe(TO);
+    expect(r).toMatchObject({ status: "success", note: expect.stringMatching(/could not rebuild \(fetch failed\), left as it is/) });
+  });
+
+  it("keeps waiting through failing nonce reads", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    let sleeps = 0;
+    node.onSleep = () => {
+      sleeps++;
+      node.failLatest = sleeps < 5;
+      if (sleeps === 6) node.mine(node.rpc[0]!);
+    };
+    expect(await sender(node).send(tx)).toMatchObject({ status: "success" });
+    expect(node.rpc).toHaveLength(1);
+  });
+});
+
+describe("ChainSender: halting", () => {
+  it("halts after MAX_BUMPS replacements, refuses new sends, and resumes once the nonce is mined", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const s = sender(node, { limits: { maxBumps: 2 } });
+    const r = okOf(await s.send(tx));
+    expect(node.rpc.map((t) => t.nonce)).toEqual([7, 7, 7]); // the send and two replacements
+    expect(r).toMatchObject({ status: "pending", nonce: 7, txHash: node.rpc[2]!.hash, halted: { reason: "STUCK", nonce: 7 } });
+    expect(s.state()).toMatchObject({ halted: { reason: "STUCK", nonce: 7, since: Math.floor(node.time / 1000) }, outstanding: { nonce: 7, rounds: 2 } });
+    expect(s.state().outstanding!.hashes).toEqual(node.rpc.map((t) => t.hash));
+
+    // Halted: nothing is built or signed.
+    let built = false;
+    const refused = await s.send(async () => {
+      built = true;
+      return tx;
+    });
+    expect(refused).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "STUCK", nonce: 7 }) });
+    expect(built).toBe(false);
+    expect(node.rpc).toHaveLength(3);
+    expect(await s.confirm(node.rpc[0]!.hash, 7)).toEqual({ status: "pending" });
+
+    // The chain mines the second one: the halt lifts by itself and the next send goes out at the next nonce.
+    node.mine(node.rpc[1]!);
+    node.accept = () => "mine";
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 8 });
+    expect(s.state()).toMatchObject({ halted: null, outstanding: null });
+    expect(await s.confirm(node.rpc[0]!.hash, 7)).toMatchObject({ status: "success", txHash: node.rpc[1]!.hash, minedAs: "intent" });
+  });
+
+  it("halts instead of signing above the cap", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    node.network = 4n * GWEI; // 4.4 gwei, then 4.95; the next bump (5.57) is over the 5 gwei cap and 5 is not +10%
+    const s = sender(node, { limits: { maxBumps: 10 } });
+    const r = okOf(await s.send(tx));
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([4_400_000_000n, 4_950_000_000n]);
+    expect(r.halted).toMatchObject({ reason: "GAS_CAP", nonce: 7 });
+  });
+
+  it("uses the cap itself as the last replacement when that still outbids by 10%", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    node.network = 4n * GWEI;
+    node.onSleep = () => {
+      node.network = 10n * GWEI; // the network ran away: 11 gwei wanted, 5 allowed, and 5 is +13.6% on 4.4
+    };
+    const r = okOf(await sender(node, { limits: { maxBumps: 10 } }).send(tx));
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([4_400_000_000n, 5n * GWEI]);
+    expect(r.halted).toMatchObject({ reason: "GAS_CAP" });
+    expect(Math.max(...node.rpc.map((t) => Number(t.gasPrice)))).toBeLessThanOrEqual(Number(DEFAULT_LIMITS.maxGasPriceWei));
+  });
+
+  it("halts when the intent can never be rebuilt", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const s = sender(node, { limits: { maxBumps: 3 } });
+    const r = okOf(
+      await s.send(async ({ round }) => {
+        if (round > 0) throw new Error("fetch failed");
+        return tx;
+      }),
+    );
+    expect(node.rpc).toHaveLength(1);
+    expect(r.halted).toMatchObject({ reason: "BUILD_FAILED", nonce: 7 });
+  });
+
+  it("halts on insufficient funds and resumes when the key is topped up", async () => {
+    const node = new Node();
+    node.balance = 1n;
+    const s = sender(node);
+    expect(await s.send(tx)).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "INSUFFICIENT_FUNDS", nonce: null }) });
+    expect(s.state().outstanding).toBeNull();
+    expect(await s.send(tx)).toMatchObject({ ok: false, stage: "halted" });
+    node.balance = parseEther("1");
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 7 });
+  });
+
+  it("halts when the hourly fee budget is used up and resumes when the hour has passed", async () => {
+    const node = new Node();
+    const cost = 120_000n * 1_100_000_000n;
+    const s = sender(node, { limits: { maxFeeWeiPerHour: cost * 2n + 1n } });
+    await s.send(tx);
+    await s.send(tx);
+    expect(s.state().spentLastHourWei).toBe(cost * 2n);
+    expect(await s.send(tx)).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "FEE_BUDGET" }) });
+    expect(node.rpc).toHaveLength(2);
+    node.time += 3_600_001;
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 9 });
+  });
+
+  it("counts replacements against the fee budget", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const first = 120_000n * 1_100_000_000n;
+    const s = sender(node, { limits: { maxFeeWeiPerHour: first * 2n } }); // room for the send, not for a 12.5% dearer one on top
+    const r = okOf(await s.send(tx));
+    expect(node.rpc).toHaveLength(1);
+    expect(r).toMatchObject({ status: "pending", halted: { reason: "FEE_BUDGET" } });
+  });
+
+  it("never signs behind a pending transaction it did not sign (foreign blocker)", async () => {
+    const node = new Node();
+    const s = sender(node);
+    await s.send(tx); // nonce 7, so the startup adoption is behind us
+    const foreign = node.parse(await privateKeyToAccount(`0x${"4f".repeat(32)}`).signTransaction({ type: "legacy", chainId: 31337, nonce: 8, to: TO, gas: 21_000n, gasPrice: GWEI }));
+    node.mempool.set(8, foreign);
+    expect(await s.send(tx)).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "FOREIGN_BLOCKER", nonce: 8 }) });
+    expect(node.rpc).toHaveLength(1);
+    node.mine(foreign);
+    expect(okOf(await s.send(tx))).toMatchObject({ status: "success", nonce: 9 });
+  });
+
+  it("halts without bumping when a lower nonce that is not ours appears", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    node.onSleep = () => {
+      node.latest = 6; // a reorg or a second signer: nonce 6 is unmined again and it is not ours
+    };
+    const s = sender(node);
+    const r = okOf(await s.send(tx));
+    expect(node.rpc).toHaveLength(1);
+    expect(r).toMatchObject({ status: "pending", halted: { reason: "FOREIGN_BLOCKER", nonce: 6 } });
+  });
+});
+
+describe("ChainSender: broadcast errors", () => {
+  const failing = (node: Node, errors: (Error | null)[]) => {
+    const client = node.client();
+    let n = 0;
+    return {
+      ...client,
+      sendRawTransaction: async (a: { serializedTransaction: Hex }) => {
+        const err = errors[n++] ?? null;
+        if (err) {
+          node.rpc.push(node.parse(a.serializedTransaction));
+          throw err;
+        }
+        return (client.sendRawTransaction as (x: typeof a) => Promise<Hex>)(a);
       },
-      counts,
-    );
-    const nonces = new NonceManager(
-      async () => counts.pending,
-      async () => counts.latest,
-    );
-    const s = new ChainSender({ client: stub.client, account, chainId: 31337, dryRun: false, nonces, receiptTimeoutMs: 1, retryTimeoutMs: 1 });
-    return { ...stub, s, counts };
+    } as unknown as SenderClient;
+  };
+
+  it("treats a broadcast with no answer as possibly sent: the hash stays in the family and is replaced, not re-sent blind", async () => {
+    const node = new Node();
+    node.accept = () => "mine";
+    const s = sender(node, { client: failing(node, [named("HttpRequestError", "HTTP request failed.", { status: 504 })]) });
+    const r = okOf(await s.send(tx));
+    // The first broadcast died on the way; after the timeout the same intent was replaced at the same nonce.
+    expect(node.rpc.map((t) => [t.nonce, t.gasPrice])).toEqual([
+      [7, 1_100_000_000n],
+      [7, 1_237_500_000n],
+    ]);
+    expect(r).toMatchObject({ status: "success", txHash: node.rpc[1]!.hash, note: expect.stringMatching(/got no answer .* treated as sent/) });
+    expect(await s.confirm(node.rpc[0]!.hash, 7)).toMatchObject({ status: "success", txHash: node.rpc[1]!.hash });
+  });
+
+  it("finds the possibly-sent transaction when it was mined after all", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const client = failing(node, [named("TimeoutError", "The request took too long to respond.")]);
+    node.onSleep = () => {
+      if (node.rpc.length === 1 && !node.mined.size) node.mine(node.rpc[0]!); // it did reach a node
+    };
+    const r = okOf(await sender(node, { client }).send(tx));
+    expect(r).toMatchObject({ status: "success", txHash: node.rpc[0]!.hash });
+    expect(node.rpc).toHaveLength(1);
+  });
+
+  it("resolves a 'nonce too low' from the receipts: ours if one was mined, else dropped", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    node.onSleep = () => {
+      // Our transaction is mined, but the node still answers the nonce read with the old count.
+      if (!node.mined.size) {
+        node.mined.set(node.rpc[0]!.hash, "success");
+        node.mempool.delete(7);
+      }
+    };
+    const client = node.client();
+    let broadcasts = 0;
+    const stale = {
+      ...client,
+      getTransactionCount: async () => 7,
+      sendRawTransaction: async (a: { serializedTransaction: Hex }) => {
+        if (++broadcasts > 1) throw rpcError("nonce too low");
+        return (client.sendRawTransaction as (x: typeof a) => Promise<Hex>)(a);
+      },
+    } as unknown as SenderClient;
+    const r = okOf(await sender(node, { client: stale }).send(tx));
+    expect(broadcasts).toBe(2); // the replacement was refused as too low: resolved from the receipts
+    expect(r).toMatchObject({ status: "success", txHash: node.rpc[0]!.hash });
+
+    const other = new Node();
+    const lost = { ...other.client(), sendRawTransaction: async () => Promise.reject(rpcError("nonce too low")) } as unknown as SenderClient;
+    expect(await sender(other, { client: lost }).send(tx)).toMatchObject({ ok: true, status: "dropped", nonce: 7, note: expect.stringMatching(/not ours/) });
+  });
+
+  it("raises the price it just tried when the node says underpriced, under the cap", async () => {
+    const node = new Node();
+    const s = sender(node, { client: failing(node, [rpcError("replacement transaction underpriced"), rpcError("replacement transaction underpriced")]) });
+    const r = okOf(await s.send(tx));
+    expect(node.rpc.map((t) => t.gasPrice)).toEqual([1_100_000_000n, 1_237_500_000n, 1_392_187_500n]);
+    expect(r).toMatchObject({ status: "success", gasPrice: 1_392_187_500n });
+
+    const capped = new Node();
+    capped.network = 4_300_000_000n; // 4.73 gwei first; one bump would be 5.32 > the 5 gwei cap
+    const always = { ...capped.client(), sendRawTransaction: async () => Promise.reject(rpcError("replacement transaction underpriced")) } as unknown as SenderClient;
+    expect(await sender(capped, { client: always }).send(tx)).toEqual({ ok: false, stage: "halted", halt: expect.objectContaining({ reason: "GAS_CAP", nonce: 7 }) });
+  });
+
+  it("throws when the node rejects a first transaction outright, leaving nothing outstanding", async () => {
+    const node = new Node();
+    const s = sender(node, { client: failing(node, [rpcError("exceeds block gas limit")]) });
+    await expect(s.send(tx)).rejects.toThrow(/broadcast rejected: .*exceeds block gas limit/);
+    expect(s.state().outstanding).toBeNull();
+    expect(okOf(await s.send(tx)).nonce).toBe(7);
+  });
+
+  it("keeps the earlier transaction when a replacement is rejected", async () => {
+    const node = new Node();
+    node.accept = (t) => ((t.gasPrice as bigint) > 1_300_000_000n ? "mine" : "hold");
+    const s = sender(node, { client: failing(node, [null, rpcError("invalid sender")]) });
+    const r = okOf(await s.send(tx));
+    expect(r).toMatchObject({ status: "success", note: expect.stringMatching(/rejected \(.*invalid sender.*\), the earlier one stays/) });
+  });
+});
+
+describe("ChainSender: collateral sales", () => {
+  const sale: TxRequest = { to: TO, data: "0x5a1e", value: 0n };
+
+  it("broadcasts a sale only through Binance with MEV protection, re-sends included", async () => {
+    const node = new Node();
+    node.accept = (t) => ((t.gasPrice as bigint) > 1_100_000_000n ? "mine" : "hold");
+    const b = binance(node);
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    expect(b.broadcasts.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([
+      [7, "0x5a1e", 1_100_000_000n],
+      [7, "0x5a1e", 1_237_500_000n],
+    ]);
+    expect(node.rpc).toEqual([]); // nothing of the sale ever reached the public RPC
+    expect(r).toMatchObject({ status: "success", via: "binance", minedAs: "intent", txHash: b.broadcasts[1]!.hash });
+  });
+
+  it("on a Binance error never sends the sale publicly: its cushion repay takes the same nonce", async () => {
+    const node = new Node();
+    const b = binance(node, { failAfter: 0 });
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    expect(b.broadcasts.map((t) => t.data)).toEqual(["0x5a1e"]);
+    expect(node.rpc.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([[7, "0xbeef", 1_237_500_000n]]);
+    expect(node.rpc.every((t) => t.data !== "0x5a1e")).toBe(true);
+    expect(r).toMatchObject({ status: "success", via: "rpc", minedAs: "fallback", txHash: node.rpc[0]!.hash, note: expect.stringMatching(/not sent publicly/) });
+  });
+
+  it("loses to the sale when Binance had relayed it despite the error", async () => {
+    const node = new Node();
+    const b = binance(node, { failAfter: 0, relay: true });
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    // The relayed sale was mined; the repay at the same nonce was refused as too low and nothing else was signed.
+    expect(r).toMatchObject({ status: "success", minedAs: "intent", txHash: b.broadcasts[0]!.hash });
+    expect(node.ahead).toEqual([]);
+  });
+
+  it("cancels at the same nonce when there is no cushion to repay with", async () => {
+    const node = new Node();
+    const b = binance(node, { failAfter: 0 });
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => null }));
+    expect(node.rpc.map((t) => [t.nonce, t.to])).toEqual([[7, account.address.toLowerCase()]]);
+    expect(r).toMatchObject({ status: "dropped", minedAs: "cancel" });
+  });
+
+  it("switches to the cushion repay when the sale is no longer valid at a re-send", async () => {
+    const node = new Node();
+    node.accept = (t) => (t.data === "0xbeef" ? "mine" : "hold");
+    const b = binance(node);
+    const s = sender(node, { chainId: 56, binance: b.api });
+    const r = okOf(await s.send(async ({ round }) => (round === 0 ? sale : null), { mevProtect: true, fallback: async () => repay }));
+    expect(b.broadcasts).toHaveLength(1);
+    expect(node.rpc.map((t) => t.data)).toEqual(["0xbeef"]);
+    expect(r).toMatchObject({ status: "success", minedAs: "fallback" });
+  });
+
+  it("without a Binance key on mainnet sends the cushion repay instead of the sale, or nothing", async () => {
+    const node = new Node();
+    const s = sender(node, { chainId: 56 });
+    const r = okOf(await s.send(async () => sale, { mevProtect: true, fallback: async () => repay }));
+    expect(node.rpc.map((t) => t.data)).toEqual(["0xbeef"]);
+    expect(r).toMatchObject({ status: "success", minedAs: "fallback", note: expect.stringMatching(/never broadcast publicly/) });
+    expect(await s.send(async () => sale, { mevProtect: true })).toEqual({ ok: false, stage: "aborted" });
+    expect(node.rpc).toHaveLength(1);
+  });
+});
+
+describe("ChainSender: restart", () => {
+  async function stateFile() {
+    return path.join(await mkdtemp(path.join(tmpdir(), "desk-sender-")), "sender.json");
   }
 
-  it("rebroadcasts the same bytes once when the node lost it, then reports it pending and replaces it next time", async () => {
-    const { s, sent, counts } = stuck();
-    const r = await s.send(tx);
-    expect(r).toMatchObject({ ok: true, status: "pending", nonce: 7, note: expect.stringMatching(/rebroadcast once/) });
-    expect(sent).toHaveLength(2);
-    expect(sent[1]).toBe(sent[0]);
-    counts.pending = 8; // the node may count it once it is back in the mempool
+  it("keeps every hash signed for the outstanding nonce in the state file, and removes it once mined", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const file = await stateFile();
+    const s = sender(node, { stateFile: file, limits: { maxBumps: 1 } });
     await s.send(tx);
-    const replacement = parseTransaction(sent[2]!);
-    expect(replacement.nonce).toBe(7);
-    expect(replacement.gasPrice).toBe(112_500_000n); // +12.5% over the stuck one
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    expect(saved).toEqual({
+      nonce: 7,
+      family: [
+        { hash: node.rpc[0]!.hash, gasPrice: "1100000000", kind: "intent", via: "rpc" },
+        { hash: node.rpc[1]!.hash, gasPrice: "1237500000", kind: "intent", via: "rpc" },
+      ],
+    });
+    node.mine(node.rpc[1]!);
+    await s.recover();
+    await expect(stat(file)).rejects.toThrow();
   });
 
-  it("does not rebroadcast a transaction the node still holds, but still frees its nonce", async () => {
-    let price = 100_000_000n;
-    const { s, sent } = stuck({ getTransaction: vi.fn(async () => ({ hash: "0x" })), getGasPrice: vi.fn(async () => price) });
-    expect(await s.send(tx)).toMatchObject({ status: "pending" });
-    expect(sent).toHaveLength(1);
-    price = 200_000_000n; // the network moved above the bump: pay the network price
-    await s.send(tx);
-    expect(parseTransaction(sent[1]!)).toMatchObject({ nonce: 7, gasPrice: 200_000_000n });
+  it("adopts the pending nonce at startup with its recorded hashes and cancels it before anything new", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const file = await stateFile();
+    const before = sender(node, { stateFile: file, limits: { maxBumps: 0 } });
+    const first = okOf(await before.send(tx)); // stuck at nonce 7, then the process dies
+    expect(first.status).toBe("pending");
+
+    node.accept = () => "mine";
+    const after = sender(node, { stateFile: file });
+    const r = okOf(await after.send(repay)); // a new intent right after the restart
+    // First the adopted nonce was settled: a cancel at 12.5% over the recorded price, at the same nonce.
+    expect(node.rpc.map((t) => [t.nonce, t.to, t.gasPrice])).toEqual([
+      [7, TO, 1_100_000_000n],
+      [7, account.address.toLowerCase(), 1_237_500_000n],
+      [8, TO, 1_100_000_000n],
+    ]);
+    expect(node.ahead).toEqual([]);
+    expect(r).toMatchObject({ status: "success", nonce: 8 });
+    expect(await after.confirm(first.txHash, 7)).toMatchObject({ status: "dropped", minedAs: "cancel", txHash: node.rpc[1]!.hash });
   });
 
-  it("uses a receipt that arrives during the retry window", async () => {
-    const { s, sent } = stuck({}, { pending: 7, latest: 7 }, async () => ({ status: "success", gasUsed: 1n, effectiveGasPrice: 1n, blockNumber: 9n }));
-    expect(await s.send(tx)).toMatchObject({ status: "success", blockNumber: 9n });
-    expect(sent).toHaveLength(2);
-    expect(await s.send(tx)).toMatchObject({ nonce: 8 });
+  it("reports the adopted transaction as mined when it lands before the cancel", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const file = await stateFile();
+    const first = okOf(await sender(node, { stateFile: file, limits: { maxBumps: 0 } }).send(tx));
+    const after = sender(node, { stateFile: file });
+    node.onSleep = () => {
+      if (node.mempool.has(7)) node.mine(node.rpc[0]!);
+    };
+    expect(await after.recover()).toMatchObject({ status: "success", txHash: first.txHash, nonce: 7 });
+    expect(node.rpc).toHaveLength(1);
   });
 
-  it("reads a late receipt once the nonce has moved on", async () => {
-    const { s } = stuck({ getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => ({ status: "success", transactionHash: hash, gasUsed: 1n, effectiveGasPrice: 1n, blockNumber: 8n })) }, { pending: 7, latest: 8 });
-    expect(await s.send(tx)).toMatchObject({ status: "success", blockNumber: 8n });
+  it("outbids a pending transaction it has no record of at twice the network price, capped", async () => {
+    const node = new Node();
+    const unknown = node.parse(await account.signTransaction({ type: "legacy", chainId: 31337, nonce: 7, to: TO, gas: 21_000n, gasPrice: GWEI }));
+    node.mempool.set(7, unknown);
+    node.accept = () => "mine";
+    const r = await sender(node).recover();
+    expect(node.rpc.map((t) => [t.nonce, t.to, t.gasPrice])).toEqual([[7, account.address.toLowerCase(), 2n * GWEI]]);
+    expect(r).toMatchObject({ status: "dropped", minedAs: "cancel" });
+
+    const hot = new Node();
+    hot.network = 4n * GWEI;
+    hot.mempool.set(7, unknown);
+    await sender(hot).recover();
+    expect(hot.rpc[0]!.gasPrice).toBe(5n * GWEI);
   });
 
-  it("reports a transaction whose nonce another one took as dropped", async () => {
-    const { s, sent, counts } = stuck({}, { pending: 7, latest: 8 });
-    expect(await s.send(tx)).toMatchObject({ status: "dropped", nonce: 7 });
-    expect(sent).toHaveLength(1);
-    counts.pending = 8;
-    expect(parseTransaction((await s.send(tx), sent[1]!)).nonce).toBe(8);
-  });
-
-  it("stops replacing once the stuck transaction was mined", async () => {
-    const { s, sent, counts } = stuck();
-    await s.send(tx);
-    counts.pending = 8;
-    counts.latest = 8;
-    await s.send(tx);
-    expect(parseTransaction(sent[2]!)).toMatchObject({ nonce: 8, gasPrice: 100_000_000n });
+  it("reads a transaction the node lost across a restart as dropped: no wedge", async () => {
+    const node = new Node();
+    node.accept = () => "hold";
+    const file = await stateFile();
+    const first = okOf(await sender(node, { stateFile: file, limits: { maxBumps: 0 } }).send(tx));
+    const after = sender(node, { stateFile: file });
+    expect(await after.confirm(first.txHash, 7)).toEqual({ status: "pending" }); // still in the mempool
+    node.mempool.clear(); // the node dropped it: latest == nonce == pending and nobody knows the hash
+    expect(await after.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
+    node.accept = () => "mine";
+    expect(okOf(await after.send(repay))).toMatchObject({ status: "success", nonce: 7 });
+    // The new intent at nonce 7 is not the old one: the old hash stays dropped.
+    expect(await after.confirm(first.txHash, 7)).toEqual({ status: "dropped" });
   });
 });
 
 describe("ChainSender.confirm", () => {
-  const receipt = (status: string) => vi.fn(async ({ hash }: { hash: Hex }) => ({ status, transactionHash: hash, gasUsed: 2n, effectiveGasPrice: 3n, blockNumber: 4n }));
-  const H = `0x${"ab".repeat(32)}` as Hex;
-
-  it("reads mined transactions", async () => {
-    const ok = new ChainSender({ client: stubClient({ getTransactionReceipt: receipt("success") }).client, account, chainId: 31337, dryRun: false });
-    expect(await ok.confirm(H, 7)).toEqual({ status: "success", txHash: H, gasUsed: 2n, effectiveGasPrice: 3n, blockNumber: 4n, logs: [] });
-    const bad = new ChainSender({ client: stubClient({ getTransactionReceipt: receipt("reverted") }).client, account, chainId: 31337, dryRun: false });
-    expect((await bad.confirm(H)).status).toBe("reverted");
-  });
-
-  it("is pending until the nonce moves past it without a receipt, then dropped", async () => {
-    const counts = { pending: 8, latest: 7 };
-    const s = new ChainSender({ client: stubClient({}, counts).client, account, chainId: 31337, dryRun: false });
-    expect((await s.confirm(H, 7)).status).toBe("pending");
-    counts.latest = 8;
-    expect((await s.confirm(H, 7)).status).toBe("dropped");
-    expect((await s.confirm(H)).status).toBe("pending");
+  it("reads a mined transaction by its hash alone", async () => {
+    const node = new Node();
+    const s = sender(node);
+    const r = okOf(await s.send(tx));
+    expect(await s.confirm(r.txHash)).toMatchObject({ status: "success", txHash: r.txHash, minedAs: "intent", logs: [{ address: TO }] });
+    expect(await s.confirm(`0x${"ab".repeat(32)}`)).toEqual({ status: "pending" });
+    expect(await s.confirm(`0x${"ab".repeat(32)}`, 3)).toEqual({ status: "dropped" });
   });
 
   it("rethrows RPC failures", async () => {
-    const s = new ChainSender({ client: stubClient({ getTransactionReceipt: vi.fn(async () => Promise.reject(new Error("fetch failed"))) }).client, account, chainId: 31337, dryRun: false });
-    await expect(s.confirm(H)).rejects.toThrow("fetch failed");
+    const node = new Node();
+    const client = { ...node.client(), getTransactionReceipt: async () => Promise.reject(new Error("fetch failed")) } as unknown as SenderClient;
+    await expect(sender(node, { client }).confirm(`0x${"ab".repeat(32)}`)).rejects.toThrow("fetch failed");
   });
 });
 
@@ -484,153 +901,3 @@ describe("GasWatch", () => {
   });
 });
 
-describe("ChainSender round 2: stuck sends", () => {
-  /** Receipts never arrive unless `mined` holds the hash; counts drive the nonce reads. */
-  function world(
-    o: { chainId?: number; binance?: BinanceTxApi; counts?: { pending: number; latest: number }; known?: Hex[]; seedTx?: { hash: Hex; nonce: number; gasPrice: bigint }; nodeSeesAll?: boolean } = {},
-  ) {
-    const counts = o.counts ?? { pending: 7, latest: 7 };
-    const mined = new Map<string, "success" | "reverted">();
-    let sentHashes = (): Hex[] => [];
-    const receipt = (hash: Hex) => ({ status: mined.get(hash.toLowerCase()), transactionHash: hash, gasUsed: 1n, effectiveGasPrice: 1n, blockNumber: 9n, logs: [{ address: TO, topics: ["0x01"], data: "0x" }] });
-    const stub = stubClient(
-      {
-        waitForTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => {
-          if (mined.has(hash.toLowerCase())) return receipt(hash);
-          throw timeout();
-        }),
-        getTransactionReceipt: vi.fn(async ({ hash }: { hash: Hex }) => {
-          if (mined.has(hash.toLowerCase())) return receipt(hash);
-          throw notFound("receipt");
-        }),
-        getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
-          if (o.seedTx && hash === o.seedTx.hash) return { hash, nonce: o.seedTx.nonce, gasPrice: o.seedTx.gasPrice };
-          // Our own RPC broadcasts sit in the public mempool.
-          if (o.nodeSeesAll || sentHashes().includes(hash)) return { hash };
-          throw Object.assign(new Error("tx not found"), { name: "TransactionNotFoundError" });
-        }),
-      },
-      counts,
-    );
-    sentHashes = () => stub.sent.map((raw) => keccak256(raw));
-    // A fresh manager per test (the process-wide one would leak between tests).
-    const s = new ChainSender({
-      client: stub.client,
-      account,
-      chainId: o.chainId ?? 31337,
-      dryRun: false,
-      ...(o.binance ? { binance: o.binance } : {}),
-      receiptTimeoutMs: 1,
-      retryTimeoutMs: 1,
-      nonces: new NonceManager(
-        async () => counts.pending,
-        async () => counts.latest,
-        async (n) => {
-          for (const h of o.known ?? []) if (o.seedTx && h === o.seedTx.hash && o.seedTx.nonce === n) return o.seedTx.gasPrice;
-          return 100_000_000n;
-        },
-      ),
-    });
-    return { ...stub, s, counts, mined };
-  }
-
-  it("never throws once broadcast: a failing follow-up read leaves the send pending (N1)", async () => {
-    const w = world();
-    (w.raw.getTransactionCount as ReturnType<typeof vi.fn>).mockImplementation(async ({ blockTag }: { blockTag: string }) => {
-      if (blockTag === "latest" && w.sent.length > 0) throw new Error("fetch failed");
-      return 7;
-    });
-    const r = await w.s.send(tx);
-    expect(r).toMatchObject({ ok: true, status: "pending", nonce: 7, note: expect.stringMatching(/could not follow it up \(fetch failed\)/) });
-    expect(w.sent).toHaveLength(1);
-  });
-
-  it("after a restart, prices the replacement of our pending transaction from the feed's hash (N2)", async () => {
-    const H = `0x${"cd".repeat(32)}` as Hex;
-    const w = world({ counts: { pending: 8, latest: 7 }, known: [H], seedTx: { hash: H, nonce: 7, gasPrice: 300_000_000n } });
-    w.mined.set("x", "success");
-    await w.s.send(tx);
-    expect(parseTransaction(w.sent[0]!)).toMatchObject({ nonce: 7, gasPrice: 337_500_000n });
-  });
-
-  it("speeds a stuck shield up at its own nonce before the next send, which takes the next nonce (N4)", async () => {
-    const w = world();
-    let builds = 0;
-    const shield: TxBuilder = async () => {
-      builds++;
-      return { to: TO, data: "0xaaaa", value: 0n };
-    };
-    expect(await w.s.send(shield, { critical: true })).toMatchObject({ status: "pending", nonce: 7 });
-    w.counts.pending = 8;
-    w.mined.set("dummy", "success");
-    // The next send (a post): first the shield is rebuilt and re-signed at nonce 7 for 12.5% more.
-    const post = await w.s.send({ to: TO, data: "0xbbbb", value: 0n });
-    expect(builds).toBe(2);
-    const [first, speedUp, postTx] = w.sent.map((raw) => parseTransaction(raw));
-    expect([first!.nonce, speedUp!.nonce, postTx!.nonce]).toEqual([7, 7, 8]);
-    expect(speedUp!.data).toBe("0xaaaa");
-    expect(speedUp!.gasPrice).toBe(112_500_000n);
-    expect(post).toMatchObject({ nonce: 8 });
-  });
-
-  it("lets the next send take the nonce when the stuck shield is no longer needed", async () => {
-    const w = world();
-    let needed = true;
-    await w.s.send(async () => (needed ? { to: TO, data: "0xaaaa", value: 0n } : null), { critical: true });
-    needed = false;
-    w.counts.pending = 8;
-    await w.s.send({ to: TO, data: "0xbbbb", value: 0n });
-    const txs = w.sent.map((raw) => parseTransaction(raw));
-    expect(txs.map((t) => [t.nonce, t.data, t.gasPrice])).toEqual([
-      [7, "0xaaaa", 100_000_000n],
-      [7, "0xbbbb", 112_500_000n],
-    ]);
-  });
-
-  it("traces a speed-up: confirm() on the first hash reports the one that was mined", async () => {
-    const w = world();
-    const first = await w.s.send(async () => ({ to: TO, data: "0xaaaa", value: 0n }), { critical: true });
-    w.counts.pending = 8;
-    await w.s.unstick();
-    const fasterHash = keccak256(w.sent[1]!);
-    w.mined.set(fasterHash.toLowerCase(), "success");
-    w.counts.latest = 8;
-    expect(first.ok && (await w.s.confirm(first.txHash, 7))).toMatchObject({ status: "success", txHash: fasterHash, logs: [{ address: TO }] });
-  });
-
-  it("unstick() cancels a plain stuck send with a 0-value transfer at its nonce and does nothing otherwise", async () => {
-    const w = world();
-    expect(await w.s.unstick()).toBeNull();
-    expect(w.sent).toEqual([]);
-    await w.s.send(tx); // a restore or a post: plain
-    w.counts.pending = 8;
-    await w.s.unstick();
-    const cancel = parseTransaction(w.sent[1]!);
-    expect(cancel).toMatchObject({ nonce: 7, to: account.address.toLowerCase(), gasPrice: 112_500_000n });
-    expect(cancel.value ?? 0n).toBe(0n);
-    expect(cancel.data ?? "0x").toBe("0x");
-  });
-
-  it("re-sends a protected sale through Binance after a timeout, never the public RPC (unless Binance errors)", async () => {
-    const b = stubBinance();
-    // Even when the public node reports it, a protected send that is not mined goes to Binance again.
-    const w = world({ chainId: 56, binance: b.api, nodeSeesAll: true });
-    const r = await w.s.send(tx, { mevProtect: true });
-    expect(b.calls.filter((c) => c.method === "broadcast")).toHaveLength(2);
-    expect(w.sent).toEqual([]);
-    expect(r).toMatchObject({ via: "binance", status: "pending", note: expect.stringMatching(/rebroadcast through Binance/) });
-
-    let calls = 0;
-    const flaky = stubBinance({
-      broadcast: async (body) => {
-        calls++;
-        if (calls > 1) throw new Error("HTTP 503");
-        return { orderId: "1", txHash: keccak256(body.signedTransaction as Hex) };
-      },
-    });
-    const w2 = world({ chainId: 56, binance: flaky.api });
-    const r2 = await w2.s.send(tx, { mevProtect: true });
-    expect(w2.sent).toHaveLength(1);
-    expect(r2).toMatchObject({ note: expect.stringMatching(/binance rebroadcast failed \(HTTP 503\), sent through the public RPC/) });
-  });
-});

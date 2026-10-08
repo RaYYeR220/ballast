@@ -16,8 +16,20 @@ import {
 } from "@ballast/sdk";
 import { regularCloseAt, regularOpenAt } from "@ballast/risk";
 import { Feed } from "../src/desk/feed";
-import { Keeper, deleveragePathFor, keeperPhase, restoreTargetUsd, shieldedDebts, trimSale, type KeeperReads } from "../src/desk/keeper";
-import { GasWatch, revertError, type Confirmation, type SendOptions, type SendResult, type SimulateOptions, type TxBuilder, type TxLog, type TxSender } from "../src/desk/tx";
+import { Keeper, deleveragePathFor, isDust, keeperPhase, restoreTargetUsd, shieldedDebts, trimSale, type KeeperReads } from "../src/desk/keeper";
+import {
+  GasWatch,
+  revertError,
+  type Confirmation,
+  type HaltInfo,
+  type SendOptions,
+  type SendResult,
+  type SenderState,
+  type SimulateOptions,
+  type TxBuilder,
+  type TxLog,
+  type TxSender,
+} from "../src/desk/tx";
 
 const addr = (n: number): Address => getAddress(toHex(n, { size: 20 }));
 const E18 = 10n ** 18n;
@@ -133,8 +145,13 @@ function decode(tx: TxRequest): Call {
   throw new Error(`unknown calldata ${tx.data.slice(0, 10)}`);
 }
 
-/** How a send of a given function ends (default: mined). */
-type Stage = "estimate" | "revert" | "throw" | "pending" | "dropped";
+/**
+ * How a send of a given function ends (default: mined). "pending" is a send the sender halted on; "fallback"
+ * is a sale whose cushion repay was mined in its place; "cancel" is one cancelled after a timeout; "rebuild"
+ * asks the builder again (round 1) the way the sender does after a receipt timeout, then mines what it got.
+ */
+type Stage = "estimate" | "revert" | "throw" | "pending" | "dropped" | "halted" | "fallback" | "cancel" | "rebuild";
+const STUCK: HaltInfo = { reason: "STUCK", message: "nonce 7 is not mined after 4 replacement rounds", nonce: 7, since: 1_791_000_000 };
 const tooLittle = encodeErrorResult({ abi: [{ type: "error", name: "Error", inputs: [{ type: "string", name: "message" }] }], errorName: "Error", args: ["Too little received"] });
 const hashOf = (n: number) => `0x${String(n).padStart(64, "0")}` as Hex;
 /** A Shielded(kind, debtBefore, debtAfter, collateralSold) log of the account. */
@@ -157,12 +174,21 @@ class StubSender implements TxSender {
   confirms = new Map<string, Confirmation>();
   /** Logs the next mined send of a function returns. */
   logs = new Map<string, TxLog[]>();
-  unsticks = 0;
+  /** Set to make state() and every send report a halted sender. */
+  halt: HaltInfo | null = null;
+  /** What the builder answered when asked again (round 1): the function name, or null for "cancel it". */
+  rebuilt: (string | null)[] = [];
   /** Runs inside send before the builder (as if another send held the nonce meanwhile). */
   beforeBuild?: () => void;
+  /** Runs between the first build and the rebuild of a "rebuild" send. */
+  beforeRebuild?: () => void;
   sims: (Call & { strict: boolean })[] = [];
-  sent: (Call & { mev: boolean; critical: boolean })[] = [];
+  sent: (Call & { mev: boolean; fallback: boolean })[] = [];
   #n = 0;
+
+  state(): SenderState {
+    return { halted: this.halt, outstanding: null, spentLastHourWei: 0n };
+  }
 
   async simulate(tx: TxRequest, opts?: SimulateOptions) {
     const c = decode(tx);
@@ -178,37 +204,53 @@ class StubSender implements TxSender {
   }
 
   async send(input: TxRequest | TxBuilder, opts?: SendOptions): Promise<SendResult> {
+    if (this.halt) return { ok: false, stage: "halted", halt: this.halt };
     this.beforeBuild?.();
-    const tx = typeof input === "function" ? await input() : input;
+    const tx = typeof input === "function" ? await input({ round: 0 }) : input;
     if (!tx) return { ok: false, stage: "aborted" };
     const c = decode(tx);
-    this.sent.push({ ...c, mev: opts?.mevProtect === true, critical: opts?.critical === true });
+    this.sent.push({ ...c, mev: opts?.mevProtect === true, fallback: typeof opts?.fallback === "function" });
     const stage = this.outcome.get(c.fn);
     this.outcome.delete(c.fn);
     const base = { ok: true as const, txHash: hashOf(++this.#n), via: "rpc" as const, nonce: this.#n, gasPrice: 1n };
+    const mined = (fn: string) => ({ ...base, status: "success" as const, minedAs: "intent" as const, logs: this.logs.get(fn) ?? [] });
     switch (stage) {
+      case "halted":
+        return { ok: false, stage: "halted", halt: STUCK };
       case "estimate":
         return { ok: false, stage: "estimate", error: revertError(tooLittle)! };
       case "throw":
-        throw new Error("broadcast failed: nonce too low");
+        throw new Error("broadcast rejected: invalid sender");
       case "revert":
-        return { ...base, status: "reverted" };
+        return { ...base, status: "reverted", minedAs: "intent" };
       case "dropped":
-        return { ...base, status: "dropped", note: "nonce 1 was used by another transaction" };
+        return { ...base, status: "dropped", note: "nonce 1 went to a transaction that is not ours" };
+      case "cancel":
+        return { ...base, status: "dropped", minedAs: "cancel", note: "cancelled: no longer needed" };
       case "pending":
-        return { ...base, status: "pending", note: "not mined yet" };
+        return { ...base, status: "pending", note: "nonce 1 is not mined after 4 replacement rounds", halted: STUCK };
+      case "fallback": {
+        // The protected broadcast failed: the sender asks for the stand-in and that is what gets mined.
+        const stand = await opts?.fallback?.({ round: 1 });
+        if (!stand) return { ...base, status: "dropped", minedAs: "cancel", note: "binance broadcast failed (HTTP 503); cancelled" };
+        const f = decode(stand);
+        this.sent.push({ ...f, mev: false, fallback: false });
+        return { ...mined(f.fn), minedAs: "fallback", note: "binance broadcast failed (HTTP 503): the sale is not sent publicly" };
+      }
+      case "rebuild": {
+        this.beforeRebuild?.();
+        const next = typeof input === "function" ? await input({ round: 1 }) : input;
+        this.rebuilt.push(next ? decode(next).fn : null);
+        if (!next) return { ...base, status: "dropped", minedAs: "cancel", note: "cancelled: no longer needed" };
+        return mined(c.fn);
+      }
       default:
-        return { ...base, status: "success", logs: this.logs.get(c.fn) ?? [] };
+        return mined(c.fn);
     }
   }
 
   async confirm(txHash: Hex): Promise<Confirmation> {
     return this.confirms.get(txHash) ?? { status: "pending" };
-  }
-
-  async unstick() {
-    this.unsticks++;
-    return null;
   }
 
   async balance() {
@@ -244,7 +286,7 @@ async function setup(w: Partial<World> = {}, o: { gas?: (sender: StubSender, fee
     coverState: async (e) => world.coverStates.get(e.key) ?? null,
     canShieldNow: async () => world.canShield,
   };
-  const keeper = new Keeper({ deployment: d, reads, sender, feed, ...(o.gas ? { gas: o.gas(sender, feed) } : {}) });
+  const keeper = new Keeper({ deployment: d, reads, sender, feed, clock: () => world.oracle.at, ...(o.gas ? { gas: o.gas(sender, feed) } : {}) });
   return { world, sender, feed, keeper, reads };
 }
 
@@ -670,7 +712,30 @@ describe("Keeper sale failures (C2)", () => {
     const { world, sender, keeper } = await setup();
     world.accounts = [lista({ cushion: 10n * E18 })];
     await keeper.tick();
-    expect(sender.sent).toMatchObject([{ fn: "shieldDeleverage", mev: true }]);
+    expect(sender.sent).toMatchObject([{ fn: "shieldDeleverage", mev: true, fallback: true }]);
+  });
+
+  it("records the cushion repay that went out in the sale's place when the protected broadcast failed", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista({ cushion: 10n * E18 })];
+    sender.outcome.set("shieldDeleverage", "fallback");
+    sender.logs.set("shieldRepay", [shieldedLog(1800n * E18, 1790n * E18)]);
+    await keeper.tick();
+    expect(sender.sent.map((c) => [c.fn, c.mev])).toEqual([
+      ["shieldDeleverage", true],
+      ["shieldRepay", false],
+    ]);
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "SaleNotSent" }, reason: expect.stringMatching(/not sent publicly.*cushion repay was sent instead/), data: { onHold: "sale" } });
+    expect(feed.list({ kind: "shield" })[0]).toMatchObject({
+      plan: { step: { fn: "shieldRepay", assets: (10n * E18).toString() }, debtBefore: (1800n * E18).toString(), debtAfter: (1790n * E18).toString() },
+      data: { fallbackFor: "shieldDeleverage" },
+    });
+    // The sale is on hold; the next tick does not try it again.
+    sender.sims = [];
+    world.accounts = [lista({ cushion: 0n, debt: 1790n * E18 })];
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sims.map((c) => c.fn)).not.toContain("shieldDeleverage");
   });
 
   it("keeps one more sale attempt before the close: the hold ends 6 min before it", async () => {
@@ -701,7 +766,7 @@ describe("Keeper sale failures (C2)", () => {
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "throw");
     await keeper.tick();
-    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "BroadcastFailed", message: expect.stringMatching(/nonce too low/) } });
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "BroadcastFailed", message: expect.stringMatching(/invalid sender/) } });
     sender.sims = [];
     world.oracle = oracle(LEAD + 300);
     await keeper.tick();
@@ -795,16 +860,14 @@ describe("Keeper pending transactions (C1, N2, N3)", () => {
     expect(feed.unresolvedPending("keeper")).toEqual([]);
   });
 
-  it("leaves the account alone while its send is unmined and nudges the sender instead (N2)", async () => {
+  it("leaves the account alone while its send is unmined (N2)", async () => {
     const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista()];
     sender.outcome.set("shieldRepay", "pending");
     await keeper.tick();
-    expect(sender.unsticks).toBe(1);
     world.oracle = oracle(LEAD + 300);
     await keeper.tick(); // still pending
     expect(sender.sent).toHaveLength(1);
-    expect(sender.unsticks).toBe(2);
     expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/waiting for the desk's pending transaction/);
   });
 
@@ -819,7 +882,7 @@ describe("Keeper pending transactions (C1, N2, N3)", () => {
     expect(feed.list({ kind: "refused" })[0]).toMatchObject({ txHash: hashOf(1), error: { name: "Dropped" } });
     expect(sender.sent).toHaveLength(2);
     expect(feed.list({ kind: "shield" })).toMatchObject([{ txHash: hashOf(2) }]);
-    expect(feed.list({ kind: "alert" })).toEqual([]); // not yet in the last minutes
+    expect(feed.list({ kind: "alert" }).filter((e) => /last minutes/.test(e.reason ?? ""))).toEqual([]); // not yet in the last minutes
   });
 
   it("alerts when a shield is dropped in the last minutes before the close (N4)", async () => {
@@ -853,7 +916,6 @@ describe("Keeper pending transactions (C1, N2, N3)", () => {
     first.world.oracle = oracle(MORNING + 86_400, { canAddRisk: true, reason: "OK" });
     await restarted.tick();
     expect(first.sender.sent).toHaveLength(1);
-    expect(first.sender.unsticks).toBe(2);
     // Mined at last: recorded from its receipt.
     first.sender.confirms.set(hashOf(1), { status: "success", logs: [shieldedLog(1800n * E18, 1711n * E18)] });
     first.world.accounts = [lista({ debt: 1711n * E18 })];
@@ -882,11 +944,248 @@ describe("Keeper pending transactions (C1, N2, N3)", () => {
     expect(sender.sent).toHaveLength(2);
   });
 
-  it("sends shields as time-critical and restores as plain", async () => {
-    const { world, sender, keeper } = await setup();
+  it("records a pending send the sender's own cancel replaced (after a restart) as a noop, and re-plans", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    sender.confirms.set(hashOf(1), { status: "dropped", minedAs: "cancel", txHash: `0x${"cc".repeat(32)}` });
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(feed.list({ kind: "noop" }).map((e) => e.reason)).toContainEqual(expect.stringMatching(/cancelled before it was mined/));
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    expect(sender.sent).toHaveLength(2); // settled: the shield is planned again in the same tick
+    expect(feed.unresolvedPending("keeper")).toEqual([]);
+  });
+
+  it("records the sale's cushion repay when that is what a pending sale turned into", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista({ cushion: 10n * E18 })];
+    const realSend = sender.send.bind(sender);
+    sender.send = async (input, opts) => {
+      await opts?.fallback?.({ round: 1 }); // the sender built the stand-in before it halted
+      return realSend(input, opts);
+    };
+    sender.outcome.set("shieldDeleverage", "pending");
+    await keeper.tick();
+    expect(feed.list({ kind: "pending" })[0]!.data).toMatchObject({ fallbackStep: { fn: "shieldRepay" } });
+    sender.confirms.set(hashOf(1), { status: "success", minedAs: "fallback", txHash: `0x${"fb".repeat(32)}`, logs: [shieldedLog(1800n * E18, 1790n * E18)] });
+    world.accounts = [lista({ cushion: 0n, debt: 1000n * E18 })];
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(feed.list({ kind: "shield" })[0]).toMatchObject({ txHash: `0x${"fb".repeat(32)}`, plan: { step: { fn: "shieldRepay" } }, data: { fallbackFor: "shieldDeleverage" } });
+  });
+});
+
+describe("Keeper and a slow or halted sender (R38)", () => {
+  it("re-sends a shield as it was after a timeout, even when the lead window has ended meanwhile", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "rebuild");
+    sender.beforeRebuild = () => {
+      world.oracle = oracle(CLOSE + 600, { session: "POST" }); // the market closed while it sat unmined
+    };
+    await keeper.tick();
+    expect(sender.rebuilt).toEqual(["shieldRepay"]);
+    expect(feed.list({ kind: "shield" })).toHaveLength(1);
+  });
+
+  it("lets a stuck shield be cancelled only when the contract would no longer take it", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "rebuild");
+    sender.beforeRebuild = () => {
+      sender.failing.set("shieldRepay", encodeErrorResult({ abi: ballastAccountBaseAbi, errorName: "InsufficientCushion", args: [0n, 1n] }));
+    };
+    await keeper.tick();
+    expect(sender.rebuilt).toEqual([null]);
+    expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/no longer valid: its nonce was cancelled/);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+  });
+
+  it("cancels a stuck restore once the oracle no longer allows it", async () => {
+    const s = await setup({ oracle: oracle(MORNING, { canAddRisk: true, reason: "OK" }) });
+    await s.feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, txHash: `0x${"aa".repeat(32)}`, plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1700n * E18).toString(), ltvBps: 7200 } });
+    s.world.accounts = [lista({ debt: 1700n * E18 })];
+    s.sender.outcome.set("restore", "rebuild");
+    s.sender.beforeRebuild = () => {
+      s.world.oracle = oracle(MORNING + 60, { canAddRisk: false, reason: "FLAGGED" });
+    };
+    await s.keeper.tick();
+    expect(s.sender.rebuilt).toEqual([null]);
+    expect(s.feed.list({ kind: "restore" })).toEqual([]);
+    expect(s.feed.shieldCycle(ACCOUNT)).not.toBeNull(); // nothing was restored: the cycle stays open
+  });
+
+  it("cancels a stuck restore when the plan is no longer the same", async () => {
+    const s = await setup({ oracle: oracle(MORNING, { canAddRisk: true, reason: "OK" }) });
+    await s.feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, txHash: `0x${"aa".repeat(32)}`, plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1700n * E18).toString(), ltvBps: 7200 } });
+    s.world.accounts = [lista({ debt: 1700n * E18 })];
+    s.sender.outcome.set("restore", "rebuild");
+    s.sender.beforeRebuild = () => {
+      s.world.accounts = [lista({ debt: 1750n * E18 })]; // the owner borrowed meanwhile: 50 would be the plan now, not 100
+    };
+    await s.keeper.tick();
+    expect(s.sender.rebuilt).toEqual([null]);
+  });
+
+  it("re-sends a stuck restore while it is still the plan", async () => {
+    const s = await setup({ oracle: oracle(MORNING, { canAddRisk: true, reason: "OK" }) });
+    await s.feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, txHash: `0x${"aa".repeat(32)}`, plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1700n * E18).toString(), ltvBps: 7200 } });
+    s.world.accounts = [lista({ debt: 1700n * E18 })];
+    s.sender.outcome.set("restore", "rebuild");
+    await s.keeper.tick();
+    expect(s.sender.rebuilt).toEqual(["restore"]);
+    expect(s.feed.list({ kind: "restore" })).toHaveLength(1);
+  });
+
+  it("says SENDER_HALTED once per subject and alerts once per halt", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.halt = STUCK;
+    await keeper.tick();
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sent).toEqual([]);
+    expect(feed.list({ kind: "refused" })).toMatchObject([{ account: ACCOUNT, error: { name: "SENDER_HALTED" }, reason: expect.stringMatching(/^SENDER_HALTED \(STUCK\)/), data: { sender: "halted" } }]);
+    expect(feed.list({ kind: "alert" })).toMatchObject([{ reason: expect.stringMatching(/sender is HALTED \(STUCK\)/), data: { sender: "halted", halt: { nonce: 7 } } }]);
+    // A new halt later is a new alert.
+    sender.halt = { ...STUCK, since: STUCK.since + 3600, reason: "FEE_BUDGET" };
+    world.oracle = oracle(LEAD + 600);
+    await keeper.tick();
+    expect(feed.list({ kind: "alert" })).toHaveLength(2);
+    expect(feed.list({ kind: "refused" })).toHaveLength(2);
+  });
+
+  it("alerts at the start of a tick even with nothing to send", async () => {
+    const { sender, feed, keeper } = await setup();
+    sender.halt = STUCK;
+    await keeper.tick();
+    expect(feed.list({ kind: "alert" })).toHaveLength(1);
+  });
+
+  it("tracks a shield the sender halted on as pending and alerts", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    expect(feed.list({ kind: "pending" })).toHaveLength(1);
+    expect(feed.list({ kind: "alert" })[0]!.reason).toMatch(/HALTED/);
+    expect(feed.list({ kind: "shield" })).toEqual([]);
+  });
+
+  it("records a send cancelled after a timeout as a noop, not a refusal", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "cancel");
+    await keeper.tick();
+    expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/nonce was cancelled/);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sent).toHaveLength(2); // no back-off
+  });
+
+  it("records a halted recordLiquidation once and alerts", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    world.accounts = [lista({ liquidated: true, liquidationRecorded: false })];
+    sender.outcome.set("recordLiquidation", "halted");
+    await keeper.tick();
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "SENDER_HALTED" } });
+    expect(feed.list({ kind: "alert" })[0]!.reason).toMatch(/HALTED/);
+  });
+});
+
+describe("Keeper sizing and dust (R39 additions)", () => {
+  it("sizes the repay against the accrued debt, so the next tick has nothing to top up", async () => {
+    const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista()];
     await keeper.tick();
-    expect(sender.sent[0]).toMatchObject({ fn: "shieldRepay", critical: true });
+    const assets = sender.sent[0]!.args[0] as bigint;
+    // Target debt is 1711.25; with one basis point of accrual on 1800 the repay must cover 88.93, not 88.75.
+    expect(assets).toBeGreaterThanOrEqual(8893n * 10n ** 16n);
+    expect(assets).toBeLessThan(90n * E18);
+    // After it the debt has accrued a little (0.05): the remaining shortfall is dust, not another transaction.
+    world.accounts = [lista({ debt: 1800n * E18 + 5n * 10n ** 16n - assets, cushion: 100n * E18 - assets })];
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(sender.sent).toHaveLength(1);
+    expect(sender.sims).toHaveLength(1);
+    expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/dust|survives/);
+  });
+
+  it("skips a dust repay", async () => {
+    const { world, sender, feed, keeper } = await setup();
+    // A cent over the target debt of 1711.25.
+    world.accounts = [lista({ debt: 171_126n * 10n ** 16n, cushion: 11n * E18 })];
+    await keeper.tick();
+    expect(sender.sims).toEqual([]);
+    expect(feed.list({ kind: "noop" })[0]!.reason).toMatch(/dust/);
+    expect(keeper.shieldBusy()).toBe(false);
+  });
+
+  it("knows dust: under max(0.05 units, 0.1% of the debt), unless it closes the loan", () => {
+    expect(isDust(4n * 10n ** 16n, 10n * E18, 18)).toBe(true); // 0.04 < 0.05
+    expect(isDust(6n * 10n ** 16n, 10n * E18, 18)).toBe(false);
+    expect(isDust(1n * E18, 1800n * E18, 18)).toBe(true); // 1 < 1.8 (0.1%)
+    expect(isDust(2n * E18, 1800n * E18, 18)).toBe(false);
+    expect(isDust(3n * 10n ** 16n, 3n * 10n ** 16n, 18)).toBe(false); // a full close
+    expect(isDust(40_000n, 10_000_000n, 6)).toBe(true); // 0.04 USDT-style units
+  });
+});
+
+describe("Keeper.shieldBusy (R39)", () => {
+  it("is true from the moment a shield is planned in a lead window until it is done", async () => {
+    const { world, sender, keeper } = await setup();
+    expect(keeper.shieldBusy()).toBe(false);
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "revert"); // planned, attempted, refused: still to do
+    await keeper.tick();
+    expect(keeper.shieldBusy()).toBe(true);
+    world.oracle = oracle(LEAD + 900);
+    await keeper.tick(); // retried after the back-off and mined
+    expect(sender.sent).toHaveLength(2);
+    expect(keeper.shieldBusy()).toBe(false);
+  });
+
+  it("is true while a shield is pending and false again once the closure has started", async () => {
+    const { world, sender, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "pending");
+    await keeper.tick();
+    expect(keeper.shieldBusy()).toBe(true);
+    sender.confirms.set(hashOf(1), { status: "reverted" });
+    world.accounts = [lista({ cushion: 0n })]; // nothing left to repay with: insufficient, no step
+    world.oracle = oracle(LEAD + 300);
+    await keeper.tick();
+    expect(keeper.shieldBusy()).toBe(false);
+  });
+
+  it("is true for a pending shield found in the feed after a restart", async () => {
+    const first = await setup();
+    first.world.accounts = [lista()];
+    first.sender.outcome.set("shieldRepay", "pending");
+    await first.keeper.tick();
+    const restarted = new Keeper({ deployment: d, reads: first.reads, sender: first.sender, feed: first.feed, clock: () => first.world.oracle.at });
+    expect(restarted.shieldBusy()).toBe(false); // nothing loaded yet
+    first.world.oracle = oracle(MORNING + 86_400, { canAddRisk: true, reason: "OK" }); // no lead window, only the pending send
+    await restarted.tick();
+    expect(restarted.shieldBusy()).toBe(true);
+  });
+
+  it("forgets a plan once its window has begun, and is false outside lead windows", async () => {
+    const { world, sender, keeper } = await setup();
+    world.accounts = [lista()];
+    sender.outcome.set("shieldRepay", "revert");
+    await keeper.tick();
+    expect(keeper.shieldBusy()).toBe(true);
+    world.oracle = oracle(CLOSE + 60, { session: "POST" });
+    expect(keeper.shieldBusy()).toBe(false);
+
+    const quiet = await setup({ oracle: oracle(MORNING, { canAddRisk: true, reason: "OK" }) });
+    quiet.world.accounts = [lista()];
+    await quiet.keeper.tick();
+    expect(quiet.keeper.shieldBusy()).toBe(false);
   });
 });
 

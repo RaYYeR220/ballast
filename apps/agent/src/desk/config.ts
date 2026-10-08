@@ -57,6 +57,14 @@ export interface DeskConfig {
   readonly x402DailyCapUsd: number;
   /** Alert when the desk key holds less BNB than this. */
   readonly minBnbBalance: number;
+  /** The sender never signs above this gas price. */
+  readonly maxGasPriceGwei: number;
+  /** How long the sender waits for a receipt before replacing a transaction. */
+  readonly receiptTimeoutSec: number;
+  /** Replacement rounds per nonce before the sender halts. */
+  readonly maxBumps: number;
+  /** Fee budget (gas limit x gas price of everything signed) per rolling hour; above it the sender halts. */
+  readonly maxFeeBnbPerHour: number;
   readonly dryRun: boolean;
   /** One line that is safe to log. */
   describe(): string;
@@ -151,6 +159,10 @@ const envSchema = z.object({
   HTTP_PORT: portVar(8787),
   X402_DAILY_CAP_USD: numberVar(0.5).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  MAX_GAS_PRICE_GWEI: numberVar(5).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
+  RECEIPT_TIMEOUT_SEC: numberVar(45).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
+  MAX_BUMPS: numberVar(4).refine((n) => Number.isInteger(n) && n >= 0 && n <= 10, "must be a whole number from 0 to 10"),
+  MAX_FEE_BNB_PER_HOUR: numberVar(0.01).refine((n) => Number.isFinite(n) && n > 0 && n <= 10, "must be an amount of BNB, above 0 and at most 10"),
   DRY_RUN: flagVar(true),
 });
 
@@ -261,6 +273,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     httpPort: e.HTTP_PORT,
     x402DailyCapUsd: e.X402_DAILY_CAP_USD,
     minBnbBalance: e.MIN_BNB_BALANCE,
+    maxGasPriceGwei: e.MAX_GAS_PRICE_GWEI,
+    receiptTimeoutSec: e.RECEIPT_TIMEOUT_SEC,
+    maxBumps: e.MAX_BUMPS,
+    maxFeeBnbPerHour: e.MAX_FEE_BNB_PER_HOUR,
     dryRun: e.DRY_RUN,
     describe: () => summary,
     toString: () => summary,
