@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CHAIN_ID = 56;
 const EXPLORER = "https://bscscan.com";
+const SOURCIFY = "https://repo.sourcify.dev/56";
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -249,12 +250,12 @@ export function renderProof(i: ProofInput): string {
     );
   } else {
     const by = d.owner ? `, owner [\`${d.owner}\`](${EXPLORER}/address/${d.owner})` : "";
-    p(`BSC mainnet (chain ${CHAIN_ID}), deployed at block [${d.block}](${EXPLORER}/block/${d.block})${by}.`, "", "| Contract | Address | What it does |", "|---|---|---|");
-    for (const [key, name, role] of CONTRACTS) p(`| ${name} | ${addressLink(d.addresses[key] as string)} | ${cell(role)} |`);
+    p(`BSC mainnet (chain ${CHAIN_ID}), deployed at block [${d.block}](${EXPLORER}/block/${d.block})${by}.`, "", "| Contract | Address | Source | What it does |", "|---|---|---|---|");
+    for (const [key, name, role] of CONTRACTS) p(`| ${name} | ${addressLink(d.addresses[key] as string)} | [Sourcify](${SOURCIFY}/${d.addresses[key]}/) | ${cell(role)} |`);
     p("");
     if (d.guardianStartJobId !== null) p(`The ERC-8183 kernel's job counter stood at ${d.guardianStartJobId} when the guardian was deployed, so no guard job has a lower id.`, "");
     p(
-      "Each link opens the contract's code tab on BscScan, which shows whether the source is verified. To check the deployment against the chain, the repository config and a local build:",
+      "The address opens the contract's code tab on BscScan; the Sourcify link opens its verified source, if there is one. Neither is taken on trust here: to check the deployment against the chain, the repository config and a local build, run",
       "",
       "```bash",
       "pnpm contracts:build",

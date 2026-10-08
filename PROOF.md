@@ -13,11 +13,36 @@ Nothing here is fetched or estimated. A missing deployment file renders as "pend
 
 ## 1. Mainnet deployment
 
-**Mainnet deployment pending.** `contracts/deployments/56.json` is not in the repository, so there is no Ballast address on BSC mainnet to list. Until that file exists, every statement about Ballast on mainnet is a plan, not a fact. What can be checked today is in sections 3 and 4.
+BSC mainnet (chain 56), deployed at block [126486842](https://bscscan.com/block/126486842), owner [`0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf`](https://bscscan.com/address/0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf).
+
+| Contract | Address | Source | What it does |
+|---|---|---|---|
+| SessionCalendar | [`0xED58C46715c3cb0Aea67ed8F1876e4A7315D89AB`](https://bscscan.com/address/0xED58C46715c3cb0Aea67ed8F1876e4A7315D89AB#code) | [Sourcify](https://repo.sourcify.dev/56/0xED58C46715c3cb0Aea67ed8F1876e4A7315D89AB/) | NYSE session calendar for 2026 and 2027. No admin, no oracle. |
+| SessionOracle | [`0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388`](https://bscscan.com/address/0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388#code) | [Sourcify](https://repo.sourcify.dev/56/0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388/) | Per-share prices, closure windows, the publisher overlay and `canAddRisk`. |
+| SessionAwareFeed | [`0xC544236Aa3E4CB5cb7f2bb9b72019f85fb35aE20`](https://bscscan.com/address/0xC544236Aa3E4CB5cb7f2bb9b72019f85fb35aE20#code) | [Sourcify](https://repo.sourcify.dev/56/0xC544236Aa3E4CB5cb7f2bb9b72019f85fb35aE20/) | Lista-compatible price source that holds a band while the market is closed. |
+| BallastFactory | [`0xE12f14595BCEC5616192660880829F400A310a72`](https://bscscan.com/address/0xE12f14595BCEC5616192660880829F400A310a72#code) | [Sourcify](https://repo.sourcify.dev/56/0xE12f14595BCEC5616192660880829F400A310a72/) | Creates and registers the per-user accounts. |
+| ListaAccount (implementation) | [`0x77EAfc448aAb09ECA06d21fd409fa3DB491BA191`](https://bscscan.com/address/0x77EAfc448aAb09ECA06d21fd409fa3DB491BA191#code) | [Sourcify](https://repo.sourcify.dev/56/0x77EAfc448aAb09ECA06d21fd409fa3DB491BA191/) | Logic behind every Lista account clone. |
+| VenusAccount (implementation) | [`0x7bd36fD3fF6050BB830a2ee74fcBC72FeAaf94eE`](https://bscscan.com/address/0x7bd36fD3fF6050BB830a2ee74fcBC72FeAaf94eE#code) | [Sourcify](https://repo.sourcify.dev/56/0x7bd36fD3fF6050BB830a2ee74fcBC72FeAaf94eE/) | Logic behind every Venus account clone. |
+| CushionVault | [`0xf0089b0e6afa2f80dbc9006E1B3D1a77E114E334`](https://bscscan.com/address/0xf0089b0e6afa2f80dbc9006E1B3D1a77E114E334#code) | [Sourcify](https://repo.sourcify.dev/56/0xf0089b0e6afa2f80dbc9006E1B3D1a77E114E334/) | Cushions for loans that stay on the user's own address. |
+| BallastGuardian | [`0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8`](https://bscscan.com/address/0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8#code) | [Sourcify](https://repo.sourcify.dev/56/0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8/) | ERC-8183 hook and evaluator for guard jobs. |
+
+The ERC-8183 kernel's job counter stood at 56923 when the guardian was deployed, so no guard job has a lower id.
+
+The address opens the contract's code tab on BscScan; the Sourcify link opens its verified source, if there is one. Neither is taken on trust here: to check the deployment against the chain, the repository config and a local build, run
+
+```bash
+pnpm contracts:build
+BSC_RPC_URL=<rpc> pnpm verify:onchain
+```
 
 ## 2. Mainnet transactions
 
-No mainnet transactions are recorded yet. `data/proof-txs.json` is empty.
+| When | What | Transaction | Note |
+|---|---|---|---|
+| 2026-10-08 17:43 UTC | Desk agent registered in the ERC-8004 identity registry (agentId 368122) | [`0x751156e3...6dc37d47`](https://bscscan.com/tx/0x751156e36180eb7fd6e46c990df0470b645c5959de352efd6a05a4b16dc37d47) | register() from the desk key 0xccD7f069275549793b2A8804A5691fCa6665D152 |
+| 2026-10-08 17:43 UTC | Desk agent registration file written (setAgentURI) | [`0x7384932d...800a582d`](https://bscscan.com/tx/0x7384932d77c88a9231e8a29d5483efdb69fea2844cbbae7a8221ab21800a582d) | second step of the registration: the URI now names agentId 368122 |
+| 2026-10-08 17:50 UTC | First deployment transaction: SessionCalendar | [`0x46fbea5b...0d5a949f`](https://bscscan.com/tx/0x46fbea5bf2ba4053a700d17e1e520dd3b7b73c10ff30a1459f47be910d5a949f) | first of the 31 transactions of the deploy script; all eight contracts are exact matches on Sourcify (checked 2026-10-08) |
+| 2026-10-08 18:07 UTC | First Session Oracle overlay posted by the desk | [`0x95177e85...fd432368`](https://bscscan.com/tx/0x95177e85cae6071af68b7d6a11735c0515529352595a8b418cce3606fd432368) | postOverlays from the publisher key, which is the desk agent |
 
 ## 3. Tests
 
