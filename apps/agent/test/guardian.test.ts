@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { decodeFunctionData, encodeErrorResult, getAddress, keccak256, stringToBytes, toHex, type Address, type Hex } from "viem";
 import { ballastErrorsAbi, ballastGuardianAbi, kernelAbi, parseDeployment, type GuardianJob, type TxRequest } from "@ballast/sdk";
 import { Feed } from "../src/desk/feed";
-import { Guardian, GuardianState, REFUSAL_BACKOFF_SEC, buildEvidence, evidenceFile, type GuardianReads } from "../src/desk/guardian";
+import { GUARDIAN_TICK_SEC, Guardian, GuardianState, QUICK_RETRY_SEC, REFUSAL_BACKOFF_SEC, buildEvidence, evidenceFile, type GuardianReads } from "../src/desk/guardian";
 import { Ledger } from "../src/desk/ledger";
 import { revertError, type SendResult, type TxSender } from "../src/desk/tx";
 
@@ -90,6 +90,8 @@ class StubSender implements TxSender {
 }
 
 interface World {
+  /** What the keeper's shieldBusy() answers. */
+  keeperBusy: boolean;
   at: number;
   jobs: Map<bigint, GuardianJob>;
   head: bigint;
@@ -99,7 +101,7 @@ interface World {
 }
 
 async function setup(w: Partial<World> = {}, dir?: string) {
-  const world: World = { at: END + 60, jobs: new Map(), head: 105n, scans: [], survived: true, paid: E18, ...w };
+  const world: World = { keeperBusy: false, at: END + 60, jobs: new Map(), head: 105n, scans: [], survived: true, paid: E18, ...w };
   const dataDir = dir ?? (await mkdtemp(path.join(tmpdir(), "desk-guardian-")));
   const sender = new StubSender();
   // Submit and settle move the job like the kernel would.
@@ -127,7 +129,7 @@ async function setup(w: Partial<World> = {}, dir?: string) {
     paymentToken: async () => ({ token: USD1, symbol: "USD1", decimals: 18 }),
     settleOutcome: async () => ({ survived: world.survived, paid: world.survived ? world.paid : 0n }),
   };
-  const guardian = new Guardian({ deployment: d, reads, sender, feed, ledger, state, dataDir });
+  const guardian = new Guardian({ deployment: d, reads, sender, feed, ledger, state, dataDir, busy: () => world.keeperBusy });
   return { world, sender, feed, ledger, state, guardian, dataDir, reads };
 }
 
@@ -332,19 +334,107 @@ describe("Guardian", () => {
     expect(sender.sent[1]!.args[1]).toBe(sender.sent[0]!.args[1]);
   });
 
-  it("records dropped, reverted and thrown sends as refusals; dropped retries next loop", async () => {
+  it("retries dropped and failed broadcasts shortly with no back-off; only the on-chain revert backs off", async () => {
     const { world, sender, guardian, feed } = await setup();
     world.jobs.set(101n, job(101n, { status: "Submitted" }));
     sender.statuses = ["dropped", "throw", "reverted"];
     await guardian.tick();
-    world.at += 600;
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    world.at += QUICK_RETRY_SEC;
     await guardian.tick();
-    world.at += 600;
-    await guardian.tick(); // backing off after the thrown broadcast
-    world.at += REFUSAL_BACKOFF_SEC;
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    world.at += QUICK_RETRY_SEC;
     await guardian.tick();
-    const names = feed.list({ kind: "refused" }).map((e) => e.error?.name).reverse();
-    expect(names).toEqual(["Dropped", "BroadcastFailed", "Reverted"]);
+    expect(guardian.nextDelaySec()).toBe(GUARDIAN_TICK_SEC);
+    const refused = feed.list({ kind: "refused" }).reverse();
+    expect(refused.map((e) => e.error?.name)).toEqual(["Dropped", "BroadcastFailed", "Reverted"]);
+    expect(refused.map((e) => (e.data as { backoffUntil?: number }).backoffUntil !== undefined)).toEqual([false, false, true]);
+    // backing off now
+    world.at += QUICK_RETRY_SEC;
+    await guardian.tick();
+    expect(sender.sent).toHaveLength(3);
+  });
+
+  it("treats NotSettleable right after our own submit as a lagging read: retry in ~90 s, no back-off", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n));
+    sender.failing.set("settle", revert("NotSettleable"));
+    const r = await guardian.tick();
+    expect(r.submitted).toEqual(["101"]);
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ jobId: "101", error: { name: "NotSettleable" }, reason: expect.stringMatching(/right after the submit/) });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    sender.failing.delete("settle");
+    world.at += QUICK_RETRY_SEC;
+    const r2 = await guardian.tick();
+    expect(r2.settled).toEqual(["101"]);
+    expect(guardian.nextDelaySec()).toBe(GUARDIAN_TICK_SEC);
+  });
+
+  it("does not excuse NotSettleable long after the submit: a refusal with back-off", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n));
+    sender.failing.set("settle", revert("WindowNotOver"));
+    await guardian.tick();
+    expect(feed.list({ kind: "refused" })).toEqual([]);
+    world.at += 3600; // an hour later the same answer is no lag any more
+    await guardian.tick();
+    expect(feed.list({ kind: "refused" })[0]).toMatchObject({ error: { name: "WindowNotOver" }, data: { step: "settle", backoffUntil: world.at + REFUSAL_BACKOFF_SEC } });
+    expect(guardian.nextDelaySec()).toBe(GUARDIAN_TICK_SEC);
+  });
+
+  it("caps the back-off at a third of the time left before the job expires", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n, { status: "Submitted", expiredAt: world.at + 900 }));
+    sender.failing.set("settle", revert("NotSettleable"));
+    await guardian.tick();
+    expect(feed.list({ kind: "refused" })[0]?.data).toMatchObject({ backoffUntil: world.at + 300 });
+    world.at += 299;
+    await guardian.tick();
+    expect(sender.sims).toHaveLength(1);
+    world.at += 1;
+    await guardian.tick();
+    expect(sender.sims).toHaveLength(2);
+    // close to expiry the back-off never drops under a minute
+    expect(feed.list({ kind: "refused" })[0]?.data).toMatchObject({ backoffUntil: world.at + 200 });
+    world.at += 590;
+    sender.failing.delete("settle");
+    await guardian.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["settle"]);
+  });
+
+  it("defers its sends while the keeper has a shield to send, and tries again shortly", async () => {
+    const { world, sender, guardian, feed } = await setup();
+    world.jobs.set(101n, job(101n));
+    world.keeperBusy = true;
+    const r = await guardian.tick();
+    expect(r.submitted).toEqual([]);
+    expect(sender.sims).toEqual([]);
+    expect(sender.sent).toEqual([]);
+    expect(feed.list({ source: "guardian" })).toHaveLength(1);
+    expect(feed.list({ kind: "noop" })[0]).toMatchObject({ jobId: "101", reason: expect.stringMatching(/keeper/) });
+    expect(guardian.nextDelaySec()).toBe(QUICK_RETRY_SEC);
+    await guardian.tick();
+    expect(feed.list({ source: "guardian" })).toHaveLength(1); // the same wait is not recorded twice
+    world.keeperBusy = false;
+    const r2 = await guardian.tick();
+    expect(r2.settled).toEqual(["101"]);
+  });
+
+  it("stops between submit and settle when the keeper becomes busy", async () => {
+    const { world, sender, guardian } = await setup();
+    world.jobs.set(101n, job(101n));
+    const onSend = sender.onSend;
+    sender.onSend = (c) => {
+      onSend?.(c);
+      if (c.fn === "submit") world.keeperBusy = true;
+    };
+    const r = await guardian.tick();
+    expect(r.submitted).toEqual(["101"]);
+    expect(sender.sent.map((c) => c.fn)).toEqual(["submit"]);
+    world.keeperBusy = false;
+    await guardian.tick();
+    expect(sender.sent.map((c) => c.fn)).toEqual(["submit", "settle"]);
   });
 
   it("does not track or book jobs that are already final when first seen", async () => {

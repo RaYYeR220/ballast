@@ -16,7 +16,7 @@ import { deskPublicClient } from "./client";
 import { ConfigError, deskSecrets, loadConfig, type DeskConfig } from "./config";
 import { EARNINGS_CHECK_SEC, EarningsBuyer, mergedEarnings } from "./earnings";
 import { Feed } from "./feed";
-import { GUARDIAN_TICK_SEC, Guardian, GuardianState, chainGuardianReads } from "./guardian";
+import { Guardian, GuardianState, chainGuardianReads } from "./guardian";
 import { KEEPER_TICK_SEC, Keeper, chainKeeperReads } from "./keeper";
 import { Ledger, ledgerSender } from "./ledger";
 import { NOTES_TICK_SEC, NotesStore, NotesWorker, studioNoteModel } from "./notes";
@@ -294,7 +294,7 @@ export async function startDesk(env: Record<string, string | undefined> = proces
   const loops: Loop[] = [
     new Loop({ name: "publisher", run: () => publisher.tick(), delaySec: () => fork ?? publisherDelaySec(Math.floor(Date.now() / 1000)), firstDelaySec: 2, log }),
     new Loop({ name: "keeper", run: () => keeper.tick(), delaySec: every(KEEPER_TICK_SEC), firstDelaySec: 8, log }),
-    new Loop({ name: "guardian", run: () => guardian.tick(), delaySec: every(GUARDIAN_TICK_SEC), firstDelaySec: 14, log }),
+    new Loop({ name: "guardian", run: () => guardian.tick(), delaySec: () => fork ?? guardian.nextDelaySec(), firstDelaySec: 14, log }),
   ];
   if (buyer) loops.push(new Loop({ name: "earnings", run: () => buyer.tick(), delaySec: every(EARNINGS_CHECK_SEC), firstDelaySec: 20, log }));
   if (notes) loops.push(new Loop({ name: "notes", run: () => notes.tick(), delaySec: () => NOTES_TICK_SEC, firstDelaySec: 30, log }));

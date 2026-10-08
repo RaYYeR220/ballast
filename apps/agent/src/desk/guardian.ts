@@ -27,8 +27,17 @@ export const GUARDIAN_TICK_SEC = 600;
 /** Job ids scanned per call, and calls per tick (later ids wait for the next tick). */
 export const SCAN_LIMIT = 1000;
 export const MAX_SCAN_PAGES = 5;
-/** After a refused submit or settle (other than CannotEvaluateNow), leave the job alone this long. */
+/**
+ * After a contract revert on submit or settle (a deterministic refusal), leave the job alone this long, or a
+ * third of the time left before it expires if that is shorter (never under a minute).
+ */
 export const REFUSAL_BACKOFF_SEC = 30 * 60;
+const MIN_BACKOFF_SEC = 60;
+/** The next tick comes this soon after a send that was deferred, is still pending or failed for a passing reason. */
+export const QUICK_RETRY_SEC = 90;
+/** This long after our own submit, NotSettleable / WindowNotOver on settle is a node lagging behind it. */
+export const SUBMIT_LAG_SEC = 600;
+const LAGGING: ReadonlySet<string> = new Set(["NotSettleable", "WindowNotOver"]);
 /** A repeated identical wait (e.g. CannotEvaluateNow every loop) is re-recorded in the feed at most this often. */
 export const REPEAT_EVENT_SEC = 3600;
 const FINAL: ReadonlySet<GuardianJob["status"]> = new Set(["Completed", "Rejected", "Expired"]);
@@ -148,6 +157,8 @@ interface JobRecord {
   firstSeen: number;
   deliverable?: Hex;
   submitTx?: Hex;
+  /** Chain time of our own submit. */
+  submitAt?: number;
   settleTx?: Hex;
 }
 
@@ -240,6 +251,11 @@ export interface GuardianOptions {
   state: GuardianState;
   /** Data dir: evidence files go to <dataDir>/evidence/. */
   dataDir: string;
+  /**
+   * True while the keeper has a shield pending or planned in an active lead window. The desk has one key
+   * and one transaction slot: a shield goes first, guardian sends wait and are tried again shortly.
+   */
+  busy?: () => boolean;
   log?: (line: string) => void;
 }
 
@@ -258,14 +274,21 @@ export class Guardian {
   readonly #me: Address;
   readonly #backoff = new Map<string, number>();
   readonly #waits = new Map<string, { key: string; at: number }>();
+  #retrySoon = false;
 
   constructor(o: GuardianOptions) {
     this.#o = o;
     this.#me = o.sender.address;
   }
 
+  /** Seconds until the next tick: QUICK_RETRY_SEC after a deferred, pending or transiently failed send. */
+  nextDelaySec(): number {
+    return this.#retrySoon ? QUICK_RETRY_SEC : GUARDIAN_TICK_SEC;
+  }
+
   async tick(): Promise<GuardianReport> {
     const { reads, state, deployment } = this.#o;
+    this.#retrySoon = false;
     const at = await reads.now();
     const report: GuardianReport = { at, cursor: "0", head: "0", open: 0, submitted: [], settled: [], errors: [] };
 
@@ -366,6 +389,7 @@ export class Guardian {
   async #submit(job: GuardianJob, at: number, report: GuardianReport): Promise<boolean> {
     const { sender, deployment, state } = this.#o;
     const k = job.jobId.toString();
+    if (await this.#deferred(job, at)) return false;
     let ev: { hash: Hex; events: number };
     try {
       ev = await this.#evidence(job);
@@ -388,7 +412,7 @@ export class Guardian {
     const sent = await this.#broadcast(job, at, "submit", tx, sim, data);
     if (!sent) return false;
     const rec = state.jobs.get(k);
-    if (rec) Object.assign(rec, { deliverable: ev.hash, submitTx: sent.txHash });
+    if (rec) Object.assign(rec, { deliverable: ev.hash, submitTx: sent.txHash, submitAt: at });
     await state.save();
     report.submitted.push(k);
     await this.#event({ kind: "submit", job, sim, txHash: sent.txHash, reason: "window over: evidence submitted", data: { ...data, via: sent.via } });
@@ -453,6 +477,7 @@ export class Guardian {
     const { sender, deployment, state, reads } = this.#o;
     const k = job.jobId.toString();
     const tx = writes.settle(deployment, job.jobId);
+    if (await this.#deferred(job, at)) return;
     const sim = await sender.simulate(tx);
     if (!sim.ok) {
       if (sim.error?.name === "CannotEvaluateNow") {
@@ -460,6 +485,7 @@ export class Guardian {
         await this.#wait(job, at, "cannot-evaluate", { kind: "noop", job, sim, error: sim.error, reason: "account health cannot be read right now; settling on a later loop" });
         return;
       }
+      if (await this.#lagging(job, at, sim, sim.error)) return;
       await this.#refused(job, at, "settle", sim, sim.error);
       return;
     }
@@ -497,9 +523,11 @@ export class Guardian {
   }
 
   /**
-   * Sends a submit or settle and records every outcome that is not a mined success: a refusal (estimate
-   * revert, on-chain revert, broadcast failure), a wait (CannotEvaluateNow at estimate), a replacement
-   * (dropped: retried next loop) or a pending transaction (the next loop's job refresh shows whether it landed).
+   * Sends a submit or settle and records every outcome that is not a mined success. Contract reverts (at
+   * estimate or on-chain) are refusals that back the job off. Everything that passes by itself is tried again
+   * in QUICK_RETRY_SEC with no back-off: a failed broadcast, a transaction replaced before it was mined, one
+   * still pending (the next refresh of the job shows whether it landed), CannotEvaluateNow, and a node that
+   * has not caught up with our own submit yet.
    */
   async #broadcast(job: GuardianJob, at: number, step: "submit" | "settle", tx: TxRequest, sim: FeedSim, data: Record<string, unknown> = {}): Promise<{ txHash: Hex; via: string } | null> {
     const k = job.jobId.toString();
@@ -507,29 +535,35 @@ export class Guardian {
     try {
       sent = await this.#o.sender.send(tx);
     } catch (err) {
-      await this.#refused(job, at, step, sim, { name: "BroadcastFailed", message: safeMessage(err) });
+      await this.#failedSend(job, step, sim, { name: "BroadcastFailed", message: safeMessage(err) });
       return null;
     }
     if (!sent.ok) {
-      if (sent.stage === "estimate" && sent.error.name === "CannotEvaluateNow") {
+      if (sent.stage !== "estimate") {
+        await this.#failedSend(job, step, sim, { name: "Aborted", message: `${step} was not sent` });
+        return null;
+      }
+      if (sent.error.name === "CannotEvaluateNow") {
         await this.#wait(job, at, "cannot-evaluate", { kind: "noop", job, sim, error: sent.error, reason: "account health cannot be read right now; settling on a later loop" });
         return null;
       }
-      await this.#refused(job, at, step, sim, sent.stage === "estimate" ? sent.error : { name: "Aborted", message: `${step} was not sent` });
+      if (step === "settle" && (await this.#lagging(job, at, sim, sent.error))) return null;
+      await this.#refused(job, at, step, sim, sent.error);
       return null;
     }
     const rec = this.#o.state.jobs.get(k);
     if (sent.status === "pending") {
       if (rec) {
-        if (step === "submit") rec.submitTx = sent.txHash;
+        if (step === "submit") Object.assign(rec, { submitTx: sent.txHash, submitAt: at });
         else rec.settleTx = sent.txHash;
       }
       await this.#o.state.save();
+      this.#retrySoon = true;
       await this.#event({ kind: "pending", job, sim, txHash: sent.txHash, reason: `${step} sent but not mined yet; the next loop reads the job again`, data: { ...data, step, nonce: sent.nonce } });
       return null;
     }
     if (sent.status === "dropped") {
-      await this.#refused(job, at, step, sim, { name: "Dropped", message: `${step} was replaced before it was mined` }, sent.txHash, 0);
+      await this.#failedSend(job, step, sim, { name: "Dropped", message: `${step} was replaced before it was mined` }, sent.txHash);
       return null;
     }
     if (sent.status === "reverted") {
@@ -588,12 +622,42 @@ export class Guardian {
     this.#waits.delete(k);
   }
 
-  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim | undefined, error: FeedError | undefined, txHash?: Hex, backoffSec = REFUSAL_BACKOFF_SEC) {
+  /** A deterministic refusal (a contract revert, evidence that does not belong): recorded, and the job backs off. */
+  async #refused(job: GuardianJob, at: number, step: "submit" | "settle", sim: FeedSim | undefined, error: FeedError | undefined, txHash?: Hex) {
     const k = job.jobId.toString();
+    // Never sleep through the expiry: a third of the time left leaves room for more attempts.
+    const backoffSec = Math.max(MIN_BACKOFF_SEC, Math.min(REFUSAL_BACKOFF_SEC, Math.floor((job.expiredAt - at) / 3)));
     this.#backoff.set(k, at + backoffSec);
     this.#waits.delete(k);
     const e = error ?? { name: "SimulationFailed", message: `${step} simulation failed` };
     await this.#event({ kind: "refused", job, ...(sim ? { sim } : {}), error: e, reason: `${step}: ${e.message}`, ...(txHash ? { txHash } : {}), data: { step, backoffUntil: at + backoffSec } });
+  }
+
+  /** A send that failed for a reason that passes by itself: recorded, tried again shortly, no back-off. */
+  async #failedSend(job: GuardianJob, step: "submit" | "settle", sim: FeedSim, error: FeedError, txHash?: Hex) {
+    this.#retrySoon = true;
+    this.#waits.delete(job.jobId.toString());
+    await this.#event({ kind: "refused", job, sim, error, reason: `${step}: ${error.message}; trying again shortly`, ...(txHash ? { txHash } : {}), data: { step, retryInSec: QUICK_RETRY_SEC } });
+  }
+
+  /** True (and a wait is recorded) while the keeper needs the key for a shield. */
+  async #deferred(job: GuardianJob, at: number): Promise<boolean> {
+    if (!this.#o.busy?.()) return false;
+    this.#retrySoon = true;
+    await this.#wait(job, at, "deferred", { kind: "noop", job, reason: "deferred: the keeper has a shield to send first; trying again shortly" });
+    return true;
+  }
+
+  /**
+   * True (and a wait is recorded) when settle answers NotSettleable or WindowNotOver shortly after our own
+   * submit: the node we read from has not caught up with it. Later than that the same answer is a refusal.
+   */
+  async #lagging(job: GuardianJob, at: number, sim: FeedSim, error: FeedError | undefined): Promise<boolean> {
+    const submitAt = this.#o.state.jobs.get(job.jobId.toString())?.submitAt;
+    if (!error || !LAGGING.has(error.name) || submitAt === undefined || at - submitAt > SUBMIT_LAG_SEC) return false;
+    this.#retrySoon = true;
+    await this.#wait(job, at, `lagging:${error.name}`, { kind: "noop", job, sim, error, reason: `settle is not possible yet right after the submit (${error.name}); trying again shortly` });
+    return true;
   }
 
   /** Records a waiting event, re-recording an identical one at most every REPEAT_EVENT_SEC. */
