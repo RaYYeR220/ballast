@@ -133,9 +133,16 @@ function chain(err: unknown): Chained[] {
   return out;
 }
 
-/** viem's "not found" errors for a transaction or its receipt (any other failure is real). */
+/** viem's two "the node does not have it" errors: for a transaction, and for a receipt. */
+const NOT_FOUND_ERRORS: ReadonlySet<string> = new Set(["TransactionNotFoundError", "TransactionReceiptNotFoundError"]);
+
+/**
+ * True only for a missing transaction or receipt. Every other failure is real, also the ones that merely
+ * have "NotFound" in their name (a node that does not serve the method, a missing block): reading those as
+ * "not there" would make a live transaction look dropped.
+ */
 function isNotFound(err: unknown): boolean {
-  return chain(err).some((e) => typeof e.name === "string" && /NotFound/.test(e.name));
+  return chain(err).some((e) => typeof e.name === "string" && NOT_FOUND_ERRORS.has(e.name));
 }
 
 /**

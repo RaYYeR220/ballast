@@ -656,6 +656,34 @@ describe("ChainSender: halting", () => {
     expect(s.state().outstanding).toMatchObject({ nonce: 7 });
   });
 
+  it("reads only a missing transaction or receipt as not found: any other lookup failure is an error", async () => {
+    const node = new Node();
+    const client = node.client();
+    const hash = `0x${"ab".repeat(32)}` as Hex;
+    let receiptError = "TransactionReceiptNotFoundError";
+    let txError = "TransactionNotFoundError";
+    const odd = {
+      ...client,
+      getTransactionReceipt: async () => {
+        throw named(receiptError, `the lookup failed (${receiptError})`);
+      },
+      getTransaction: async () => {
+        throw named(txError, `the lookup failed (${txError})`);
+      },
+    } as unknown as SenderClient;
+    const s = sender(node, { client: odd });
+    // Really not there: no receipt, no node knows it, nothing pending at its nonce: dropped.
+    expect(await s.confirm(hash, node.latest)).toEqual({ status: "dropped" });
+    // A node that does not serve the call (or any other failure with "NotFound" in its name) is not an answer.
+    for (const name of ["MethodNotFoundRpcError", "BlockNotFoundError", "ResourceNotFoundRpcError"]) {
+      receiptError = name;
+      await expect(s.confirm(hash, node.latest), name).rejects.toThrow(/the lookup failed/);
+    }
+    receiptError = "TransactionReceiptNotFoundError";
+    txError = "MethodNotFoundRpcError";
+    await expect(s.confirm(hash, node.latest)).rejects.toThrow(/the lookup failed/);
+  });
+
   it("never picks a nonce below the highest one it has seen mined", async () => {
     const node = new Node();
     const client = node.client();
