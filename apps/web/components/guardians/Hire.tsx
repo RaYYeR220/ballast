@@ -170,6 +170,7 @@ export function HireForm({ deployment: d, wallet, accounts, provider, minBudget,
           value={feeText}
           onChange={setFeeText}
           unit={account?.loanSymbol ?? ""}
+          decimals={account?.loanDecimals ?? 18}
           help={`Held in escrow by the ERC-8183 kernel. Paid to the guardian only if the loan survives the window; returned to you otherwise.${minBudget !== null && account ? ` Minimum ${units(minBudget, account.loanDecimals, 4)} ${account.loanSymbol}.` : ""}`}
         />
       </div>
