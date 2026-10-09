@@ -11,7 +11,7 @@ import s from "./app.module.css";
 export const SECTIONS = [
   { href: "/app", label: "Dashboard", ready: true },
   { href: "/oracle", label: "Session Oracle", ready: true },
-  { href: "/guardians", label: "Guardians", ready: false },
+  { href: "/guardians", label: "Guardians", ready: true },
 ] as const;
 
 function SectionLinks({ current }: { current: string }) {
