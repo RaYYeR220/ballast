@@ -4,13 +4,13 @@
     {
       "id": "typescript",
       "name": "TypeScript",
-      "covers": "SDK, risk model, Binance client, MCP server, desk",
+      "covers": "SDK, risk model, Binance client, MCP server, desk, web app, demo scripts",
       "command": "pnpm test",
-      "passed": 499,
+      "passed": 987,
       "failed": 0,
       "skipped": 2,
-      "ranAt": "2026-10-08",
-      "note": "33 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set."
+      "ranAt": "2026-10-09",
+      "note": "54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set."
     },
     {
       "id": "contracts-unit",

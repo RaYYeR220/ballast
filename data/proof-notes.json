@@ -1,0 +1,3 @@
+[
+  "The desk's own audit feed for 2026-10-08 18:07 to 20:02 UTC is wrong about its first 11 overlay posts (nonces 2 to 12 of the desk key): it recorded them as dropped although every one was mined. The sender read a receipt that lagged behind the nonce on a load-balanced RPC as a nonce lost to someone else. Nothing on chain was affected. Fixed in the commit \"Wait for receipts that lag behind the nonce\"; the feed of that period is archived on the desk host and is not what the read API serves."
+]

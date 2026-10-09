@@ -1,6 +1,8 @@
 // Renders PROOF.md from data files:
 //   contracts/deployments/56.json   addresses written by the mainnet deploy script (absent until it has run)
-//   data/proof-txs.json             mainnet transactions, added by hand as they happen: { label, txHash, at, note }[]
+//   data/proof-txs.json             mainnet transactions, appended by scripts/demo/mainnet.ts or by hand:
+//                                   { label, txHash, at, note, step, chainId }[] (other fields are ignored)
+//   data/proof-notes.json           optional: sentences shown under the transactions (corrections, incidents)
 //   data/test-counts.json           test results, updated by hand after each full run
 //   config/bsc-mainnet.json         the existing mainnet contracts Ballast calls
 //   contracts/test                  the test functions the counts and the proof table refer to
@@ -10,7 +12,7 @@
 //   pnpm proof             # write PROOF.md
 //   pnpm proof --check     # exit 1 when PROOF.md is not what the data renders
 //
-// Paths can be overridden for a dry run: --deployment <file> --txs <file> --counts <file> --out <file>.
+// Paths can be overridden for a dry run: --deployment <file> --txs <file> --notes <file> --counts <file> --out <file>.
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -90,6 +92,8 @@ export interface ProofTx {
   txHash: string;
   at: string;
   note: string;
+  /** Step of the recorded cycle this transaction matches (data/README.md), or "". */
+  step: string;
 }
 
 export interface Suite {
@@ -107,6 +111,8 @@ export interface Suite {
 export interface ProofInput {
   deployment: Deployment | null;
   txs: ProofTx[];
+  /** Sentences shown under the transactions. */
+  notes: string[];
   suites: Suite[];
   external: { name: string; address: string }[];
   /** Test functions found in contracts/test (unit) and contracts/test/fork, per file. */
@@ -146,7 +152,9 @@ export function parseTxs(json: unknown, where: string): ProofTx[] {
   const seen = new Set<string>();
   const out = json.map((raw, i): ProofTx => {
     const at = `${where}[${i}]`;
-    if (!isObject(raw)) throw new Error(`${at}: expected { label, txHash, at, note }`);
+    if (!isObject(raw)) throw new Error(`${at}: expected { label, txHash, at, note, step, chainId }`);
+    if (raw.chainId !== undefined && raw.chainId !== CHAIN_ID) throw new Error(`${at}: chainId ${String(raw.chainId)} is not BSC mainnet (${CHAIN_ID}); only mainnet transactions belong here`);
+    if (raw.step !== undefined && typeof raw.step !== "string") throw new Error(`${at}: "step" must be a string`);
     const txHash = typeof raw.txHash === "string" ? raw.txHash : "";
     if (!TX_HASH.test(txHash)) throw new Error(`${at}: "txHash" is not a transaction hash (0x and 64 hex digits)`);
     if (seen.has(txHash.toLowerCase())) throw new Error(`${at}: the transaction ${txHash} is listed twice`);
@@ -154,9 +162,14 @@ export function parseTxs(json: unknown, where: string): ProofTx[] {
     const when = typeof raw.at === "string" ? raw.at : "";
     if (!ISO_UTC.test(when) || Number.isNaN(Date.parse(when))) throw new Error(`${at}: "at" must be a UTC time such as 2026-10-09T19:02:11Z`);
     if (raw.note !== undefined && typeof raw.note !== "string") throw new Error(`${at}: "note" must be a string`);
-    return { label: text(raw.label, `${at}: "label"`), txHash, at: when, note: (raw.note ?? "").trim() };
+    return { label: text(raw.label, `${at}: "label"`), txHash, at: when, note: (raw.note ?? "").trim(), step: (raw.step ?? "").trim() };
   });
   return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+export function parseNotes(json: unknown, where: string): string[] {
+  if (!Array.isArray(json) || json.some((n) => typeof n !== "string" || n.trim() === "")) throw new Error(`${where}: expected a list of sentences`);
+  return json.map((n) => (n as string).trim());
 }
 
 export function parseSuites(json: unknown, where: string): Suite[] {
@@ -199,7 +212,10 @@ function testFunctions(dir: string): Record<string, string[]> {
 
 // ------------------------------------------------------------------ render
 
-const cell = (s: string) => s.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+/** One table cell: one line, pipes escaped, anything outside printable ASCII replaced (labels come from scripts). */
+const cell = (s: string) => s.replace(/\s+/g, " ").replace(/[^\x20-\x7e]/g, "?").replace(/\|/g, "\\|").trim();
+/** A transaction that was sent to fail: the refused restore of the cycle. It is mined and reverts by design. */
+const revertsOnPurpose = (t: ProofTx) => t.step === "restore-refused" || /^refused restore/i.test(t.label);
 const addressLink = (a: string) => `[\`${a}\`](${EXPLORER}/address/${a}#code)`;
 const txLink = (h: string) => `[\`${h.slice(0, 10)}...${h.slice(-8)}\`](${EXPLORER}/tx/${h})`;
 const utc = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
@@ -233,7 +249,8 @@ export function renderProof(i: ProofInput): string {
     "| Source | What it holds |",
     "|---|---|",
     "| `contracts/deployments/56.json` | addresses written by the mainnet deploy script |",
-    "| `data/proof-txs.json` | mainnet transactions, added by hand as they happen |",
+    "| `data/proof-txs.json` | mainnet transactions, appended by `scripts/demo/mainnet.ts` as it sends them, or by hand |",
+    "| `data/proof-notes.json` | corrections and incidents, shown under the transactions |",
     "| `data/test-counts.json` | test results, updated by hand after each full run |",
     "| `config/bsc-mainnet.json` | the existing mainnet contracts Ballast calls |",
     "",
@@ -269,8 +286,13 @@ export function renderProof(i: ProofInput): string {
   if (i.txs.length === 0) {
     p("No mainnet transactions are recorded yet. `data/proof-txs.json` is empty.", "");
   } else {
-    p("| When | What | Transaction | Note |", "|---|---|---|---|");
-    for (const t of i.txs) p(`| ${utc(t.at)} | ${cell(t.label)} | ${txLink(t.txHash)} | ${cell(t.note)} |`);
+    p("| When | What | Transaction | Expected | Note |", "|---|---|---|---|---|");
+    for (const t of i.txs) p(`| ${utc(t.at)} | ${cell(t.label)} | ${txLink(t.txHash)} | ${revertsOnPurpose(t) ? "revert, on purpose" : "success"} | ${cell(t.note)} |`);
+    p("", "A revert on purpose is a restore sent while the Session Oracle refuses added risk: the transaction is mined, fails with `RestoreRefused` and moves nothing. The Expected column comes from the entry, not from the chain: the link shows what happened.", "");
+  }
+  if (i.notes.length > 0) {
+    p("Notes:", "");
+    for (const n of i.notes) p(`- ${cell(n)}`);
     p("");
   }
 
@@ -338,6 +360,7 @@ function main(argv: string[]): void {
   };
   const deploymentFile = flag("--deployment", `contracts/deployments/${CHAIN_ID}.json`);
   const txsFile = flag("--txs", "data/proof-txs.json");
+  const notesFile = flag("--notes", "data/proof-notes.json");
   const countsFile = flag("--counts", "data/test-counts.json");
   const outFile = flag("--out", "PROOF.md");
   const rel = (f: string) => path.relative(ROOT, f).replace(/\\/g, "/");
@@ -346,6 +369,7 @@ function main(argv: string[]): void {
   const input: ProofInput = {
     deployment: existsSync(deploymentFile) ? parseDeployment(readJson(deploymentFile), rel(deploymentFile)) : null,
     txs: parseTxs(readJson(txsFile), rel(txsFile)),
+    notes: existsSync(notesFile) ? parseNotes(readJson(notesFile), rel(notesFile)) : [],
     suites: parseSuites(readJson(countsFile), rel(countsFile)),
     external: EXTERNAL.map(([dotted, name]) => ({ name, address: configAddress(config, dotted) })),
     tests: { unit: testFunctions(path.join(ROOT, "contracts", "test")), fork: testFunctions(path.join(ROOT, "contracts", "test", "fork")) },

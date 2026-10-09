@@ -5,7 +5,8 @@ This page is written by `pnpm proof` from the data files below. To change it, ch
 | Source | What it holds |
 |---|---|
 | `contracts/deployments/56.json` | addresses written by the mainnet deploy script |
-| `data/proof-txs.json` | mainnet transactions, added by hand as they happen |
+| `data/proof-txs.json` | mainnet transactions, appended by `scripts/demo/mainnet.ts` as it sends them, or by hand |
+| `data/proof-notes.json` | corrections and incidents, shown under the transactions |
 | `data/test-counts.json` | test results, updated by hand after each full run |
 | `config/bsc-mainnet.json` | the existing mainnet contracts Ballast calls |
 
@@ -37,22 +38,28 @@ BSC_RPC_URL=<rpc> pnpm verify:onchain
 
 ## 2. Mainnet transactions
 
-| When | What | Transaction | Note |
-|---|---|---|---|
-| 2026-10-08 17:43 UTC | Desk agent registered in the ERC-8004 identity registry (agentId 368122) | [`0x751156e3...6dc37d47`](https://bscscan.com/tx/0x751156e36180eb7fd6e46c990df0470b645c5959de352efd6a05a4b16dc37d47) | register() from the desk key 0xccD7f069275549793b2A8804A5691fCa6665D152 |
-| 2026-10-08 17:43 UTC | Desk agent registration file written (setAgentURI) | [`0x7384932d...800a582d`](https://bscscan.com/tx/0x7384932d77c88a9231e8a29d5483efdb69fea2844cbbae7a8221ab21800a582d) | second step of the registration: the URI now names agentId 368122 |
-| 2026-10-08 17:50 UTC | First deployment transaction: SessionCalendar | [`0x46fbea5b...0d5a949f`](https://bscscan.com/tx/0x46fbea5bf2ba4053a700d17e1e520dd3b7b73c10ff30a1459f47be910d5a949f) | first of the 31 transactions of the deploy script; all eight contracts are exact matches on Sourcify (checked 2026-10-08) |
-| 2026-10-08 18:07 UTC | First Session Oracle overlay posted by the desk | [`0x95177e85...fd432368`](https://bscscan.com/tx/0x95177e85cae6071af68b7d6a11735c0515529352595a8b418cce3606fd432368) | postOverlays from the publisher key, which is the desk agent |
+| When | What | Transaction | Expected | Note |
+|---|---|---|---|---|
+| 2026-10-08 17:43 UTC | Desk agent registered in the ERC-8004 identity registry (agentId 368122) | [`0x751156e3...6dc37d47`](https://bscscan.com/tx/0x751156e36180eb7fd6e46c990df0470b645c5959de352efd6a05a4b16dc37d47) | success | register() from the desk key 0xccD7f069275549793b2A8804A5691fCa6665D152 |
+| 2026-10-08 17:43 UTC | Desk agent registration file written (setAgentURI) | [`0x7384932d...800a582d`](https://bscscan.com/tx/0x7384932d77c88a9231e8a29d5483efdb69fea2844cbbae7a8221ab21800a582d) | success | second step of the registration: the URI now names agentId 368122 |
+| 2026-10-08 17:50 UTC | First deployment transaction: SessionCalendar | [`0x46fbea5b...0d5a949f`](https://bscscan.com/tx/0x46fbea5bf2ba4053a700d17e1e520dd3b7b73c10ff30a1459f47be910d5a949f) | success | first of the 31 transactions of the deploy script; all eight contracts are exact matches on Sourcify (checked 2026-10-08) |
+| 2026-10-08 18:07 UTC | First Session Oracle overlay posted by the desk | [`0x95177e85...fd432368`](https://bscscan.com/tx/0x95177e85cae6071af68b7d6a11735c0515529352595a8b418cce3606fd432368) | success | postOverlays from the publisher key, which is the desk agent |
+
+A revert on purpose is a restore sent while the Session Oracle refuses added risk: the transaction is mined, fails with `RestoreRefused` and moves nothing. The Expected column comes from the entry, not from the chain: the link shows what happened.
+
+Notes:
+
+- The desk's own audit feed for 2026-10-08 18:07 to 20:02 UTC is wrong about its first 11 overlay posts (nonces 2 to 12 of the desk key): it recorded them as dropped although every one was mined. The sender read a receipt that lagged behind the nonce on a load-balanced RPC as a nonce lost to someone else. Nothing on chain was affected. Fixed in the commit "Wait for receipts that lag behind the nonce"; the feed of that period is archived on the desk host and is not what the read API serves.
 
 ## 3. Tests
 
 | Suite | Covers | Passed | Failed | Skipped | Last full run | Command |
 |---|---|---|---|---|---|---|
-| TypeScript | SDK, risk model, Binance client, MCP server, desk | 499 | 0 | 2 | 2026-10-08 | `pnpm test` |
+| TypeScript | SDK, risk model, Binance client, MCP server, desk, web app, demo scripts | 987 | 0 | 2 | 2026-10-09 | `pnpm test` |
 | Contracts, unit | calendar, Session Oracle, SessionAwareFeed | 57 | 0 | 0 | 2026-10-08 | `cd contracts && forge test --no-match-path "test/fork/*"` |
 | Contracts, fork of BSC mainnet | accounts, vault, guardian, feed against real mainnet state | 99 | 0 | 0 | 2026-10-08 | `cd contracts && forge test --match-path "test/fork/*"` |
 
-- TypeScript: 33 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set.
+- TypeScript: 54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set.
 - Contracts, unit: External contracts are mocks here (contracts/test/mocks/Mocks.sol).
 - Contracts, fork of BSC mainnet: Last full fork run. Forked at the chain head (no pinned block) through the default public RPC, https://bsc-rpc.publicnode.com.
 
