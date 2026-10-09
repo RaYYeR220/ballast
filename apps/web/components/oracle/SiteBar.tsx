@@ -11,6 +11,7 @@ import s from "@/components/app/app.module.css";
 export const SITE_SECTIONS = [
   { href: "/app", label: "Dashboard" },
   { href: "/oracle", label: "Session Oracle" },
+  { href: "/evidence", label: "Evidence" },
   { href: "/judge", label: "Replay" },
 ] as const;
 
