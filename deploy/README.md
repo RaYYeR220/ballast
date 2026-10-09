@@ -75,6 +75,34 @@ Every variable is documented in the file. For mainnet set at least `CHAIN_ID=56`
 signer and `WEB_ORIGIN`; `DATA_DIR=/var/lib/ballast` and `DX_PROBE_FILE` are pre-filled. Leave `DRY_RUN`
 unset (true) for the first start, read the feed, then set `DRY_RUN=false`.
 
+**The RPC endpoint must serve receipts and accept batched calls.** The desk learns what became of a
+transaction from `eth_getTransactionReceipt`, and it reads the chain in JSON-RPC batches of `eth_call`.
+An endpoint that fails either one looks healthy until the desk sends something. Two failure signatures,
+both seen on public BSC endpoints:
+
+- `https://bsc-rpc.publicnode.com` accepts batches but answers `eth_getTransactionReceipt` with **HTTP 403**
+  and `{"code":-32602,"message":"Archive requests require a personal token. ..."}`, even for a transaction
+  mined a second ago. The desk then cannot confirm anything it sends: on its first day on mainnet it
+  recorded mined overlay posts as dropped or pending for that reason (the note in `PROOF.md`).
+- The `bsc-dataseed` endpoints serve receipts but can answer a batch with
+  `{"code":-32005,"message":"method eth_call in batch triggered rate limit"}`. Reads then fail in bursts.
+
+Use a provider endpoint that does both, and test it before the first start. `<rpc>` is the endpoint,
+`<hash>` any recent transaction hash from a block explorer:
+
+```bash
+# must return a receipt, not an error
+curl -s -X POST -H 'content-type: application/json' <rpc> \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getTransactionReceipt","params":["<hash>"]}'
+# must return two results, not an error (the call is SessionOracle.owner() on chain 56)
+curl -s -X POST -H 'content-type: application/json' <rpc> \
+  -d '[{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388","data":"0x8da5cb5b"},"latest"]},{"jsonrpc":"2.0","id":2,"method":"eth_call","params":[{"to":"0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388","data":"0x8da5cb5b"},"latest"]}]'
+```
+
+A rate limit on batches shows under load, so a pass of the second check is necessary, not sufficient:
+watch the desk's log for `-32005` in the first hour. The MCP server and the web app only read, so an
+endpoint that refuses receipts is fine for them as long as it accepts batches.
+
 The desk refuses to start when `DATA_DIR` is not writable (it test-writes at startup and exits non-zero),
 when `HTTP_HOST` or `AGENT_BIND_HOST` is not loopback on chain 56, when the RPC or the paid-data URL is
 plain http on chain 56, and when `guardian.json` in `DATA_DIR` was written for another chain or guardian.
