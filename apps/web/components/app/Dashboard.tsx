@@ -2,6 +2,7 @@
 /* /app: the user's week. Loan figures come from the chain through the app's routes, the
    watch log, refusals and notes from the desk agent's feed, the clock and countdown from the NYSE calendar.
    When a source is missing the panel says so; nothing is filled in. */
+import Link from "next/link";
 import { session } from "@ballast/risk";
 import { parseDeployment } from "@ballast/sdk";
 import { useQueryClient } from "@tanstack/react-query";
@@ -235,7 +236,9 @@ export function Dashboard({ config }: { config: AppConfig }) {
             {body?.status === "ok" ? `Loan figures read from ${chainName} at block ${body.blockNumber}. ` : ""}
             The faint stars on the wheel are the real Lista bStock liquidations since June.
           </span>
-          <span>{chainName}</span>
+          <span>
+            <Link href="/evidence">Evidence</Link> | <Link href="/judge">For judges: replay the cycle</Link> | {chainName}
+          </span>
         </div>
       </main>
     </div>

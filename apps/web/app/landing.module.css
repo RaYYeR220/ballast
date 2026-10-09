@@ -45,6 +45,8 @@
 .fact span { display: block; margin-top: var(--s-2); color: var(--text-2); max-width: 40ch; }
 .evsky { width: 100%; height: auto; display: block; overflow: visible; }
 .charts { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--s-6); margin-top: var(--s-7); }
+.more { margin-top: var(--s-5); }
+.more a { color: var(--c-100); text-underline-offset: 3px; }
 .chart h3 { font: 500 26px/1.15 var(--f-display); }
 .chart p.sub { color: var(--text-2); font-size: var(--t-sm); margin-top: 6px; max-width: 56ch; }
 .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: var(--s-3); font-size: 13px; color: var(--text-2); }

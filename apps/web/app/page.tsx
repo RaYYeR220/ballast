@@ -138,6 +138,9 @@ export default function Landing() {
                 <GapBars />
               </div>
             </div>
+            <p className={s.more}>
+              <Link href="/evidence">See the full measurement</Link>
+            </p>
           </div>
         </section>
 
@@ -362,7 +365,8 @@ export default function Landing() {
           </div>
           <div>
             <h3>Proof</h3>
-            <a href="#evidence">Evidence</a>
+            <Link href="/evidence">Evidence</Link>
+            <Link href="/judge">For judges: replay the cycle</Link>
             <FootLink href={LINKS.contracts}>Contracts on BscScan</FootLink>
             <FootLink href={LINKS.notebook}>Data notebook</FootLink>
           </div>
