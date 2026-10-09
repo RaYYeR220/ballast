@@ -150,5 +150,13 @@
     "note": "BallastGuardian evaluated the account as healthy and not liquidated; ERC-8004 reputation feedback written",
     "step": "job-settle",
     "chainId": 56
+  },
+  {
+    "label": "Desk shields the account 56 minutes before the weekend close: shieldRepay(0.18017 USDT) from the cushion",
+    "txHash": "0x5a95ef60855620aa19156eccb223f1ad603df97d399e626de6828265b72104e5",
+    "at": "2026-10-09T19:03:48Z",
+    "note": "sent by the desk agent on its own; debt 3.0101 to 2.8299 USDT, LTV 53.95% to 50.60%, health after a 5.51% weekend gap 1.30 (the desk's target); simulated through the Binance Transaction API before sending",
+    "step": "shield",
+    "chainId": 56
   }
 ]
