@@ -1,8 +1,10 @@
 import { bscExternal } from "@ballast/sdk";
 import type { Metadata, Viewport } from "next";
 import { GuardianBoard } from "@/components/guardians/GuardianBoard";
+import type { AppConfig } from "@/lib/app-config";
 import type { GuardiansBody } from "@/lib/guardians";
 import { deployment, env, publicClient } from "@/lib/server/context";
+import { deploymentInfo } from "@/lib/server/deployment";
 import { withDeadline } from "@/lib/server/guard";
 import { handleGuardians } from "@/lib/server/handlers/guardians";
 
@@ -21,12 +23,14 @@ const FIRST_PAINT_MS = 3500;
 
 export default async function GuardiansPage() {
   const e = env();
+  const d = deployment(e);
+  const config: AppConfig = { chainId: e.chainId, deployment: deploymentInfo(d), deskAgent: e.deskAgent, deskConfigured: e.agentApiUrl !== null, localRpcUrl: e.localRpcUrl };
   let initial: GuardiansBody | null = null;
   try {
-    const res = await withDeadline(handleGuardians(deployment(e), publicClient(e), bscExternal()), FIRST_PAINT_MS);
+    const res = await withDeadline(handleGuardians(d, publicClient(e), bscExternal()), FIRST_PAINT_MS);
     if (res.ok) initial = (await res.json()) as GuardiansBody;
   } catch {
     initial = null;
   }
-  return <GuardianBoard initial={initial} serverNow={Math.floor(Date.now() / 1000)} />;
+  return <GuardianBoard initial={initial} serverNow={Math.floor(Date.now() / 1000)} config={config} />;
 }

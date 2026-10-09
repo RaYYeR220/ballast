@@ -26,9 +26,14 @@
 
 .scroll { overflow-x: auto; }
 
+.terms { display: grid; gap: 8px; font-size: 14.5px; max-width: 86ch; }
+.terms > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 16px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; }
+.terms dt { color: var(--text-2); font-size: 14px; }
+
 @media (max-width: 900px) {
   .kpi b { font-size: 30px; }
   .kpis { grid-template-columns: 1fr 1fr; }
   .scroll table { min-width: 780px; }
   .flowtext { grid-template-columns: 1fr 1fr; }
+  .terms > div { grid-template-columns: 1fr; gap: 2px; }
 }

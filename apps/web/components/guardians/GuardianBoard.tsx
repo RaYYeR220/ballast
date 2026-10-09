@@ -1,10 +1,13 @@
 "use client";
 /* /guardians: ERC-8183 jobs guarded by the Ballast guardian contract, read from BNB Chain, and the desk's
    ERC-8004 identity and record. With no jobs the board says so; nothing is listed that is not on chain. */
+import dynamic from "next/dynamic";
 import Link from "next/link";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
+import type { Address } from "viem";
 import { Wheel } from "@/components/planisphere/Wheel";
 import { ClockTag, SiteBar, SiteTabs, StatusPill, useJson, useNow } from "@/components/oracle/SiteBar";
+import type { AppConfig } from "@/lib/app-config";
 import { nyDayTime, shortHex } from "@/lib/format";
 import { boardTotals, budgetText, jobState, type GuardiansBody, type JobTone, type JobView, type ReputationView } from "@/lib/guardians";
 import { DESK_ADDRESS, DESK_AGENT_ID, identityUrl, scanAddress, type IdentityView } from "@/lib/identity";
@@ -13,6 +16,9 @@ import { angleOf, polar, r2, rotationFor } from "@/lib/planisphere/geometry";
 import { hourOfWeek, mondayOf, tsOfHour, weekSectors } from "@/lib/planisphere/sessions";
 import a from "@/components/app/app.module.css";
 import s from "./guardians.module.css";
+
+/* the hiring form brings the wallet stack with it: fetched only when someone opens it */
+const Hire = dynamic(() => import("./Hire"), { ssr: false, loading: () => <p className={a.muted}>Loading the hiring form.</p> });
 
 const TONE: Record<JobTone, string> = { live: a.live ?? "", ok: a.ok ?? "", no: a.no ?? "", idle: "" };
 const ARC: Record<JobTone, { color: string; opacity: number }> = { live: { color: "#3ef0b5", opacity: 1 }, ok: { color: "#3ef0b5", opacity: 0.45 }, no: { color: "#ff9f80", opacity: 1 }, idle: { color: "#bac7df", opacity: 0.9 } };
@@ -286,6 +292,42 @@ function Roster({ identity, reputation, jobs }: { identity: IdentityView | null;
   );
 }
 
+function HirePanel({ config, body, now }: { config: AppConfig; body: GuardiansBody | null; now: number }) {
+  const [open, setOpen] = useState(false);
+  const ok = body?.status === "ok" ? body : null;
+  const provider = ok ? ((ok.identity.wallet ?? ok.identity.owner) as Address | null) : null;
+  return (
+    <section className={`${a.panel} ${a.span12}`} aria-label="Hire a guardian">
+      <div className={a.ph}>
+        <div>
+          <h2>Hire a guardian</h2>
+          <p className={a.sub}>For the owner of a Ballast credit line: post a job for the coming closure and escrow the fee. Every step is simulated before your wallet is asked.</p>
+        </div>
+      </div>
+      {open && ok ? (
+        <Hire config={config} provider={provider} minBudget={ok.minBudget} now={now} />
+      ) : (
+        <div className={a.empty}>
+          {ok ? (
+            <>
+              <p>
+                The guardian on offer is the Ballast desk, ERC-8004 agent {DESK_AGENT_ID.toString()}. It is paid only if your loan is not liquidated and is healthy when the window ends; otherwise the fee comes back to you.
+              </p>
+              <div className={a.actions}>
+                <button type="button" className={a.btn} onClick={() => setOpen(true)}>
+                  Open the hiring form
+                </button>
+              </div>
+            </>
+          ) : (
+            <p>{body === null ? "Reading BNB Chain." : body.status === "not-deployed" ? "Jobs can be posted once the guardian contract is deployed on this chain." : "The chain could not be read, so no job can be prepared right now."}</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function HowItSettles({ minBudget }: { minBudget: string | null }) {
   const xs = [22, 322, 622, 922];
   return (
@@ -326,7 +368,7 @@ function HowItSettles({ minBudget }: { minBudget: string | null }) {
   );
 }
 
-export function GuardianBoard({ initial, serverNow }: { initial: GuardiansBody | null; serverNow: number }) {
+export function GuardianBoard({ initial, serverNow, config }: { initial: GuardiansBody | null; serverNow: number; config?: AppConfig }) {
   const now = useNow(serverNow);
   const first = useJson<GuardiansBody>("/api/guardians", initial, 20_000);
   const body = first.data;
@@ -362,6 +404,7 @@ export function GuardianBoard({ initial, serverNow }: { initial: GuardiansBody |
           <Jobs body={body} now={now} />
           <WindowsWheel jobs={jobs} now={now} />
           <Roster identity={identity} reputation={reputation} jobs={jobs} />
+          {config ? <HirePanel config={config} body={body} now={now} /> : null}
           <HowItSettles minBudget={body?.status === "ok" ? body.minBudget : null} />
         </div>
         <div className={a.foot}>
