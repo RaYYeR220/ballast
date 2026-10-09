@@ -150,7 +150,7 @@ describe("parseProofs", () => {
   it("matches the repository's proof file to the recording's steps", () => {
     const proofs = parseProofs(JSON.parse(readFileSync(path.resolve(__dirname, "..", "..", "..", "data", "proof-txs.json"), "utf8")));
     const r = parseReplay(cycleJson);
-    expect(proofsFor(r.steps[0]!, proofs).map((p) => p.tx)).toHaveLength(2);
+    expect(proofsFor(r.steps[0]!, proofs).map((p) => p.tx)).toHaveLength(3);
     expect(proofsFor(r.steps[1]!, proofs)).toHaveLength(1);
     // every key in the file is one a step asks for
     const wanted = new Set(r.steps.flatMap((s) => s.proofKeys));
