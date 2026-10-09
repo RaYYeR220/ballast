@@ -137,6 +137,8 @@ interface Step {
   usdt?: bigint;
   /** Broadcast through the Binance MEV-protected endpoint on mainnet (the swap). */
   mev?: boolean;
+  /** Does not depend on the steps before it, so a dry run can still simulate it. */
+  standalone?: boolean;
 }
 
 function explain(err: unknown): string {
@@ -151,7 +153,7 @@ async function run(ctx: Ctx, s: Step): Promise<boolean> {
   const { client, owner } = ctx;
   log(`\n> ${s.label}: ${s.note}`);
   log(`  to ${/^0x0{40}$/.test(s.tx.to) ? "(the account, once it exists)" : s.tx.to} data ${s.tx.data.slice(0, 10)}... (${(s.tx.data.length - 2) / 2} bytes)`);
-  if (ctx.ahead) {
+  if (ctx.ahead && !s.standalone) {
     log("  not simulated: it needs the steps above on-chain first (they run in order with --send)");
     return false;
   }
@@ -399,6 +401,7 @@ async function openVenus(ctx: Ctx) {
       label: "create the Ballast Venus account",
       tx: writes.createVenusAccount(d, { vCollateral: v.vCollateral, vDebt: v.vDebt, symbol: SYMBOL, keeper: ctx.keeper, mandate: MANDATE }),
       note: `vTSLAB collateral, vUSDT debt, keeper = the desk ${ctx.keeper}`,
+      standalone: true,
     });
     if (made) {
       account = await findAccount(ctx);
