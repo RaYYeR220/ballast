@@ -134,5 +134,21 @@
     "note": "job 56956: 0.0100 USD1 into escrow with the terms (account 0x64b08268efb8B266c43A1751dDbB91702CA925e3, 2026-10-09T15:14:12Z to 2026-10-09T16:14:12Z, agent 368122)",
     "chainId": 56,
     "step": "job-fund"
+  },
+  {
+    "label": "Desk submits the guardian evidence hash for job 56956 after the window",
+    "txHash": "0x3530d03e046adcc653495ab8bc6821405f3d43edfa5947df03d00663598a9c79",
+    "at": "2026-10-09T16:16:05Z",
+    "note": "sent by the desk agent; the evidence file is served at https://34-185-146-173.sslip.io/evidence/56956 and its keccak256 is the on-chain deliverable",
+    "step": "job-settle",
+    "chainId": 56
+  },
+  {
+    "label": "Desk settles guardian job 56956: the account survived the window, 0.01 USD1 paid to the desk",
+    "txHash": "0x598a78fc848ae61106cfc86de48c19b7c82e58bc59d6ffd11177ac83e3a54c9d",
+    "at": "2026-10-09T16:16:09Z",
+    "note": "BallastGuardian evaluated the account as healthy and not liquidated; ERC-8004 reputation feedback written",
+    "step": "job-settle",
+    "chainId": 56
   }
 ]
