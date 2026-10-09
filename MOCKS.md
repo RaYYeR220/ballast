@@ -129,6 +129,7 @@ No mocks.
 - The fork demo and the replay recorder cannot run against mainnet. `scripts/demo/mainnet.ts` is a dry run unless it is given `--send` and `--confirm-mainnet`, and it caps what it may spend.
 - `DRY_RUN`, which defaults to true, is not a mock: it simulates each real transaction and stops before sending it. Feed events from a dry run are marked `dryRun`. The live desk runs with `DRY_RUN=false`.
 - The live desk's settings differ from the defaults in one policy value: the target health after the gap is 1.30, not 1.05.
+- The live account is real and small: 5.60 USDT of TSLAB as collateral on Venus, a 0.01 USD1 guard job. Nothing about it is staged except its size and the conservative target above.
 - Desk notes come from a real language model when one is configured. They are commentary on events that already happened.
 
-Whether anything has actually run on mainnet is recorded in [PROOF.md](PROOF.md), and nowhere else.
+What has run on mainnet is recorded in [PROOF.md](PROOF.md), and nowhere else. On 2026-10-09 that is the deployment, the desk's registration and overlays, one Venus account, an owner-called restore, one guard job and the desk's shield before the weekend close. A refused restore and a restore sent by the desk are not in it.

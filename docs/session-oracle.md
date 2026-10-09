@@ -275,7 +275,7 @@ Every read of one call is pinned to one block, and `o.blockNumber` says which.
 
 ## From an agent: the MCP tools
 
-`packages/mcp` serves the same reads as MCP tools over stdio or Streamable HTTP. See the README for how to start it and `skill/SKILL.md` for the rules an agent should follow.
+`packages/mcp` serves the same reads as MCP tools over stdio or Streamable HTTP. A hosted instance is public at `https://34-185-146-173.sslip.io/mcp`: no key, read and plan only, rate limited. See the README for the client configuration and for how to start your own, and `skill/SKILL.md` for the rules an agent should follow.
 
 | Tool | Arguments | What you get |
 |---|---|---|

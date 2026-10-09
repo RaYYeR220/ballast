@@ -13,8 +13,26 @@ It is built for BNB Chain: bStock collateral on Lista Lending and Venus.
 | The study behind the numbers: scripts, data, a checker | [research/README.md](research/README.md) |
 | What is real and what is mocked | [MOCKS.md](MOCKS.md) |
 | To use the Session Oracle in your own protocol | [docs/session-oracle.md](docs/session-oracle.md) |
+| To call it from an agent, nothing to install | `https://34-185-146-173.sslip.io/mcp`, see [Public MCP endpoint](#public-mcp-endpoint) |
 
 The contracts are deployed on BSC mainnet, the desk is running against them and the app is at https://ballast-desk.vercel.app. Nothing in this README is a statement about mainnet beyond what PROOF.md lists as an address or a transaction.
+
+## Live on BNB Chain
+
+One real position went through the cycle on 2026-10-09. Times are UTC; every transaction is in [PROOF.md](PROOF.md), section 2.
+
+| When | Who | What |
+|---|---|---|
+| 13:37 | owner | [Buys TSLAB](https://bscscan.com/tx/0x04ed824f67ad208903c1e381e90a529b29bb283a2d9e317b11a1eb4acf460681) with 5.60 USDT through the Binance Trading API, submitted by Binance's MEV-protected broadcast. [Creates](https://bscscan.com/tx/0x44c4d80b90c3e427625ff39b25cc8502247966fbdcbeaeeea430e5b4b25a70f2) Ballast Venus account `0x64b08268efb8B266c43A1751dDbB91702CA925e3` with the desk as keeper, deposits the TSLAB and borrows 2.96 USDT into the cushion (LTV 53.36%). |
+| 15:08 | owner | [Calls `restore(0.05 USDT)`](https://bscscan.com/tx/0x5f6fb4c5e1bb366dfd45c22d292c219d3ac5d95f75d99ba4022d585d2902e49a) in the regular session, 98 minutes after the open. The Session Oracle answers `OK` and the borrow goes through. |
+| 15:09 | owner | [Funds guard job 56956](https://bscscan.com/tx/0x8188fe89d495e8810105e6e719db118416ef97aabcb880953d178cc7afb24af2) on the ERC-8183 kernel: 0.01 USD1 in escrow, the desk as guardian, window 15:14 to 16:14. |
+| 16:16 | desk | [Submits](https://bscscan.com/tx/0x3530d03e046adcc653495ab8bc6821405f3d43edfa5947df03d00663598a9c79) the hash of its [evidence file](https://34-185-146-173.sslip.io/evidence/56956) and [settles](https://bscscan.com/tx/0x598a78fc848ae61106cfc86de48c19b7c82e58bc59d6ffd11177ac83e3a54c9d) the job. The account survived the window: `BallastGuardian` pays the desk 0.01 USD1 and writes ERC-8004 feedback. |
+| 19:03 | desk | By itself, 56 minutes before the weekend close: [`shieldRepay(0.18017 USDT)`](https://bscscan.com/tx/0x5a95ef60855620aa19156eccb223f1ad603df97d399e626de6828265b72104e5) from the cushion. Debt 3.0101 to 2.8299 USDT, LTV 53.95% to 50.60%. The desk's next reading of the account: it survives TSLA's 5.51% weekend gap buffer at a health factor of 1.307, against a target of 1.30. |
+
+Two steps are not on mainnet yet, and nothing here claims them:
+
+- **A restore refused on a closed market.** Over the weekend the owner sends the same `restore` while New York is closed, so that it is mined and reverts with `RestoreRefused(NOT_REGULAR)`. PROOF.md will list it as a revert on purpose. Until it does, the refusal is shown on a fork (`forge test --match-test test_restore_refusedOnWeekend -vv`), and `canAddRisk` can be asked on mainnet at any time ([JUDGES.md](JUDGES.md)).
+- **The desk's own restore.** The contract lets a restore through only in the regular session and at least 90 minutes after the open. After Friday's shield that is Monday 12 October, 15:00 UTC, at the earliest, which is after the submission deadline. The desk borrowing back by itself on mainnet is therefore not part of this submission. The restore in the table was the owner's call; a keeper restore is shown on a fork.
 
 ## The measurement
 
@@ -39,7 +57,7 @@ Loans are not lost while the market is shut. Risk builds up while it is closed a
 
 The Risk Desk (`apps/agent`) is the process that runs this: the overlay publisher, the keeper, the guardian loop and a read API. Every decision in it is deterministic code. Each write is simulated before it is signed. One transaction of the desk key is in flight at a time and none is signed above a gas-price cap; when the sender cannot tell what became of a nonce it halts and signs nothing more until the chain shows the way is clear. Collateral sales go out only through Binance's MEV-protected broadcast, never to the public mempool. A language model writes a two-sentence note about each shield, restore and refusal afterwards; no code path reads those notes back.
 
-The live desk runs with a target of 1.30 instead of the default 1.05. Venus lends at most 60% against TSLAB and liquidates at 70%, so even a fully drawn Venus position keeps a health factor of about 1.10 after TSLA's p99 weekend gap: at the default target the desk would have nothing to shield there. The more conservative setting lets a small Venus position exercise the whole cycle. `/health` on the desk shows the value in force.
+The live desk runs with a target of 1.30 instead of the default 1.05. Venus lends at most 60% against TSLAB and liquidates at 70%, so even a fully drawn Venus position keeps a health factor of about 1.10 after TSLA's p99 weekend gap: at the default target the desk would have nothing to shield there. The more conservative setting lets a small Venus position exercise the whole cycle, and on 2026-10-09 it did: the desk repaid 0.18017 USDT at 19:03 UTC and took the account from LTV 53.95% to 50.60%. `/health` on the desk shows the value in force.
 
 ## How it is enforced
 
@@ -195,7 +213,7 @@ Solid arrows are call paths that exist in the code and are executed by the test 
 Dashed arrows and dashed boxes are in the repository but not wired, off by default, or not yet run against the live service:
 
 - **Lista to SessionAwareFeed.** No lender reads the feed. It is shown on a market created inside a fork test.
-- **Keeper to the Transaction API, broadcast.** `simulate` is live: the mainnet desk simulates its writes through it. The MEV-protected `broadcast` is the only route the desk has for a collateral sale (`apps/agent/src/desk/tx.ts`). No sale has gone through it on mainnet unless PROOF.md lists one.
+- **Keeper to the Transaction API, broadcast.** `simulate` is live: the mainnet desk simulates its writes through it, the Friday shield included. The MEV-protected `broadcast` is the only route the desk has for a collateral sale (`apps/agent/src/desk/tx.ts`), and no sale has gone through it: the one live account is on Venus, which has no sale path. The same endpoint did carry the owner's TSLAB buy from the demo script.
 - **Publisher to an x402 endpoint.** The buyer exists (`apps/agent/src/desk/x402.ts`, `earnings.ts`) and is off until `X402_EARNINGS_URL` is set. It has never paid a live merchant.
 - **Desk notes to an LLM.** On only when the Agent Studio project's LLM provider has a key. Notes are written after the event and never read by a decision.
 - **b402.** A typed client with unit tests in `packages/binance`. Nothing calls it.
@@ -244,9 +262,9 @@ In the client with tests and no caller: keyless `stockList` and `meta`; Transact
 
 What has run against the live API:
 
-- The desk's calls are counted in its own `/api-health` (URL in [JUDGES.md](JUDGES.md)): the two keyless endpoints on every publisher run, `simulate` on every write it prepares. The counters restart with the desk.
-- `broadcast` has not carried a collateral sale on mainnet unless PROOF.md lists one.
-- The Trading API buy is live only if PROOF.md lists the buy transaction; until then it is a tested code path of the demo script.
+- **Keyless RWA status and `simulate`, by the desk.** Its calls are counted in its own `/api-health` (URL in [JUDGES.md](JUDGES.md)): the two keyless endpoints on every publisher run, `simulate` on every write it prepares. On 2026-10-09 at 19:17 UTC, nine hours after its last restart, that was 672 calls to each keyless endpoint and 33 to `simulate`, none failed. The counters restart with the desk. The shield of that day carries `sim.via: "binance"` in the feed.
+- **Trading `quote`, `approveTransaction`, `swap`.** They produced the owner's collateral buy on 2026-10-09: the approval went to the spender the quote named, and the swap built by the API is [this transaction](https://bscscan.com/tx/0x04ed824f67ad208903c1e381e90a529b29bb283a2d9e317b11a1eb4acf460681), 5.60 USDT for about 0.0145 TSLAB through the vendor LiquidMesh.
+- **Transaction `broadcast`.** The demo script submitted that buy through `broadcast` with MEV protection on, and logged the route it used. The chain shows the swap, not how it was submitted, so the route is our own record. `broadcast` has not carried a collateral sale: the one live account is on Venus and cannot sell.
 - The web app's keyed calls run on the server side of the deployed app when a wallet uses `/app` or someone opens `/oracle`. `apps/web/scripts/binance-smoke.ts` exercises the Wallet, DeFi and simulate calls against the live API with a key.
 
 The client also handles what the API asks of a caller: three different success codes, a limit of 5 requests per second per endpoint, retries on 429 that honour `Retry-After`, no retry of a state-changing POST after a timeout, and the geo-block code `40304`, which is recognised and never retried.
@@ -263,9 +281,47 @@ The live test for the keyed API is `packages/binance/test/live.test.ts`. It is s
 
 It does not use Studio's ERC-8183 seller rail. That rail is switched off in `studio.toml` (`[payments.erc8183] enabled = false`), so the faces advertise no `negotiate` or `notify_funded` skill and nobody can make the desk spend gas on free jobs. Guard jobs go through Ballast's own evaluator instead. The desk is self-hosted under systemd (`deploy/`), not on Studio's managed runtime.
 
-**ERC-8004.** `apps/agent/src/desk/register.ts` mints the desk's identity in the registry at `0x8004a169fb4a3325136eb29fa0ceb6d2e539a432` and writes a registration file with its web, MCP, A2A and wallet endpoints. The id is used in three places on-chain: `SessionOracle.publisherAgentId` names the publisher; `BallastGuardian` requires a job's provider to be the owner or agent wallet of the id in the job terms; and every settlement writes `giveFeedback(agentId, 100 or 0, 0, "ballast-guard", "window", ...)` to the reputation registry at `0x8004baa17c55a88189ae136b182e5fda19de9b63`.
+**ERC-8004.** `apps/agent/src/desk/register.ts` mints the desk's identity in the registry at `0x8004a169fb4a3325136eb29fa0ceb6d2e539a432` and writes its registration file. The file is built from explicit flags: besides the web app and the agent wallet it lists only the endpoints named on the command line, so it cannot advertise a service that is not served. The live file of agent 368122, stored on chain as the token URI, lists `web`, `MCP`, `desk-api` and `agentWallet`. It has no A2A service, because the Studio A2A face is not public, and `x402Support` is `false`, because the desk sells nothing over x402. The id is used in three places on-chain: `SessionOracle.publisherAgentId` names the publisher; `BallastGuardian` requires a job's provider to be the owner or agent wallet of the id in the job terms; and every settlement writes `giveFeedback(agentId, 100 or 0, 0, "ballast-guard", "window", ...)` to the reputation registry at `0x8004baa17c55a88189ae136b182e5fda19de9b63`.
 
 **ERC-8183.** Guard jobs live on BNB Chain's AgenticCommerce kernel at `0xea4daa3100a767e86fded867729ae7446476eba6`. The client calls `createJobWithToken` with `BallastGuardian` as both evaluator and hook, `setBudget`, then `fund` with the terms (account, window start and end, guardian agent id). The hook binds the terms. After the window the provider calls `submit` with a deliverable: the keccak256 of an evidence file holding the desk's own feed events for that account in that window, served byte for byte at `/evidence/<jobId>`. Then anyone calls `BallastGuardian.settle`, which calls `complete` or `reject` on the kernel.
+
+Job 56956 went through all of it on mainnet on 2026-10-09 (PROOF.md): funded by the account's owner with 0.01 USD1, submitted and settled by the desk two minutes after its window, paid to the desk. Its evidence file is at https://34-185-146-173.sslip.io/evidence/56956 and hashes to the deliverable in the submit transaction ([CLAIMS.md](CLAIMS.md), D5). The window was one hour inside the regular session, so the file lists no desk events: this job shows the escrow, the bound terms, the evaluation and the payment on mainnet, not a guardian earning its fee across a closure.
+
+## Public MCP endpoint
+
+The Ballast MCP server is public, over Streamable HTTP:
+
+```
+https://34-185-146-173.sslip.io/mcp
+```
+
+Client configuration, one line, for any MCP client that speaks Streamable HTTP:
+
+```json
+{ "mcpServers": { "ballast": { "type": "http", "url": "https://34-185-146-173.sslip.io/mcp" } } }
+```
+
+It is unauthenticated, read and plan only, and rate limited. It holds no key, signs nothing and sends nothing; each client address gets a number of requests a minute (120 is the server's default), and heavy chain reads are capped. It reads the mainnet deployment in `contracts/deployments/56.json`.
+
+| Tool | Answers |
+|---|---|
+| `session_state` | The market session on the Ballast calendar, the next close and open, the next and the current closure window. |
+| `oracle_price` | The Session Oracle's read for a tokenized stock: prices, `canAddRisk` and why, the window ahead with its gap buffer, the overlay. |
+| `position_risk` | A Ballast account's collateral, debt and cushion, its health factor now and after the coming gap, and the shield or restore plan. |
+| `plan_shield` | The ordered account calls that keep an account above the target health factor through the next closure. A plan: nothing is signed or sent. |
+| `list_accounts` | Ballast accounts, all or by owner. |
+| `guardian_jobs` | ERC-8183 guard jobs evaluated by `BallastGuardian`, with account, window and status. |
+| `tokenized_stock_status` | Binance's keyless status of a tokenized stock token: open or closed, and why. |
+| `api_health` | Calls, failures and latency of the Binance public API as this server has seen them. |
+
+Check it without a client:
+
+```bash
+curl -s https://34-185-146-173.sslip.io/mcp -H "content-type: application/json" -H "accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+The same URL is the `MCP` service in the desk's ERC-8004 registration file. `skill/SKILL.md` tells an agent when to call the tools; running the server yourself is under Quick start, and serving it publicly is in `deploy/README.md`.
 
 ## Quick start
 
@@ -333,9 +389,9 @@ pnpm --filter @ballast/web dev                   # http://localhost:3000
 
 Pages: `/` the measurement, `/app` credit lines and covers, `/oracle` the Session Oracle explorer, `/guardians` guard jobs, `/evidence` the study, `/judge` the recorded cycle. Without Binance keys the app falls back to chain reads and keyless endpoints where it can.
 
-**The live cycle.** `scripts/demo/mainnet.ts` is the owner's side of the cycle on mainnet, one small step at a time, and a dry run unless it is told to send. `open-venus` buys a few dollars of TSLAB (through the Binance Trading API, or the PancakeSwap pool if that fails), opens a Venus account kept by the desk and borrows into its cushion. `restore` is the owner calling `restore` in the regular session, when the oracle allows it. `guardian-job` hires the desk as guardian for a window. `refused-restore` sends the same `restore` while the market is closed, so that it is mined and reverts with `RestoreRefused`. In between, the desk shields the account before the close by itself. The script may spend at most 6 USDT and 0.001 BNB of gas, appends every transaction it sends to `data/proof-txs.json`, and `pnpm proof` turns that file into PROOF.md. Which of these steps have happened on mainnet is what PROOF.md lists, nothing more.
+**The live cycle.** `scripts/demo/mainnet.ts` is the owner's side of the cycle on mainnet, one small step at a time, and a dry run unless it is told to send. `open-venus` buys a few dollars of TSLAB (through the Binance Trading API, or the PancakeSwap pool if that fails), opens a Venus account kept by the desk and borrows into its cushion. `restore` is the owner calling `restore` in the regular session, when the oracle allows it. `guardian-job` hires the desk as guardian for a window. `refused-restore` sends the same `restore` while the market is closed, so that it is mined and reverts with `RestoreRefused`. In between, the desk shields the account before the close by itself. The script may spend at most 6 USDT and 0.001 BNB of gas, appends every transaction it sends to `data/proof-txs.json`, and `pnpm proof` turns that file into PROOF.md. `open-venus`, `restore` and `guardian-job` ran on 2026-10-09 and their transactions are in PROOF.md; `refused-restore` has not been sent yet (see "Live on BNB Chain").
 
-**The MCP server.** Eight read and plan tools over stdio or Streamable HTTP. It holds no key and sends nothing.
+**The MCP server.** Eight read and plan tools over stdio or Streamable HTTP. It holds no key and sends nothing. The hosted one is above ("Public MCP endpoint"); to run your own:
 
 ```bash
 BSC_RPC_URL=https://bsc-dataseed.bnbchain.org npx tsx packages/mcp/bin/ballast-mcp.ts            # stdio
@@ -350,7 +406,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `BSC_RPC_URL` | fork tests, desk, MCP server, `verify:onchain` | RPC endpoint. The desk treats it as a secret. |
+| `BSC_RPC_URL` | fork tests, desk, MCP server, `verify:onchain` | RPC endpoint. The desk treats it as a secret, and needs one that serves `eth_getTransactionReceipt` and accepts batched `eth_call`: not every public endpoint does (`deploy/README.md`). |
 | `FORK_BLOCK` | fork tests | Pin the fork to a block. Unset means the chain head. |
 | `CHAIN_ID` | desk, MCP server, `verify:onchain` | `56` for BSC, `31337` for a local fork. |
 | `DEPLOYMENT_FILE` | desk, MCP server, `verify:onchain` | Defaults to `contracts/deployments/<CHAIN_ID>.json`. |
@@ -376,14 +432,16 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 | `config` | BSC addresses and per-ticker gap buffers, the NYSE calendar, the operator's earnings schedule |
 | `research` | The measurement: scanner and gap-study scripts, their data, and `check_figures.py` |
 | `data` | Closure windows of 77 bStocks, the backtest result, and the inputs of PROOF.md |
-| `deploy` | systemd unit, environment template and server guide for the desk |
+| `deploy` | systemd units, environment templates and the server guide for the desk and the public MCP endpoint |
 
 ## Honest limits
 
-- **Mainnet.** The contracts, the desk and the app are live; an account, a shield, a restore and a guard job are on mainnet only once PROOF.md lists their transactions. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
+- **Mainnet.** The contracts, the desk and the app are live. One Venus account has been opened, restored by its owner, guarded through one job and shielded by the desk; the transactions are in PROOF.md. A restore refused on a closed market is not on mainnet yet. The desk's own restore cannot happen before Monday 12 October, 15:00 UTC, which is after the submission deadline. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
+- **The live position is small, and so is what it proves.** 5.60 USDT of TSLAB as collateral, a shield of 0.18 USDT, a guard job of 0.01 USD1. The job's window was one hour of the regular session, not a closure, and its evidence file lists no desk events. The Friday shield is the only time the desk has acted ahead of a real closure.
 - **The replay is a recording.** `/judge` plays a cycle recorded on a fork with the clock moved and prices frozen. It shows what the deployed contracts do; the mainnet transactions are the ones in PROOF.md.
 - **The live desk is tuned for the demonstration.** It runs with a target health of 1.30, not the default 1.05, so that a small Venus position has something to shield.
-- **One incident so far.** In its first two hours on mainnet the desk recorded 11 overlay posts as dropped although all of them were mined: its sender took a receipt that lagged behind the nonce for a lost nonce. Nothing on chain was affected; the desk's feed of that period was wrong. It is fixed, and PROOF.md carries the note.
+- **One incident so far: an RPC that would not serve receipts.** The public endpoint the desk first used (`bsc-rpc.publicnode.com`) answers `eth_getTransactionReceipt` with HTTP 403, "Archive requests require a personal token", even for a transaction mined a second ago. The desk could not see its own receipts: it recorded its first 11 overlay posts (nonces 2 to 12, 2026-10-08) as dropped and two more (nonces 13 and 15, 2026-10-09 about 01:07 and 06:10 UTC) as pending. All 13 were mined. Nothing on chain was affected; the desk's feed of those hours was wrong. Since then the sender waits for late receipts and never reports a transaction the node knows as dropped, and the desk runs on an endpoint that serves receipts and accepts batched `eth_call`. `deploy/README.md` says how to test an endpoint first, and PROOF.md carries the note.
+- **The publisher costs gas every ten minutes.** CRCL and MSTR have no Chainlink feed, so the publisher posts their reference price itself whenever it has moved more than 20 bps, and it looks every ten minutes. In the regular session that makes a transaction about every ten minutes: 30 overlay posts on 2026-10-09, 28 of them inside the session, between 13:33 and 18:55 UTC. By 19:25 UTC the desk's ledger for that day showed 33 transactions and 0.00047 BNB of gas, against 0.01 USD1 earned.
 - **The damage so far is small.** The 120 liquidations repaid $31.6k in total and left no bad debt. Ballast is built for where the data says the risk concentrates, not in answer to a loss that has already happened.
 - **The measurement is small and uses a proxy.** Three and a half months, $31.6k of liquidations, and Binance spot prices standing in for the lending oracle. Re-running the scans needs an archive node. `research/README.md` lists the caveats.
 - **Gap buffers are statistics.** A p99 is exceeded one time in a hundred. In the backtest two shielded positions were still liquidated, both on earnings nights that the dataset does not flag.
@@ -395,7 +453,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 - **After a sale the owner acts.** There is no automatic buy-back, and the keeper cannot restore until the owner turns `autoRestore` back on.
 - **The owner is not gated.** The owner's own `borrow` works at any hour. The session rules bind the keeper and the `restore` path.
 - **One desk, one hot key.** If the process is down, nothing is shielded. The owner can still do everything by hand. An open guard job is then never submitted, and the client claims the refund from the kernel at expiry.
-- **Binance Web3 API.** `broadcast` has not carried a collateral sale on mainnet unless PROOF.md lists one. The Trading API is used by the demo script only. b402 has no caller. Binance Agentic Wallet and Wallet Skills are not used.
+- **Binance Web3 API.** `broadcast` has carried one transaction, the owner's collateral buy, and no collateral sale: the only live account is on Venus. The Trading API is used by the demo script only, for that one buy. b402 has no caller. Binance Agentic Wallet and Wallet Skills are not used.
 - **No audit.** The contracts have tests, not an external review.
 
 ## License
