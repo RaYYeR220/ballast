@@ -78,5 +78,61 @@
     "note": "2.96 USDT from Venus, kept in the account (LTV 53.36%)",
     "step": "open-account",
     "chainId": 56
+  },
+  {
+    "label": "Owner calls restore during the regular session: allowed by the Session Oracle (Restored event)",
+    "txHash": "0x5f6fb4c5e1bb366dfd45c22d292c219d3ac5d95f75d99ba4022d585d2902e49a",
+    "at": "2026-10-09T15:08:42Z",
+    "note": "restore(0.0500 USDT): borrowed back into the cushion while the Session Oracle allows added risk (OK)",
+    "chainId": 56,
+    "step": "restore"
+  },
+  {
+    "label": "Owner approves 0.10 USDT to PancakeSwap v3 (to pay the guardian in USD1)",
+    "txHash": "0xc10c19afd72946cf1da5cf186f9fbc265c3734688645d5db1af67dc3e948b7dc",
+    "at": "2026-10-09T15:09:15Z",
+    "note": "exactly 0.10 USDT to the v3 router 0x1b81D678ffb9C0263b24A97847620C99d213eB14",
+    "chainId": 56,
+    "step": "job-fund"
+  },
+  {
+    "label": "Owner swaps 0.10 USDT to USD1 on PancakeSwap v3",
+    "txHash": "0x9cce71b10bedeaaa4feccd3fb97ba31247bfe7b4c86344afcb6e6489d16de7a5",
+    "at": "2026-10-09T15:09:17Z",
+    "note": "0.10 USDT -> about 0.1000 USD1, at least 0.0995 (0.5% slippage), PancakeSwap v3 USDT/USD1 0.01% pool",
+    "chainId": 56,
+    "step": "job-fund"
+  },
+  {
+    "label": "Owner creates the guardian job on the ERC-8183 kernel (provider = the desk, evaluator = BallastGuardian)",
+    "txHash": "0xfd493d30fbb76df224fdb0dbae0b9467cbd54e1fff6ef761f9b0d78c773af111",
+    "at": "2026-10-09T15:09:19Z",
+    "note": "ERC-8183 kernel 0xEa4DAa3100A767e86FDed867729ae7446476EBA6: provider = the desk, evaluator = hook = BallastGuardian, paid in USD1, expires 2026-10-12T15:30:00Z",
+    "chainId": 56,
+    "step": "job-fund"
+  },
+  {
+    "label": "Owner sets the guardian job budget (0.01 USD1)",
+    "txHash": "0x65bb1da9c470e18d9a51e5a2e24ab5b60eb55fca87411f9568a9e152f57baa2e",
+    "at": "2026-10-09T15:09:21Z",
+    "note": "job 56956: 0.0100 USD1",
+    "chainId": 56,
+    "step": "job-fund"
+  },
+  {
+    "label": "Owner approves the budget to the ERC-8183 kernel",
+    "txHash": "0x1e4739aae9ba8e83d70c9910223b37dd5e0ee0702966710198d217f84ccd189a",
+    "at": "2026-10-09T15:09:23Z",
+    "note": "exactly 0.0100 USD1 to the ERC-8183 kernel 0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+    "chainId": 56,
+    "step": "job-fund"
+  },
+  {
+    "label": "Owner funds the guardian job: 0.01 USD1 in escrow, terms bound by BallastGuardian",
+    "txHash": "0x8188fe89d495e8810105e6e719db118416ef97aabcb880953d178cc7afb24af2",
+    "at": "2026-10-09T15:09:25Z",
+    "note": "job 56956: 0.0100 USD1 into escrow with the terms (account 0x64b08268efb8B266c43A1751dDbB91702CA925e3, 2026-10-09T15:14:12Z to 2026-10-09T16:14:12Z, agent 368122)",
+    "chainId": 56,
+    "step": "job-fund"
   }
 ]
