@@ -1,0 +1,663 @@
+{
+ "version": 1,
+ "recordedAt": "2026-10-09T04:34:40.968Z",
+ "fork": {
+  "of": "BNB Chain",
+  "chainId": 56,
+  "block": 126572111,
+  "blockTime": 1791520218,
+  "localChainId": 31337
+ },
+ "deployment": {
+  "source": "contracts/deployments/56.json",
+  "sessionOracle": "0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388",
+  "sessionAwareFeed": "0xC544236Aa3E4CB5cb7f2bb9b72019f85fb35aE20",
+  "factory": "0xE12f14595BCEC5616192660880829F400A310a72",
+  "cushionVault": "0xf0089b0e6afa2f80dbc9006E1B3D1a77E114E334",
+  "guardian": "0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8",
+  "calendar": "0xED58C46715c3cb0Aea67ed8F1876e4A7315D89AB"
+ },
+ "actors": {
+  "borrower": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+  "desk": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+  "agentId": "368122"
+ },
+ "market": {
+  "label": "Lista NVDAB / USD1",
+  "symbol": "NVDA",
+  "lltvBps": 7500
+ },
+ "forkOnly": [
+  "The fork's clock is moved forward: a close, a weekend and an open pass in seconds.",
+  "Lista's price sources are frozen behind a fixed-price mock (32 prices kept as read), because they go stale when the clock moves.",
+  "The NVDA Chainlink feed is replaced by a mock that reprints the frozen per-share price after each move, because a fork receives no new rounds.",
+  "The desk's address 0xccD7f069275549793b2A8804A5691fCa6665D152 is impersonated by the local node. No key of the desk is used.",
+  "The borrower 0x180E1EeF864aA14c501921C4802A42fAa8D88387 is a throwaway address, funded with 20 NVDAB and 1,000 USD1 from an exchange wallet on the fork."
+ ],
+ "steps": [
+  {
+   "id": "contracts",
+   "kind": "setup",
+   "title": "The contracts are on BNB Chain",
+   "summary": "The fork carries Ballast as deployed: the Session Oracle names 0xccD7f069275549793b2A8804A5691fCa6665D152 as publisher, registered as ERC-8004 agent 368122. This replay runs against those contracts, not a copy.",
+   "at": 1791520218,
+   "txs": [],
+   "result": {
+    "sessionOracle": "0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388",
+    "sessionAwareFeed": "0xC544236Aa3E4CB5cb7f2bb9b72019f85fb35aE20",
+    "factory": "0xE12f14595BCEC5616192660880829F400A310a72",
+    "cushionVault": "0xf0089b0e6afa2f80dbc9006E1B3D1a77E114E334",
+    "guardian": "0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8",
+    "publisher": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+    "publisherAgentId": "368122",
+    "restoreDelaySec": 5400,
+    "maxOverlayTtlSec": 21600
+   },
+   "state": {
+    "at": 1791520218,
+    "session": "OVERNIGHT",
+    "canAddRisk": false,
+    "reason": "NOT_REGULAR",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "OVERNIGHT",
+     "currentGapBps": 417
+    },
+    "bandBps": 564,
+    "account": null,
+    "job": null
+   },
+   "reproduce": {
+    "command": "pnpm verify:onchain"
+   },
+   "proofKeys": [
+    "register",
+    "deploy"
+   ]
+  },
+  {
+   "id": "publish",
+   "kind": "publish",
+   "title": "The desk publishes the overlay",
+   "summary": "The publisher posts NVDA's overlay: no halt, no corporate action, no earnings flag, valid for under six hours. With it and a fresh, converged reference the Session Oracle answers that risk may be added.",
+   "at": 1791558304,
+   "txs": [
+    {
+     "label": "post the overlay",
+     "call": "postOverlays([NVDA], valid 6 h, no flags)",
+     "hash": "0x2883407adf647989794ceb2905603597bba6a682244ea9a6af1ada8895d2aeb0",
+     "status": "success",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388",
+     "block": 126572148,
+     "gasUsed": "45823"
+    }
+   ],
+   "result": {
+    "symbol": "NVDA",
+    "flags": 0,
+    "validForSec": 21000
+   },
+   "state": {
+    "at": 1791558304,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": null,
+    "job": null
+   },
+   "reproduce": {
+    "test": "contracts/test/SessionOracle.t.sol",
+    "command": "pnpm contracts:test --match-path test/SessionOracle.t.sol"
+   },
+   "proofKeys": [
+    "overlay"
+   ],
+   "forkOnly": [
+    "The reference feed was reprinted at the frozen price just before this step."
+   ]
+  },
+  {
+   "id": "open",
+   "kind": "open",
+   "title": "A borrower opens a credit line",
+   "summary": "10 NVDAB as collateral on Lista, 1606.60 USD1 borrowed at 69% of its value, and a 200 USD1 cushion the keeper may spend only on repaying this loan. The mandate caps the keeper at 74% LTV.",
+   "at": 1791558326,
+   "txs": [
+    {
+     "label": "open the account",
+     "call": "createListaAccount(NVDAB / USD1, NVDA, keeper = desk)",
+     "hash": "0x1b0f1e0e121f2142a41cbe9523aab391ba3d1d757a0f2b2500d25a675a6a0cfc",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xE12f14595BCEC5616192660880829F400A310a72",
+     "block": 126572149,
+     "gasUsed": "535142"
+    },
+    {
+     "label": "approve collateral",
+     "call": "approve(account, 10 NVDAB)",
+     "hash": "0x5b119e5eddc5f15188980e78c580f08333ba63d2b06cadae8e7ca4a94aade8d8",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0x02Fca66C1D1aFB4E2A7884261eB00F63598a7436",
+     "block": 126572150,
+     "gasUsed": "54408"
+    },
+    {
+     "label": "deposit collateral",
+     "call": "depositCollateral(10 NVDAB)",
+     "hash": "0x6ed8555193813e4dd512a62aad71a91982c1865f8c69c0b1ba4b3d99f5bcbe2a",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572151,
+     "gasUsed": "211738"
+    },
+    {
+     "label": "borrow",
+     "call": "borrow(1606.60 USD1)",
+     "hash": "0x18a2dbde38bc96d2a27283347a2f4b7c4ecb99702232d0028014d36b5d45467b",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572152,
+     "gasUsed": "202643"
+    },
+    {
+     "label": "approve cushion",
+     "call": "approve(account, 200 USD1)",
+     "hash": "0x8a1aa3805ae6ed6c70c2b9eb6898e8f83ca277385c8af64bcc469ad2e16b79c1",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+     "block": 126572153,
+     "gasUsed": "60604"
+    },
+    {
+     "label": "deposit cushion",
+     "call": "depositCushion(200 USD1)",
+     "hash": "0x4b30bbe132badef188ff1fbe1dfade658b3a5d91a26498b94aad4a20a7eea2b5",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572154,
+     "gasUsed": "86190"
+    }
+   ],
+   "result": {
+    "account": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+    "collateral": "10 NVDAB",
+    "borrowed": "1606.60 USD1",
+    "cushion": "200.00 USD1",
+    "maxLtvBps": 7400,
+    "shieldLtvBps": 5000,
+    "autoRestore": true
+   },
+   "state": {
+    "at": 1791558326,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6900,
+     "collateral": "10",
+     "debt": "1606.60",
+     "cushion": "200.00",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.007
+    },
+    "job": null
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/ListaAccount.fork.t.sol:test_factoryRegistersAccount",
+    "command": "pnpm contracts:test:fork --match-test test_factoryRegistersAccount"
+   },
+   "proofKeys": [
+    "open-account"
+   ]
+  },
+  {
+   "id": "path",
+   "kind": "open",
+   "title": "The owner fixes the sale route",
+   "summary": "If the cushion ever runs short, the keeper may sell collateral into the debt only through this one PancakeSwap route, only close to a closure, and only down to the owner's shield LTV. Without a route it cannot sell at all.",
+   "at": 1791558330,
+   "txs": [
+    {
+     "label": "fix the sale route",
+     "call": "setDeleveragePath(NVDAB > USDT > USD1)",
+     "hash": "0x4cc9955104be86ac7d901acee22f36b3a29ea3a66092fdb5c4728d8dc4f10829",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572155,
+     "gasUsed": "56363"
+    }
+   ],
+   "result": {
+    "route": "NVDAB > USDT (0.25%) > USD1 (0.01%)",
+    "pathHash": "0xbbd6e2441c0a629a903800d14772bcf19ada7492709cf7991cf26b57f0149c51"
+   },
+   "state": {
+    "at": 1791558330,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6900,
+     "collateral": "10",
+     "debt": "1606.60",
+     "cushion": "200.00",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.007
+    },
+    "job": null
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/ListaAccount.fork.t.sol:test_deleverage_disabledUntilOwnerSetsPath",
+    "command": "pnpm contracts:test:fork --match-test test_deleverage_disabledUntilOwnerSetsPath"
+   },
+   "proofKeys": [
+    "set-path"
+   ]
+  },
+  {
+   "id": "job",
+   "kind": "job",
+   "title": "A guardian job is funded",
+   "summary": "The borrower escrows 0.05 USD1 on the ERC-8183 kernel for the desk to guard this loan until 2026-10-12 15:05 UTC. The guardian contract binds the terms and checks that the provider is the ERC-8004 agent they name.",
+   "at": 1791558343,
+   "txs": [
+    {
+     "label": "create the job",
+     "call": "createJobWithToken(provider = desk, evaluator and hook = BallastGuardian, USD1)",
+     "hash": "0x0f24bb56495d2dd12fb12c4d31ad7e1335f3c9c2b7d7ebd9833f37a793a3865f",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+     "block": 126572156,
+     "gasUsed": "281227"
+    },
+    {
+     "label": "set the budget",
+     "call": "setBudget(job 56938, 0.05 USD1)",
+     "hash": "0xc7b4c84ff2486296db70dece2d82c216cc3dc7c3ae7247c9ac8e837a9ce9540c",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+     "block": 126572157,
+     "gasUsed": "88359"
+    },
+    {
+     "label": "approve the budget",
+     "call": "approve(kernel, 0.05 USD1)",
+     "hash": "0x52414aac63b80bb33e8df982c8b84d57252e327024eb4faa68dab82a722ee688",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+     "block": 126572158,
+     "gasUsed": "60580"
+    },
+    {
+     "label": "fund with the terms",
+     "call": "fund(job 56938, terms: account, window, agent 368122)",
+     "hash": "0x9e7e2dbecd8efeda10ad81f30a6e79a0f5e880fde90fb4bcc5adc592312e5c37",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+     "block": 126572159,
+     "gasUsed": "302952"
+    }
+   ],
+   "result": {
+    "jobId": "56938",
+    "budget": "0.05 USD1",
+    "windowStart": 1791558330,
+    "windowEnd": 1791817500,
+    "expiresAt": 1791905400,
+    "agentId": "368122",
+    "provider": "0xccD7f069275549793b2A8804A5691fCa6665D152"
+   },
+   "state": {
+    "at": 1791558343,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6900,
+     "collateral": "10",
+     "debt": "1606.60",
+     "cushion": "200.00",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.007
+    },
+    "job": {
+     "id": "56938",
+     "status": "Funded",
+     "settled": false
+    }
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/BallastGuardian.fork.t.sol:test_fundedJob_atEnd_thenSubmit_thenSettlePays",
+    "command": "pnpm contracts:test:fork --match-test test_fundedJob_atEnd_thenSubmit_thenSettlePays"
+   },
+   "proofKeys": [
+    "job-fund"
+   ]
+  },
+  {
+   "id": "shield",
+   "kind": "shield",
+   "title": "Before the close, the keeper shields",
+   "summary": "With 59 minutes of trading left the desk sizes the loan for the worst 1% weekend gap of NVDA (7.37%) at a health factor of 1.05, and repays 66.03 USD1 from the cushion. No collateral is sold.",
+   "at": 1791572460,
+   "txs": [
+    {
+     "label": "shield",
+     "call": "shieldRepay(66.03 USD1)",
+     "hash": "0xda95e020133783ffb349cdc45eb3f6721d483971a0d05b242f8a9f4268540fbc",
+     "status": "success",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572161,
+     "gasUsed": "228544"
+    }
+   ],
+   "result": {
+    "plan": "repay",
+    "window": "WEEKEND",
+    "gapBps": 737,
+    "targetHfAfterGap": 1.05,
+    "repaid": "66.03 USD1",
+    "debtBefore": "1606.62",
+    "debtAfter": "1540.59",
+    "collateralSold": "0",
+    "ltvBeforeBps": 6900
+   },
+   "state": {
+    "at": 1791572460,
+    "session": "REGULAR",
+    "canAddRisk": false,
+    "reason": "WINDOW_AHEAD",
+    "window": {
+     "ahead": "WEEKEND",
+     "aheadGapBps": 737,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6616,
+     "collateral": "10",
+     "debt": "1540.59",
+     "cushion": "133.97",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.05
+    },
+    "job": {
+     "id": "56938",
+     "status": "Funded",
+     "settled": false
+    }
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/ListaAccount.fork.t.sol:test_keeperShieldRepay_reducesDebtOnly",
+    "command": "pnpm contracts:test:fork --match-test test_keeperShieldRepay_reducesDebtOnly"
+   },
+   "proofKeys": [
+    "shield"
+   ]
+  },
+  {
+   "id": "refused",
+   "kind": "refused",
+   "title": "While New York is closed, a restore is refused",
+   "summary": "The keeper asks to borrow 66.03 USD1 back into the cushion. The account asks the Session Oracle whether risk may be added; the answer is no, and the call reverts with RestoreRefused(NOT_REGULAR). Nothing moved: the keeper can make a loan safer while the market is shut, never riskier.",
+   "at": 1791693900,
+   "txs": [
+    {
+     "label": "restore while closed",
+     "call": "restore(66.03 USD1)",
+     "hash": "0x8948ecefe2a541fb69af22ac1333593f6e17e23cf2d196768d86eecad5df15a0",
+     "status": "reverted",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572163,
+     "gasUsed": "67467"
+    }
+   ],
+   "result": {
+    "call": "restore(66.03 USD1)",
+    "reverted": true,
+    "debtBefore": "1540.59",
+    "debtAfter": "1540.59",
+    "cushionAfter": "133.97"
+   },
+   "error": {
+    "name": "RestoreRefused",
+    "reason": "NOT_REGULAR",
+    "message": "restore refused by the Session Oracle: NOT_REGULAR (the US market is not in its regular session)"
+   },
+   "state": {
+    "at": 1791693900,
+    "session": "CLOSED_WEEKEND",
+    "canAddRisk": false,
+    "reason": "NOT_REGULAR",
+    "window": {
+     "ahead": "OVERNIGHT",
+     "aheadGapBps": 417,
+     "current": "WEEKEND",
+     "currentGapBps": 737
+    },
+    "bandBps": 1742,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6616,
+     "collateral": "10",
+     "debt": "1540.59",
+     "cushion": "133.97",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.05
+    },
+    "job": {
+     "id": "56938",
+     "status": "Funded",
+     "settled": false
+    }
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/ListaAccount.fork.t.sol:test_restore_refusedOnWeekend_andMovesNothing",
+    "command": "pnpm contracts:test:fork --match-test test_restore_refusedOnWeekend_andMovesNothing"
+   },
+   "proofKeys": [
+    "restore-refused"
+   ]
+  },
+  {
+   "id": "restore",
+   "kind": "restore",
+   "title": "After the open, the keeper restores",
+   "summary": "Ninety minutes after the bell the Session Oracle answers yes: regular session, overlay valid, price converged to the reference, no closure within three hours. The same call that was refused now goes through, and 66.01 USD1 returns to the cushion, inside the owner's 74% cap.",
+   "at": 1791817260,
+   "txs": [
+    {
+     "label": "post the overlay",
+     "call": "postOverlays([NVDA], valid 6 h, no flags)",
+     "hash": "0x74a6db778e9360fa1cdc57d4f34fac9480cdbce55daecb6bbff39b391f04a8b5",
+     "status": "success",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388",
+     "block": 126572166,
+     "gasUsed": "47823"
+    },
+    {
+     "label": "restore",
+     "call": "restore(66.01 USD1)",
+     "hash": "0x3a541250e410d4a878babca9acf8e7f6da0735f46b0cd14145af212e8fde9148",
+     "status": "success",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "block": 126572167,
+     "gasUsed": "295616"
+    }
+   ],
+   "result": {
+    "canAddRisk": true,
+    "restored": "66.01 USD1",
+    "ltvAfterBps": 6900,
+    "maxLtvBps": 7400
+   },
+   "state": {
+    "at": 1791817260,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "OVERNIGHT",
+     "aheadGapBps": 417,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6900,
+     "collateral": "10",
+     "debt": "1606.84",
+     "cushion": "199.98",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.042
+    },
+    "job": {
+     "id": "56938",
+     "status": "Funded",
+     "settled": false
+    }
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/ListaAccount.fork.t.sol:test_restore_borrowsIntoCushionWhenAllowed",
+    "command": "pnpm contracts:test:fork --match-test test_restore_borrowsIntoCushionWhenAllowed"
+   },
+   "proofKeys": [
+    "restore"
+   ],
+   "forkOnly": [
+    "The reference feed was reprinted at the frozen price, stamped one minute after the open."
+   ]
+  },
+  {
+   "id": "settle",
+   "kind": "settle",
+   "title": "The window ends: the job settles",
+   "summary": "The desk submits the hash of its evidence. Anyone may then call settle: the guardian contract checks that the account was not liquidated and is healthy, releases the escrow to the desk, and writes the outcome to the desk's ERC-8004 reputation. Had the loan been liquidated, the fee would have gone back to the borrower.",
+   "at": 1791817560,
+   "txs": [
+    {
+     "label": "submit the evidence",
+     "call": "submit(job 56938, keccak256 of the evidence)",
+     "hash": "0xbb764ea5f042c9a8b8fd977828b7f465c2def547b66614bb1a7c4e9c65fc9364",
+     "status": "success",
+     "from": "0xccD7f069275549793b2A8804A5691fCa6665D152",
+     "to": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+     "block": 126572169,
+     "gasUsed": "98400"
+    },
+    {
+     "label": "settle",
+     "call": "BallastGuardian.settle(job 56938)",
+     "hash": "0xeff30d7094b64e7e7045fac8371c2533b810ce3437a51bdf561174a354ae5256",
+     "status": "success",
+     "from": "0x180E1EeF864aA14c501921C4802A42fAa8D88387",
+     "to": "0x1049E94c5Bc186f0495C5c04EAe80FD0eaFCBcD8",
+     "block": 126572170,
+     "gasUsed": "403120"
+    }
+   ],
+   "result": {
+    "jobId": "56938",
+    "deliverable": "0x29fb1d6b585fc0eca81771b585d0e210d7a04042207560522c139cbf002af101",
+    "survived": true,
+    "paid": true,
+    "payout": "0.05 USD1",
+    "reputationValue": 100,
+    "reputationTag": "ballast-guard",
+    "feedbackWritten": true
+   },
+   "state": {
+    "at": 1791817560,
+    "session": "REGULAR",
+    "canAddRisk": true,
+    "reason": "OK",
+    "window": {
+     "ahead": "OVERNIGHT",
+     "aheadGapBps": 417,
+     "current": "NONE",
+     "currentGapBps": 0
+    },
+    "bandBps": null,
+    "account": {
+     "address": "0xb49C4aa93F4A39B1Db3880eb00428586d665e62d",
+     "ltvBps": 6900,
+     "collateral": "10",
+     "debt": "1606.84",
+     "cushion": "199.98",
+     "healthy": true,
+     "liquidated": false,
+     "hfAfterGap": 1.042
+    },
+    "job": {
+     "id": "56938",
+     "status": "Completed",
+     "settled": true
+    }
+   },
+   "reproduce": {
+    "test": "contracts/test/fork/BallastGuardian.fork.t.sol:test_survivedWindow_paysGuardianAndWritesReputation",
+    "command": "pnpm contracts:test:fork --match-test test_survivedWindow_paysGuardianAndWritesReputation"
+   },
+   "proofKeys": [
+    "job-settle"
+   ]
+  }
+ ]
+}

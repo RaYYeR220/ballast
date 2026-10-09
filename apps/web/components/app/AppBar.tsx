@@ -10,8 +10,8 @@ export { WalletControl };
 /* `ready: false` marks a section whose page is not built yet: it is named in the bar but is not a link. */
 export const SECTIONS = [
   { href: "/app", label: "Dashboard", ready: true },
-  { href: "/oracle", label: "Session Oracle", ready: false },
-  { href: "/guardians", label: "Guardians", ready: false },
+  { href: "/oracle", label: "Session Oracle", ready: true },
+  { href: "/guardians", label: "Guardians", ready: true },
 ] as const;
 
 function SectionLinks({ current }: { current: string }) {
