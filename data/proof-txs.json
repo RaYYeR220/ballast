@@ -30,5 +30,53 @@
     "note": "postOverlays from the publisher key, which is the desk agent",
     "step": "overlay",
     "chainId": 56
+  },
+  {
+    "label": "Owner approves 5.60 USDT to the swap contract named by the Binance Trading API quote",
+    "txHash": "0x3edd1a6ecb1555ba202d23a9064cfc319be6a401dc32163ce441e1b0e03fb32c",
+    "at": "2026-10-09T13:37:53Z",
+    "note": "exactly 5.60 USDT to 0xB44446b0c8E56988c34f7Ff73Ae904982b5FdDA5 (the quote's approveTarget)",
+    "step": "open-account",
+    "chainId": 56
+  },
+  {
+    "label": "Owner buys TSLAB with 5.60 USDT through the Binance Trading API (sent by the MEV-protected broadcast)",
+    "txHash": "0x04ed824f67ad208903c1e381e90a529b29bb283a2d9e317b11a1eb4acf460681",
+    "at": "2026-10-09T13:37:55Z",
+    "note": "5.60 USDT -> about 0.014543 TSLAB, at least 0.014325 (1.5% slippage), Binance Trading API via LiquidMesh",
+    "step": "open-account",
+    "chainId": 56
+  },
+  {
+    "label": "Owner creates the Ballast Venus account (keeper = the desk agent)",
+    "txHash": "0x44c4d80b90c3e427625ff39b25cc8502247966fbdcbeaeeea430e5b4b25a70f2",
+    "at": "2026-10-09T13:37:58Z",
+    "note": "vTSLAB collateral, vUSDT debt, keeper = the desk 0xccD7f069275549793b2A8804A5691fCa6665D152, mandate maxLtv 6000 / shieldLtv 5000 / slippage 150 bps / autoRestore true",
+    "step": "open-account",
+    "chainId": 56
+  },
+  {
+    "label": "Owner approves TSLAB to the account",
+    "txHash": "0x884efd60a2e19a672292cc519e67d42046e165de31f773710b1c14c479d2ee1e",
+    "at": "2026-10-09T13:38:01Z",
+    "note": "exactly 0.014553 TSLAB",
+    "step": "open-account",
+    "chainId": 56
+  },
+  {
+    "label": "Owner deposits 0.014553 TSLAB as collateral through the account",
+    "txHash": "0x40dc2ce3921952d1947b89e5e76752860c1cd421b8cf8b6063d3a95cb98ac0f6",
+    "at": "2026-10-09T13:38:02Z",
+    "note": "0.014553 TSLAB into Venus through the account",
+    "step": "open-account",
+    "chainId": 56
+  },
+  {
+    "label": "Owner borrows 2.96 USDT from Venus into the account cushion (LTV 53.36%)",
+    "txHash": "0xac13e100c62c0bcd703f5a56bc84eb6fe4c87536894908f4f0e5a18c4d119784",
+    "at": "2026-10-09T13:38:06Z",
+    "note": "2.96 USDT from Venus, kept in the account (LTV 53.36%)",
+    "step": "open-account",
+    "chainId": 56
   }
 ]
