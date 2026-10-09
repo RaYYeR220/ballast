@@ -25,11 +25,14 @@ class RO {
 }
 
 beforeEach(() => {
+  // the explorer reads the wall clock when it mounts: pin it to Thursday 18:00 New York, a closed market
+  vi.useFakeTimers({ toFake: ["Date"], now: THU_1800 * 1000 });
   vi.stubGlobal("ResizeObserver", RO);
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ status: "unavailable", detail: "the test has no network" }))));
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 

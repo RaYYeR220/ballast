@@ -339,7 +339,7 @@ forge test --match-path "test/fork/*"            # 99 fork tests against real BS
 
 The fork tests fork BSC at the chain head through `https://bsc-rpc.publicnode.com` and take about 20 seconds after the first compile. Set `BSC_RPC_URL` to use another endpoint, and `FORK_BLOCK` to pin a block (that needs an archive endpoint). `pnpm contracts:test` and `pnpm contracts:test:fork` run the same two commands from the repository root.
 
-Current counts and the date of the last full run are in [PROOF.md](PROOF.md), section 3. One web test follows the wall clock and fails while the New York regular session is open (09:30 to 16:00 Eastern time on trading days): in those hours `pnpm test` shows 1000 passed and 1 failed. PROOF.md names the test.
+Current counts and the date of the last full run are in [PROOF.md](PROOF.md), section 3.
 
 **No setup.** https://ballast-desk.vercel.app/judge plays one full cycle step by step, with the transaction, the decoded result or revert and the account after each step. It is a recording made on a fork of BNB Chain against the deployed contracts ([MOCKS.md](MOCKS.md) says what the fork changed), and a step links its mainnet transaction once there is one.
 

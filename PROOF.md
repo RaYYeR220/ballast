@@ -76,7 +76,7 @@ Notes:
 | Contracts, unit | calendar, Session Oracle, SessionAwareFeed | 57 | 0 | 0 | 2026-10-09 | `cd contracts && forge test --no-match-path "test/fork/*"` |
 | Contracts, fork of BSC mainnet | accounts, vault, guardian, feed against real mainnet state | 99 | 0 | 0 | 2026-10-09 | `cd contracts && forge test --match-path "test/fork/*"` |
 
-- TypeScript: 54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set. One web test follows the wall clock (apps/web/test/oracle-states.test.tsx, "says the oracle is not deployed ..."): it passes while New York is closed and fails during the regular session, 09:30 to 16:00 Eastern time on trading days, when a run shows 1000 passed and 1 failed. This run was made after the close.
+- TypeScript: 54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set.
 - Contracts, unit: External contracts are mocks here (contracts/test/mocks/Mocks.sol).
 - Contracts, fork of BSC mainnet: Last full fork run. Forked at the chain head (no pinned block) through the default public RPC, https://bsc-rpc.publicnode.com.
 
