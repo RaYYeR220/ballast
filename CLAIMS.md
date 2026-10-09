@@ -56,7 +56,7 @@ Unit tests run without a network. Fork tests run against BSC mainnet state; [MOC
 | B15 | `SessionAwareFeed`: passes through in the regular session, clamps to the band when closed, widens by one base band per 24 hours, stops at three, and degrades to the upstream price when it has no fresh reference. | REPRODUCIBLE | `forge test --match-contract SessionAwareFeedTest` |
 | B16 | A -5% print twelve hours after Friday's close liquidates a Lista-oracle market and not the same market priced by the feed; a move that is still there in Monday's regular session liquidates both. | REPRODUCIBLE | `forge test --match-contract SessionAwareFeedForkTest -vv`. The Friday reference and the prints are set by the test (see MOCKS.md). |
 | B17 | `BallastGuardian` pays the guardian only when the account was not liquidated and is healthy, refunds otherwise, settles only Submitted jobs, refuses self-dealing, and writes ERC-8004 feedback. | REPRODUCIBLE | `forge test --match-contract BallastGuardianForkTest` |
-| B18 | Test counts: 57 unit, 99 fork, 499 TypeScript (2 skipped). | REPRODUCIBLE | The commands in [PROOF.md](PROOF.md) section 3. `pnpm proof` refuses to write the page when the contract counts differ from the test functions in the tree. |
+| B18 | Test counts: 57 unit, 99 fork, 987 TypeScript (2 skipped). | REPRODUCIBLE | The commands in [PROOF.md](PROOF.md) section 3. `pnpm proof` refuses to write the page when the contract counts differ from the test functions in the tree. |
 | B19 | The parameters the deploy script sets: restore delay 90 minutes, horizon 3 hours, convergence 60 bps, reference age 26 hours, overlay lifetime 6 hours, Ondo drift 100 bps, reference deviation 300 bps; vault horizon 3 hours; guard job minimum budget 0.01 token and grace 1 hour. | REPRODUCIBLE | `contracts/script/Deploy.s.sol`. `pnpm verify:onchain` checks a deployment against the same values. |
 
 ## C. Desk, client and tools
@@ -68,9 +68,9 @@ Unit tests run without a network. Fork tests run against BSC mainnet state; [MOC
 | C3 | The keeper shields in the hour before a close and for the whole session before an earnings gap, restores only up to what it repaid itself and never above the pre-shield LTV, and falls back to a cushion repay when a sale fails. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/keeper.test.ts` |
 | C4 | The publisher turns Binance RWA status into overlay flags, posts only values the contract will accept, and backs off a symbol the contract refuses. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/publisher.test.ts` |
 | C5 | The keyless Binance RWA status endpoints answer without a key. | VERIFIED-LIVE | `curl -s "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/market/token/rwa/asset/market/status/ai?chainId=56&contractAddress=0x02fca66c1d1afb4e2a7884261eb00f63598a7436"` returned `"code":"000000"` with a status for NVDAB on 2026-10-08. The mainnet desk's `/api-health` (URL in [JUDGES.md](JUDGES.md)) lists every call it makes to these endpoints with their response codes. |
-| C6 | The Transaction API calls (`simulate`, `broadcast`) are wired into the desk's sender for chain 56. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/tx.test.ts` runs the sender against a stand-in for the API. Live: `simulate` appears in the mainnet desk's `/api-health` with success codes only (VERIFIED-LIVE, 11 calls on 2026-10-08). `broadcast` has not been used (E8). |
+| C6 | The Transaction API calls are wired into the desk's sender for chain 56 (`simulate` before every write, `broadcast` for collateral sales only) and into the app's previews (`/api/simulate`). | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/tx.test.ts` and `pnpm exec vitest run apps/web` run both against a stand-in for the API. Live: the desk's `/api-health` counts its `simulate` calls and their codes (VERIFIED-LIVE, URL in [JUDGES.md](JUDGES.md)). `broadcast`: see E8. |
 | C7 | Request signing and envelope handling of the keyed client. | REPRODUCIBLE | `pnpm exec vitest run packages/binance`. Against the live API: `BINANCE_WEB3_API_KEY=... BINANCE_WEB3_API_SECRET=... pnpm exec vitest run packages/binance/test/live.test.ts`. |
-| C8 | Market, Trading, Wallet, DeFi, b402 and the keyed RWA Data module have no caller. | REPRODUCIBLE | `git grep -n "@ballast/binance" -- apps packages scripts ":!*/test/*"` lists every import: the keyless client, the keyed client, `transaction`, and types. |
+| C8 | The web app calls keyed RWA Data `price`, Market `candles`, Wallet `allTokenBalances`, DeFi `positions` and Transaction `simulate`, and the keyless status endpoints. The demo script calls Trading `quote`, `approveTransaction` and `swap`. b402 has no caller. | REPRODUCIBLE | `git grep -n "@ballast/binance" -- apps scripts packages ":!*test*"` lists every import; the README table names each call site. The Trading buy is VERIFIED-LIVE only when [PROOF.md](PROOF.md) lists the buy transaction. |
 | C9 | The x402 buyer pays only the exact scheme with EIP-3009 in three pinned stablecoins, and checks a per-call cap ($0.05 at most) and a daily cap ($0.50 at most) before it signs. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/x402.test.ts apps/agent/test/earnings.test.ts` against a stand-in merchant. |
 | C10 | The Agent Studio ERC-8183 seller rail is off and the faces stay on loopback on chain 56. | REPRODUCIBLE | `grep -n -A6 "payments.erc8183" apps/agent/app/agent/studio.toml`, and `pnpm exec vitest run apps/agent/test/config.test.ts`. |
 | C11 | A guard job's deliverable is the keccak256 of a stored evidence file, written once and served byte for byte. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/guardian.test.ts apps/agent/test/api.test.ts` |
@@ -78,6 +78,9 @@ Unit tests run without a network. Fork tests run against BSC mainnet state; [MOC
 | C13 | The MCP server has eight tools; none signs or sends. | REPRODUCIBLE | `pnpm exec vitest run packages/mcp`. `packages/mcp/src/tools.ts` imports no wallet or account code. |
 | C14 | `pnpm verify:onchain` compares deployed bytecode with the local build, the wiring, the parameters, the tickers, the publisher's ERC-8004 identity and the calendar. | REPRODUCIBLE | Run it against a fork deployment (`CHAIN_ID=31337 BSC_RPC_URL=http://127.0.0.1:8545 pnpm verify:onchain`); the byte comparison has its own test, `apps/agent/test/verify-onchain.test.ts`. |
 | C15 | The fork demo: a desk on a local fork shields a Lista account and a cover before the close and settles a guard job after its window. | REPRODUCIBLE | The commands in the README. It needs an archive-capable RPC endpoint. [MOCKS.md](MOCKS.md) lists what the demo replaces on the fork. |
+| C16 | `/judge` plays a cycle recorded on a fork of BNB Chain against the deployed contracts: every step is a real transaction on that fork, with its decoded result or revert. | REPRODUCIBLE | `apps/web/public/replay/cycle.json`, written by `scripts/demo/record-replay.ts` (the command is in its header; needs an anvil fork). The file's `forkOnly` list, shown on the page, says what the fork changed: the clock, frozen Lista prices, a mocked Chainlink feed, the impersonated desk address, a funded throwaway borrower. It is not a record of mainnet. |
+| C17 | The sender keeps one transaction of the desk key in flight, never signs above a gas-price cap, halts when it cannot account for a nonce, and sends collateral sales only through the MEV-protected broadcast. | REPRODUCIBLE | `pnpm exec vitest run apps/agent/test/tx.test.ts`; the rules are written out in `apps/agent/README.md`. |
+| C18 | The live desk runs with a target health of 1.30 after the gap, not the default 1.05. | VERIFIED-LIVE | `targetHfAfterGap` in the desk's `/health`. Venus's factors for TSLAB (60% collateral factor, 70% liquidation threshold): `cast call 0xfd36e2c2a6789db23113685031d7f16329158384 "markets(address)(bool,uint256,bool,uint256)" 0x97421799419eb782628e73e7220d8e0a207469a3 --rpc-url https://bsc-dataseed.bnbchain.org`. |
 
 ## D. Mainnet
 
@@ -91,6 +94,8 @@ These become VERIFIED-LIVE when, and only when, [PROOF.md](PROOF.md) shows the a
 | D4 | A `restore` sent while the market was closed reverted on mainnet with `RestoreRefused`. | VERIFIED-LIVE | PROOF.md section 2 |
 | D5 | A guard job was funded, submitted and settled through `BallastGuardian`. | VERIFIED-LIVE | PROOF.md section 2 |
 | D6 | The desk is running and its read API is public. | VERIFIED-LIVE | The URL in [JUDGES.md](JUDGES.md) |
+| D7 | The web app is live, with `/app`, `/oracle`, `/guardians`, `/evidence` and `/judge`. | VERIFIED-LIVE | https://ballast-desk.vercel.app |
+| D8 | The desk's first 11 overlay posts (nonces 2 to 12 of its key, 2026-10-08 18:07 to 20:02 UTC) were mined, although the desk's own feed of that period recorded them as dropped. | VERIFIED-LIVE for the chain half | `cast nonce 0xccD7f069275549793b2A8804A5691fCa6665D152 --rpc-url https://bsc-dataseed.bnbchain.org` is above 12, and the first of them is in PROOF.md. That the feed was wrong, why (a receipt lagging behind the nonce), and that the bad feed is archived on the desk host is our own account; the fix is the commit "Wait for receipts that lag behind the nonce". |
 
 ## E. NOT-CLAIMED
 
@@ -103,8 +108,8 @@ These become VERIFIED-LIVE when, and only when, [PROOF.md](PROOF.md) shows the a
 | E5 | That the calendar works after 2027. It covers 2026 and 2027 and fails closed after that. |
 | E6 | That Ballast prevents liquidation. It lowers the odds for gaps inside a p99 buffer. |
 | E7 | That closures have cost borrowers or lenders large sums so far. The measured total is $31.6k repaid and no bad debt. |
-| E8 | That the MEV-protected `broadcast` of the Transaction API has been used. It is wired for collateral sales and none has happened. |
-| E9 | That Market, Trading, Wallet, DeFi or b402 are used by the product. They are client code with tests. |
+| E8 | That the MEV-protected `broadcast` has carried a collateral sale on mainnet, unless PROOF.md lists one. |
+| E9 | That b402 is used, or that the Trading API is used by anything but the demo script. |
 | E10 | That an x402 payment has ever been made. The buyer is off by default and has only met a stand-in merchant in tests. |
 | E11 | That the measurement is more than it is: three and a half months, $31.6k of liquidations, Binance prices standing in for the lending oracle. The caveats are in `research/README.md`. |
 | E12 | Anything about positions that are open on Lista or Venus today. The published rows are past liquidations; the part of the study on open positions is not published. |
@@ -113,3 +118,5 @@ These become VERIFIED-LIVE when, and only when, [PROOF.md](PROOF.md) shows the a
 | E15 | That the desk is highly available. It is one process with one hot key. |
 | E16 | That the fork demo runs on a keyless public RPC. The fork tests do; the demo needs an endpoint that keeps serving the forked block. |
 | E17 | That a test shows `canAddRisk` answering yes on real mainnet prices. In the fork tests the yes is mocked ([MOCKS.md](MOCKS.md)); every refusal is real. The real yes is the mainnet restore in D3. |
+| E18 | That `/judge` shows mainnet. It plays a fork recording (C16); mainnet is PROOF.md. |
+| E19 | That the desk's default behaviour is what runs live. The live desk uses a more conservative target (C18). |

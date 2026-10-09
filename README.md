@@ -7,13 +7,14 @@ It is built for BNB Chain: bStock collateral on Lista Lending and Venus.
 | You want | Read |
 |---|---|
 | To check everything in five minutes | [JUDGES.md](JUDGES.md) |
+| No setup: one full cycle, step by step | https://ballast-desk.vercel.app/judge |
 | Addresses, transactions, test counts | [PROOF.md](PROOF.md), rendered from data by `pnpm proof` |
 | The evidence behind each statement | [CLAIMS.md](CLAIMS.md) |
 | The study behind the numbers: scripts, data, a checker | [research/README.md](research/README.md) |
 | What is real and what is mocked | [MOCKS.md](MOCKS.md) |
 | To use the Session Oracle in your own protocol | [docs/session-oracle.md](docs/session-oracle.md) |
 
-The contracts are deployed on BSC mainnet and the desk is running against them. Nothing in this README is a statement about mainnet beyond what PROOF.md lists as an address or a transaction.
+The contracts are deployed on BSC mainnet, the desk is running against them and the app is at https://ballast-desk.vercel.app. Nothing in this README is a statement about mainnet beyond what PROOF.md lists as an address or a transaction.
 
 ## The measurement
 
@@ -31,12 +32,14 @@ Loans are not lost while the market is shut. Risk builds up while it is closed a
 ## What Ballast does
 
 1. **One account per loan.** `BallastFactory` creates a per-user account, an EIP-1167 clone of `ListaAccount` or `VenusAccount`, that holds one bStock-collateral loan and a stablecoin cushion. The owner can do everything at any time, sets a mandate (`maxLtvBps`, `shieldLtvBps`, `maxSlippageBps`, `autoRestore`) and names a keeper.
-2. **Shield before the close.** In the hour before each regular close, and for the whole session before an earnings gap, the keeper plans for a health factor of 1.05 after the coming window's p99 gap. It repays from the cushion (`shieldRepay`) and, on Lista only, sells collateral into debt through a Moolah flash loan and a PancakeSwap v3 route the owner fixed (`shieldDeleverage`).
+2. **Shield before the close.** In the hour before each regular close, and for the whole session before an earnings gap, the keeper plans for a target health factor after the coming window's p99 gap (`TARGET_HF_AFTER_GAP`, 1.05 by default). It repays from the cushion (`shieldRepay`) and, on Lista only, sells collateral into debt through a Moolah flash loan and a PancakeSwap v3 route the owner fixed (`shieldDeleverage`).
 3. **Restore after the open.** `restore` borrows back into the cushion only when `SessionOracle.canAddRisk` says yes: regular session, at least 90 minutes after the open, publisher overlay fresh and unflagged, on-chain price within 60 bps of a reference no older than 26 hours, and no closure within 3 hours. On a normal day that is 11:00 to 13:00 New York time. These are the deploy script's parameters; the oracle owner can move them only inside fixed bounds.
 4. **Cover without moving the loan.** `CushionVault` holds a cushion for a loan that stays on the user's own address. The keeper can spend it only on that user's debt, only near a closure, and only up to the user's daily cap.
 5. **Guardians paid on survival.** A guard job on BNB Chain's ERC-8183 kernel pays a guardian agent that has an ERC-8004 identity only if the account was not liquidated and is healthy after the window. `BallastGuardian` is the job's hook and evaluator and writes the outcome to ERC-8004 reputation.
 
-The Risk Desk (`apps/agent`) is the process that runs this: the overlay publisher, the keeper, the guardian loop and a read API. Every decision in it is deterministic code. Each write is simulated before it is signed, and all sends of the desk key go through one queue. A language model writes a two-sentence note about each shield, restore and refusal afterwards; no code path reads those notes back.
+The Risk Desk (`apps/agent`) is the process that runs this: the overlay publisher, the keeper, the guardian loop and a read API. Every decision in it is deterministic code. Each write is simulated before it is signed. One transaction of the desk key is in flight at a time and none is signed above a gas-price cap; when the sender cannot tell what became of a nonce it halts and signs nothing more until the chain shows the way is clear. Collateral sales go out only through Binance's MEV-protected broadcast, never to the public mempool. A language model writes a two-sentence note about each shield, restore and refusal afterwards; no code path reads those notes back.
+
+The live desk runs with a target of 1.30 instead of the default 1.05. Venus lends at most 60% against TSLAB and liquidates at 70%, so even a fully drawn Venus position keeps a health factor of about 1.10 after TSLA's p99 weekend gap: at the default target the desk would have nothing to shield there. The more conservative setting lets a small Venus position exercise the whole cycle. `/health` on the desk shows the value in force.
 
 ## How it is enforced
 
@@ -131,9 +134,13 @@ flowchart LR
   subgraph BINANCE["Binance Web3"]
     RWA["RWA status endpoints<br/>keyless"]
     TXAPI["Transaction API<br/>keyed"]
-    OTHER["Market, Trading, Wallet,<br/>DeFi, b402, keyed RWA Data"]
+    DATAAPI["RWA Data, Market, Wallet, DeFi<br/>keyed"]
+    TRADE["Trading API<br/>keyed"]
+    OTHER["b402"]
   end
 
+  WEB["Web app (apps/web)"]
+  DEMO["scripts/demo/mainnet.ts<br/>the owner side of the live cycle"]
   TOOLS["SDK, MCP server, skill"]
   X402["x402 earnings endpoint"]
   LLM["Agent Studio LLM provider"]
@@ -164,6 +171,14 @@ flowchart LR
   TOOLS -->|"read and plan"| ORACLE
   CLIENT -->|"GET"| API
   CLIENT --> TOOLS
+  WEB -->|"feed, accounts, ledger"| API
+  WEB -->|"reads"| ORACLE
+  WEB -->|"market and asset status"| RWA
+  WEB -->|"prices, candles, balances, positions"| DATAAPI
+  WEB -->|"simulate previews"| TXAPI
+  DEMO -->|"quote, swap"| TRADE
+  DEMO -->|"simulate, broadcast"| TXAPI
+  DEMO -->|"open, borrow, restore, hire a guardian"| FACTORY
 
   LISTA -.->|"peek: not adopted by Lista"| FEED
   KEEPER -->|"simulate"| TXAPI
@@ -180,10 +195,10 @@ Solid arrows are call paths that exist in the code and are executed by the test 
 Dashed arrows and dashed boxes are in the repository but not wired, off by default, or not yet run against the live service:
 
 - **Lista to SessionAwareFeed.** No lender reads the feed. It is shown on a market created inside a fork test.
-- **Keeper to the Transaction API, broadcast.** `simulate` is live: the mainnet desk simulates its writes through it. The MEV-protected `broadcast` is wired in `apps/agent/src/desk/tx.ts` for collateral sales only, and no sale has happened yet.
+- **Keeper to the Transaction API, broadcast.** `simulate` is live: the mainnet desk simulates its writes through it. The MEV-protected `broadcast` is the only route the desk has for a collateral sale (`apps/agent/src/desk/tx.ts`). No sale has gone through it on mainnet unless PROOF.md lists one.
 - **Publisher to an x402 endpoint.** The buyer exists (`apps/agent/src/desk/x402.ts`, `earnings.ts`) and is off until `X402_EARNINGS_URL` is set. It has never paid a live merchant.
 - **Desk notes to an LLM.** On only when the Agent Studio project's LLM provider has a key. Notes are written after the event and never read by a decision.
-- **Market, Trading, Wallet, DeFi, b402, keyed RWA Data.** Typed clients with unit tests in `packages/binance`. Nothing calls them.
+- **b402.** A typed client with unit tests in `packages/binance`. Nothing calls it.
 
 ## The Session Oracle as a primitive
 
@@ -211,22 +226,28 @@ Interface, read patterns, adapter wiring and the MCP tools are in [docs/session-
 
 `packages/binance` is one client for two surfaces: the keyless public RWA endpoints (`src/public.ts`) and the keyed Web3 API with HMAC `X-OC-*` signing (`src/client.ts`, `src/sign.ts`, `src/modules/*`). Every call from either surface is written to a probe (`src/probe.ts`); the desk serves the latency and error-code summary at `/api-health` and the MCP server as the `api_health` tool.
 
-Two of these are wired into the product. The rest is client code with tests and no caller. We list both, so nobody has to find out by grep.
+What the product calls, where, and what it loses without it:
 
-| Module | Endpoints | Called from | What it does there | Without it | Live status |
-|---|---|---|---|---|---|
-| RWA status, keyless | `assetStatus`, `dynamic` | `apps/agent/src/desk/publisher.ts` (`Publisher`), `packages/mcp/src/tools.ts` (`tokenized_stock_status`) | Per bStock: halt, corporate action, limited-asset and earnings reasons become overlay flags. Per Ondo token: the live shares multiplier, and the underlying price that serves as the reference for tickers without a Chainlink feed. | No overlay is posted for that symbol. The last one expires within 6 hours, `canAddRisk` answers `OVERLAY_STALE`, and restores stop. Shields keep working. | Live. The mainnet desk had called each endpoint 288 times without an error when we looked on 2026-10-08; its `/api-health` shows the current count. |
-| Transaction, keyed | `simulate`, `broadcast` | `apps/agent/src/desk/tx.ts` (`ChainSender`) | Every desk write is simulated here first when a key is set on chain 56. For a restore, a disagreement between this simulator and `eth_call` stops the send. Collateral sales are broadcast here with MEV protection, with the RPC as the fallback. | The desk simulates with `eth_call` and broadcasts through its RPC. It loses the second simulator and the protected route for sales. | `simulate` is live: 11 calls, no error, in the mainnet desk's `/api-health` on 2026-10-08. `broadcast` has not been used: no sale yet. |
-| RWA status, keyless | `stockList`, `meta`, `marketStatus`, `klines` | nothing | | | Client and tests only. |
-| Transaction, keyed | `gasPrice`, `orders` | nothing | | | Client and tests only. |
-| RWA Data, keyed | `platforms`, `price`, `search`, `tokens`, `underlyingProfile`, `underlyingMarket` | nothing (`price` is in the live test) | | | Client and tests only. |
-| Market, keyed | `candles`, `price`, `tokenSearch` | nothing | | | Client and tests only. |
-| Trading, keyed | `quote`, `swap`, `approveTransaction`, `submitRfqOrder`, `order` | nothing | | | Client and tests only. |
-| Wallet, keyed | `allTokenBalances`, `txDetail` | nothing | | | Client and tests only. |
-| DeFi, keyed | `positions`, `protocols`, `investments`, `deposit`, `redeem` | nothing | | | Client and tests only. |
-| b402, keyed | `supported`, `verify`, `settle` | nothing | | | Client and tests only. The desk's x402 buyer signs EIP-3009 payments itself and does not call these. |
+| Module | Endpoints | Called from | Used for | Without it |
+|---|---|---|---|---|
+| RWA status, keyless | `assetStatus`, `dynamic` | `apps/agent/src/desk/publisher.ts` | The desk's overlay. Per bStock: halt, corporate action, limited-asset and earnings reasons become flags. Per Ondo token: the live shares multiplier, and the underlying price that is the reference for tickers without a Chainlink feed. | No overlay is posted for that symbol. The last one expires within 6 hours, `canAddRisk` answers `OVERLAY_STALE` and restores stop. Shields keep working. |
+| RWA status, keyless | `marketStatus`, `assetStatus` | `apps/web/lib/server/handlers/rwa.ts` (`/api/rwa-status`), `packages/mcp/src/tools.ts` (`tokenized_stock_status`) | `/oracle` shows the US session as Binance sees it next to the on-chain calendar, and each token's status. The MCP tool answers the same for any token. | The page and the tool lose Binance's view; the on-chain calendar is still shown. |
+| RWA Data, keyed | `price` | `apps/web/lib/server/handlers/market.ts` (`/api/market/prices`) | The cross-issuer table on `/oracle`: Binance's price of the bStock, Ondo and xStocks token of each ticker, turned into a price per share with the on-chain multipliers. | The table says the prices are unavailable. |
+| Market, keyed | `candles` | `apps/web/lib/server/handlers/market.ts` (`/api/market/candles`) | The hourly chart on `/oracle` that the closed-market band is drawn against. | The chart falls back to the keyless `klines` endpoint of the same client. |
+| Transaction, keyed | `simulate` | `apps/agent/src/desk/tx.ts`; `apps/web/lib/server/handlers/simulate.ts` (`/api/simulate`); `scripts/demo/mainnet.ts` | Desk: every write is simulated here before it is signed, next to `eth_call`; for a restore a disagreement between the two stops the send. App: every transaction is previewed before the wallet is asked to sign. | Desk and app go by `eth_call` alone. |
+| Transaction, keyed | `broadcast` | `apps/agent/src/desk/tx.ts`; `scripts/demo/mainnet.ts` | The MEV-protected route. It is the only way the desk sends a collateral sale, and the demo script uses it for the collateral buy. | The desk does not sell: sales are disabled and shields repay from the cushion only. The script sends through its RPC. |
+| Trading, keyed | `quote`, `approveTransaction`, `swap` | `scripts/demo/mainnet.ts` (`open-venus`) | Buys the few dollars of TSLAB that become the collateral of the live demo position. | The script buys in the PancakeSwap v3 pool from the config and says so. |
+| Wallet, keyed | `allTokenBalances` | `apps/web/lib/server/binance-data.ts` (`/api/wallet-stocks`) | The collateral picker in `/app`: every tokenized stock the connected wallet holds, with prices. | The same tokens are read from the chain, and the answer says which source it used. |
+| DeFi, keyed | `positions` | `apps/web/lib/server/handlers/reads.ts` (`/api/loans`) | Loan import in `/app`: the wallet's Lista and Venus loans are read on chain, and the DeFi API adds Binance's own summary of the wallet's positions next to them. | The loans still load from the chain; the summary is missing. |
 
-**TODO-AT-MERGE: web app.** The web app's calls to Wallet, DeFi, Trading and Market are not in this tree. This table lists only what the code here calls; those rows change when the web app lands.
+In the client with tests and no caller: keyless `stockList` and `meta`; Transaction `gasPrice` and `orders`; RWA Data `platforms`, `search`, `tokens`, `underlyingProfile`, `underlyingMarket`; Market `price` and `tokenSearch`; Trading `submitRfqOrder` and `order`; Wallet `txDetail`; DeFi `protocols`, `investments`, `deposit`, `redeem`; all of b402. The desk's x402 buyer signs EIP-3009 payments itself and does not call b402.
+
+What has run against the live API:
+
+- The desk's calls are counted in its own `/api-health` (URL in [JUDGES.md](JUDGES.md)): the two keyless endpoints on every publisher run, `simulate` on every write it prepares. The counters restart with the desk.
+- `broadcast` has not carried a collateral sale on mainnet unless PROOF.md lists one.
+- The Trading API buy is live only if PROOF.md lists the buy transaction; until then it is a tested code path of the demo script.
+- The web app's keyed calls run on the server side of the deployed app when a wallet uses `/app` or someone opens `/oracle`. `apps/web/scripts/binance-smoke.ts` exercises the Wallet, DeFi and simulate calls against the live API with a key.
 
 The client also handles what the API asks of a caller: three different success codes, a limit of 5 requests per second per endpoint, retries on 429 that honour `Retry-After`, no retry of a state-changing POST after a timeout, and the geo-block code `40304`, which is recognised and never retried.
 
@@ -254,15 +275,17 @@ Node 22 or newer, pnpm 9, and Foundry for the contracts.
 git clone --recurse-submodules https://github.com/RaYYeR220/ballast
 cd ballast
 pnpm install
-pnpm test                                        # TypeScript: SDK, risk model, Binance client, MCP, desk
+pnpm test                                        # 987 TypeScript tests: SDK, risk model, Binance client, MCP, desk, web app
 cd contracts
-forge test --no-match-path "test/fork/*"         # contract unit tests, no network
-forge test --match-path "test/fork/*"            # fork tests against real BSC mainnet state
+forge test --no-match-path "test/fork/*"         # 57 contract unit tests, no network
+forge test --match-path "test/fork/*"            # 99 fork tests against real BSC mainnet state
 ```
 
 The fork tests fork BSC at the chain head through `https://bsc-rpc.publicnode.com` and take about 20 seconds after the first compile. Set `BSC_RPC_URL` to use another endpoint, and `FORK_BLOCK` to pin a block (that needs an archive endpoint). `pnpm contracts:test` and `pnpm contracts:test:fork` run the same two commands from the repository root.
 
 Current counts and the date of the last full run are in [PROOF.md](PROOF.md), section 3.
+
+**No setup.** https://ballast-desk.vercel.app/judge plays one full cycle step by step, with the transaction, the decoded result or revert and the account after each step. It is a recording made on a fork of BNB Chain against the deployed contracts ([MOCKS.md](MOCKS.md) says what the fork changed), and a step links its mainnet transaction once there is one.
 
 **The measurement and the backtest**
 
@@ -301,6 +324,17 @@ curl -s "http://127.0.0.1:8787/feed?limit=20"
 
 Both keys are anvil's published development keys and are worth nothing outside a local node. [MOCKS.md](MOCKS.md) lists what the demo replaces on the fork.
 
+**The web app.**
+
+```bash
+cp apps/web/.env.example apps/web/.env.local     # chain id, RPC, desk API; the Binance keys are optional
+pnpm --filter @ballast/web dev                   # http://localhost:3000
+```
+
+Pages: `/` the measurement, `/app` credit lines and covers, `/oracle` the Session Oracle explorer, `/guardians` guard jobs, `/evidence` the study, `/judge` the recorded cycle. Without Binance keys the app falls back to chain reads and keyless endpoints where it can.
+
+**The live cycle.** `scripts/demo/mainnet.ts` is the owner's side of the cycle on mainnet, one small step at a time, and a dry run unless it is told to send. `open-venus` buys a few dollars of TSLAB (through the Binance Trading API, or the PancakeSwap pool if that fails), opens a Venus account kept by the desk and borrows into its cushion. `restore` is the owner calling `restore` in the regular session, when the oracle allows it. `guardian-job` hires the desk as guardian for a window. `refused-restore` sends the same `restore` while the market is closed, so that it is mined and reverts with `RestoreRefused`. In between, the desk shields the account before the close by itself. The script may spend at most 6 USDT and 0.001 BNB of gas, appends every transaction it sends to `data/proof-txs.json`, and `pnpm proof` turns that file into PROOF.md. Which of these steps have happened on mainnet is what PROOF.md lists, nothing more.
+
 **The MCP server.** Eight read and plan tools over stdio or Streamable HTTP. It holds no key and sends nothing.
 
 ```bash
@@ -336,8 +370,9 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 | `packages/mcp` | MCP server with eight read and plan tools |
 | `apps/agent/src/desk` | The Risk Desk: publisher, keeper, guardian loop, ledger, x402 buyer, notes, read API |
 | `apps/agent/app/agent` | The BNB Agent Studio project: A2A and MCP faces, `studio.toml` |
+| `apps/web` | The web app (Next.js): the landing page, `/app`, `/oracle`, `/guardians`, `/evidence`, `/judge`, and the server routes that call Binance, the desk and the chain |
 | `skill` | Agent skill for the MCP tools |
-| `scripts` | `proof.ts` (renders PROOF.md), `verify-onchain.ts` (checks a deployment), `demo/fork-demo.ts`, `export-abis.ts` |
+| `scripts` | `proof.ts` (renders PROOF.md), `verify-onchain.ts` (checks a deployment), `demo/mainnet.ts` (the owner's side of the live cycle), `demo/record-replay.ts` (records the cycle `/judge` plays), `demo/fork-demo.ts`, `export-abis.ts` |
 | `config` | BSC addresses and per-ticker gap buffers, the NYSE calendar, the operator's earnings schedule |
 | `research` | The measurement: scanner and gap-study scripts, their data, and `check_figures.py` |
 | `data` | Closure windows of 77 bStocks, the backtest result, and the inputs of PROOF.md |
@@ -345,7 +380,10 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 
 ## Honest limits
 
-- **Mainnet.** The contracts and the desk are live; an account, a shield, a restore and a guard job are on mainnet only once PROOF.md lists their transactions. The mainnet cycle is planned on a small Venus position. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
+- **Mainnet.** The contracts, the desk and the app are live; an account, a shield, a restore and a guard job are on mainnet only once PROOF.md lists their transactions. Lista accounts, flash deleverage, the vault on Lista and the feed are proven on a fork of mainnet state, not with a live Lista loan.
+- **The replay is a recording.** `/judge` plays a cycle recorded on a fork with the clock moved and prices frozen. It shows what the deployed contracts do; the mainnet transactions are the ones in PROOF.md.
+- **The live desk is tuned for the demonstration.** It runs with a target health of 1.30, not the default 1.05, so that a small Venus position has something to shield.
+- **One incident so far.** In its first two hours on mainnet the desk recorded 11 overlay posts as dropped although all of them were mined: its sender took a receipt that lagged behind the nonce for a lost nonce. Nothing on chain was affected; the desk's feed of that period was wrong. It is fixed, and PROOF.md carries the note.
 - **The damage so far is small.** The 120 liquidations repaid $31.6k in total and left no bad debt. Ballast is built for where the data says the risk concentrates, not in answer to a loss that has already happened.
 - **The measurement is small and uses a proxy.** Three and a half months, $31.6k of liquidations, and Binance spot prices standing in for the lending oracle. Re-running the scans needs an archive node. `research/README.md` lists the caveats.
 - **Gap buffers are statistics.** A p99 is exceeded one time in a hundred. In the backtest two shielded positions were still liquidated, both on earnings nights that the dataset does not flag.
@@ -357,7 +395,7 @@ It reads `contracts/deployments/<CHAIN_ID>.json`, chain 56 by default. Against t
 - **After a sale the owner acts.** There is no automatic buy-back, and the keeper cannot restore until the owner turns `autoRestore` back on.
 - **The owner is not gated.** The owner's own `borrow` works at any hour. The session rules bind the keeper and the `restore` path.
 - **One desk, one hot key.** If the process is down, nothing is shielded. The owner can still do everything by hand. An open guard job is then never submitted, and the client claims the refund from the kernel at expiry.
-- **Binance keyed API.** The desk uses one keyed call live, `simulate`. `broadcast` waits for the first collateral sale. Market, Trading, Wallet, DeFi and b402 have no caller in this tree. Binance Agentic Wallet and Wallet Skills are not used.
+- **Binance Web3 API.** `broadcast` has not carried a collateral sale on mainnet unless PROOF.md lists one. The Trading API is used by the demo script only. b402 has no caller. Binance Agentic Wallet and Wallet Skills are not used.
 - **No audit.** The contracts have tests, not an external review.
 
 ## License

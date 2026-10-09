@@ -16,7 +16,7 @@ It is three contracts. You can use any of them without the Ballast accounts.
 | `SessionOracle` | `contracts/src/SessionOracle.sol` | per-share prices, multipliers, reference age, gap buffers, `canAddRisk` |
 | `SessionAwareFeed` | `contracts/src/SessionAwareFeed.sol` | a Lista-style `peek` price source that holds a band while the market is closed |
 
-Addresses on BSC mainnet are in [PROOF.md](../PROOF.md), section 1, once the deployment exists. On a local fork they are in `contracts/deployments/31337.json` after you run the deploy script.
+Addresses on BSC mainnet are in [PROOF.md](../PROOF.md), section 1, and in `contracts/deployments/56.json`. The explorer at https://ballast-desk.vercel.app/oracle shows the same reads live. On a local fork they are in `contracts/deployments/31337.json` after you run the deploy script.
 
 ## Units and symbols
 
@@ -238,7 +238,7 @@ The fork test `contracts/test/fork/SessionAwareFeed.fork.t.sol` wires the feed i
 ## From the command line
 
 ```bash
-ORACLE=<SessionOracle address>
+ORACLE=0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388   # SessionOracle on BSC mainnet, see PROOF.md
 RPC=https://bsc-dataseed.bnbchain.org
 SYM=$(cast format-bytes32-string TSLA)
 

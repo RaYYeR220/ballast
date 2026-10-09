@@ -22,7 +22,7 @@ This skill reads that state and plans shields. It never signs and holds no keys.
 Node 22 or newer and pnpm are required.
 
 ```bash
-git clone <the Ballast repository URL>
+git clone --recurse-submodules https://github.com/RaYYeR220/ballast
 cd ballast
 pnpm install
 ```

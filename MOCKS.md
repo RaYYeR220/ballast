@@ -69,7 +69,7 @@ What this means for the headline tests:
 
 ## 3. TypeScript tests
 
-`pnpm test`, 499 tests. No network.
+`pnpm test`, 987 tests. No network.
 
 | What | Stand-in |
 |---|---|
@@ -77,6 +77,8 @@ What this means for the headline tests:
 | The Binance APIs | an injected `fetch`. Keyless responses are recorded ones in `packages/binance/test/fixtures`. Keyed responses are hand-written envelopes. |
 | The desk's sender | a fake that records calldata and returns receipts; the real `ChainSender` is tested against a fake RPC client and a fake Transaction API |
 | The x402 merchant | an injected `fetch` that answers 402 and then 200 |
+| The web app's server routes | the same: an injected `fetch` for Binance and the desk, injected chain reads |
+| The demo script (`scripts/demo/mainnet.ts`) | its argument parsing, spending caps and proof file are tested in `apps/agent/test/mainnet-demo.test.ts`; nothing is sent |
 | The language model | a function that returns a fixed string |
 | Clocks | injected |
 
@@ -92,7 +94,9 @@ Replaced on the fork, by `setup`, before the clock moves:
 
 | What | How | Why |
 |---|---|---|
-| Lista's stock oracle and resilient oracle | `anvil_setCode` puts `MockPriceSource` at both addresses, loaded with the prices read a moment earlier | Same reason as `_freezePrices`: after a warp the real feeds are stale, the Session Oracle reads `PRICE_UNAVAILABLE` and the venue cannot price the account. |
+| Lista's stock oracle and resilient oracle | `MockPriceSource` code is put at both addresses, loaded with the prices read a moment earlier | Same reason as `_freezePrices`: after a warp the real feeds are stale, the Session Oracle reads `PRICE_UNAVAILABLE` and the venue cannot price the account. |
+| Venus's oracle | frozen the same way, behind a fixed-price mock | It rejects stale feeds after a warp, and then a Venus account cannot be priced. |
+| The Session Oracle's reference feeds | pinned to the on-chain per-share prices, always fresh | A fork receives no new Chainlink rounds, so after a warp every reference would be stale and no restore could be shown. |
 | Code at the two demo accounts | `anvil_setCode` clears it | The published anvil keys carry EIP-7702 delegations on mainnet, and the ERC-8004 registry mints with `safeMint`. |
 | Token balances | impersonating a large exchange wallet | The demo accounts start empty. |
 | Time | `evm_setNextBlockTimestamp`: 59 minutes before the next close, then just past the guard window | To watch a shield and a settlement without waiting. |
@@ -100,14 +104,31 @@ Replaced on the fork, by `setup`, before the clock moves:
 
 One thing in the demo is not replaced and does not follow the warped clock: the publisher still reads the live Binance RWA status for mainnet. Its flags describe the real market at the real time, not the moment the fork was warped to.
 
-## 5. Mainnet
+## 5. The recording behind /judge
+
+`apps/web/public/replay/cycle.json` is what `/judge` plays. `scripts/demo/record-replay.ts` wrote it on a local anvil fork of BNB Chain (chain 31337 only), by default against the contracts deployed on mainnet, which the fork carries.
+
+Real: every step is a transaction on that fork, and what is recorded is its hash, block time, decoded result or revert, and the account's state after it. The contracts are the deployed ones. Nothing is typed in.
+
+Fork only, and listed in the recording itself (`forkOnly`, shown on the page):
+
+- the fork's clock is moved forward: a close, a weekend and an open pass in seconds;
+- Lista's price sources are frozen behind a fixed-price mock, because they go stale when the clock moves;
+- the NVDA Chainlink feed is replaced by a mock that reprints the frozen per-share price after each move, because a fork receives no new rounds;
+- the desk's address is impersonated by the local node; no key of the desk is used;
+- the borrower is a throwaway address funded from an exchange wallet on the fork.
+
+So the replay shows what the deployed contracts do in each situation. It does not show that the situation has occurred on mainnet. A step links a mainnet transaction only when `data/proof-txs.json` has one for it.
+
+## 6. Mainnet
 
 No mocks.
 
 - `contracts/script/Deploy.s.sol` deploys only contracts from `contracts/src` and wires them to the addresses in `config/bsc-mainnet.json`. Nothing under `contracts/test` is deployed.
 - The desk talks to the Binance Transaction API only on chain 56, and `FORK_TICK_SEC` is refused on any chain but the local fork.
-- The fork demo script cannot run against mainnet.
-- `DRY_RUN`, which defaults to true, is not a mock: it simulates each real transaction and stops before sending it. Feed events from a dry run are marked `dryRun`.
+- The fork demo and the replay recorder cannot run against mainnet. `scripts/demo/mainnet.ts` is a dry run unless it is given `--send` and `--confirm-mainnet`, and it caps what it may spend.
+- `DRY_RUN`, which defaults to true, is not a mock: it simulates each real transaction and stops before sending it. Feed events from a dry run are marked `dryRun`. The live desk runs with `DRY_RUN=false`.
+- The live desk's settings differ from the defaults in one policy value: the target health after the gap is 1.30, not 1.05.
 - Desk notes come from a real language model when one is configured. They are commentary on events that already happened.
 
 Whether anything has actually run on mainnet is recorded in [PROOF.md](PROOF.md), and nowhere else.

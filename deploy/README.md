@@ -28,7 +28,7 @@ and write `/var/lib/ballast`, nothing else, and the user that can write the code
 
 ```bash
 sudo install -d -o ballast-build -g ballast-build /opt/ballast
-sudo -u ballast-build -H git clone <repository-url> /opt/ballast
+sudo -u ballast-build -H git clone https://github.com/RaYYeR220/ballast /opt/ballast
 cd /opt/ballast
 sudo -u ballast-build -H corepack pnpm install --frozen-lockfile --ignore-scripts
 sudo chown -R root:root /opt/ballast       # from here on the code is root-owned and read-only
