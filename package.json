@@ -11,7 +11,7 @@
     "abis": "cd contracts && forge build && cd .. && tsx scripts/export-abis.ts",
     "test": "vitest run",
     "backtest": "tsx packages/risk/scripts/backtest.ts",
-    "typecheck": "pnpm -r exec tsc --noEmit",
+    "typecheck": "pnpm --filter @ballast/web exec next typegen && pnpm -r exec tsc --noEmit",
     "desk": "pnpm --filter @ballast/agent desk",
     "verify:onchain": "tsx scripts/verify-onchain.ts",
     "proof": "tsx scripts/proof.ts"

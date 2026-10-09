@@ -49,7 +49,7 @@ const EXPECTED = {
 };
 
 const chainId = Number(process.env.CHAIN_ID ?? "56");
-const rpc = process.env.BSC_RPC_URL ?? (chainId === 31337 ? "http://127.0.0.1:8545" : "https://bsc-dataseed.bnbchain.org");
+const rpc = process.env.BSC_RPC_URL ?? (chainId === 31337 ? "http://127.0.0.1:8545" : "https://bsc-rpc.publicnode.com");
 const explorer = chainId === 56 ? "https://bscscan.com/address/" : null;
 
 /** Deployment key -> forge artifact name. */

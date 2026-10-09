@@ -19,7 +19,7 @@ export function contextFromEnv(env: NodeJS.ProcessEnv = process.env): ToolContex
   const chainId = Number(env.CHAIN_ID ?? 56);
   if (!Number.isInteger(chainId) || chainId <= 0) throw new Error(`CHAIN_ID must be a positive integer: ${env.CHAIN_ID}`);
   const deployment = loadDeployment(chainId, env.DEPLOYMENT_FILE ? { file: env.DEPLOYMENT_FILE } : {});
-  const url = env.BSC_RPC_URL ?? "https://bsc-dataseed.bnbchain.org";
+  const url = env.BSC_RPC_URL ?? "https://bsc-rpc.publicnode.com";
   const client = createPublicClient({ chain: { ...bsc, id: chainId }, transport: http(url) });
   const records: ProbeRecord[] = [];
   const probe = (r: ProbeRecord) => {

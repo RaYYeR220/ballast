@@ -1,0 +1,221 @@
+/* GET handlers for the app's chain reads: /api/accounts?owner=&offset=, /api/loans?user=, /api/markets,
+   /api/token?token=&owner=&spender=. Each answer is cached by its inputs and the head block with one read in
+   flight, runs under a deadline and behind the shared read gate, and reads a bounded amount of chain state. */
+import { defi } from "@ballast/binance";
+import { bscExternal, type ReadClient } from "@ballast/sdk";
+import type { Address } from "viem";
+import type { DefiSummary, MarketView, StocksBody, TokenView } from "@/lib/views";
+import { BINANCE_BSC, binanceMessage, web3Client } from "../binance";
+import { lendingPositions, walletStocks } from "../binance-data";
+import { ttlCache } from "../cache";
+import type { DeploymentStatus } from "../deployment";
+import type { ServerEnv } from "../env";
+import { BusyError, readGate, withDeadline } from "../guard";
+import { LIMITS } from "../limits";
+import { addressParam, badRequest, intParam, optionalAddress, query } from "../params";
+import { head, isKnownToken, readAccounts, readLoans, readMarkets, readStocks, readToken, type AccountsPage } from "../reads";
+import { shortMessage } from "../simulate";
+
+const NO_STORE = { "cache-control": "no-store" };
+
+const clientIds = new WeakMap<object, number>();
+let nextClientId = 1;
+/** Cache keys carry the client they were read through (one per RPC endpoint), so answers never cross endpoints. */
+function clientId(c: object): number {
+  let id = clientIds.get(c);
+  if (id === undefined) {
+    id = nextClientId++;
+    clientIds.set(c, id);
+  }
+  return id;
+}
+
+/** An uncached read: behind the gate (a full gate answers 503) and under the route deadline. */
+const bounded = <T>(job: () => Promise<T>) => readGate.run(() => withDeadline(job()));
+
+/** A failed read as an answer: 503 with Retry-After when the instance is busy, else an "unavailable" state. */
+function failed(err: unknown, extra: Record<string, unknown> = {}): Response {
+  if (err instanceof BusyError) {
+    return Response.json({ error: err.message }, { status: 503, headers: { ...NO_STORE, "retry-after": "2" } });
+  }
+  return Response.json({ status: "unavailable", detail: `chain read failed: ${shortMessage(err)}`, ...extra }, { headers: NO_STORE });
+}
+
+/** a refusal by the gate is about this instance, not about the chain: the next caller may try again at once */
+const replayError = (err: unknown) => !(err instanceof BusyError);
+
+const accountsCache = ttlCache<AccountsPage>(10_000, { errorTtlMs: 2_000, replayError });
+
+/** the last page that was read for a wallet, served for up to a minute when the chain stops answering */
+const LAST_GOOD_MS = 60_000;
+const lastGood = new Map<string, { at: number; page: AccountsPage }>();
+function remember(key: string, page: AccountsPage, now: number) {
+  lastGood.delete(key);
+  lastGood.set(key, { at: now, page });
+  while (lastGood.size > 500) lastGood.delete(lastGood.keys().next().value as string);
+}
+
+export async function handleAccounts(req: Request, s: DeploymentStatus, c: ReadClient, clock: () => number = Date.now): Promise<Response> {
+  const q = query(req);
+  if (q instanceof Response) return q;
+  const owner = addressParam(q, "owner");
+  if (owner instanceof Response) return owner;
+  const offset = intParam(q, "offset", { min: 0, max: LIMITS.maxAccountOffset, fallback: 0 });
+  if (offset instanceof Response) return offset;
+  if (!s.ok) return Response.json({ status: "not-deployed", detail: s.detail }, { headers: NO_STORE });
+  const wallet = `${clientId(c)}|${s.chainId}|${s.deployment.factory}|${owner}|${offset}`;
+  try {
+    const h = await withDeadline(head(c), LIMITS.rpcTimeoutMs * 2);
+    const r = await accountsCache.get(`${wallet}|${h.blockNumber}`, () => bounded(() => readAccounts(c, s.deployment, owner, { offset, head: h })));
+    remember(wallet, r, clock());
+    return Response.json({ status: "ok", chainId: s.chainId, ...r }, { headers: NO_STORE });
+  } catch (err) {
+    // a chain hiccup should not blank the dashboard: the last figures stay, marked with their age and the reason
+    const last = lastGood.get(wallet);
+    if (last && clock() - last.at <= LAST_GOOD_MS) {
+      const detail = err instanceof BusyError ? err.message : `chain read failed: ${shortMessage(err)}`;
+      return Response.json({ status: "ok", chainId: s.chainId, ...last.page, stale: { ageSec: Math.round((clock() - last.at) / 1000), detail } }, { headers: NO_STORE });
+    }
+    return failed(err);
+  }
+}
+
+export type { DefiSummary };
+
+/** Per-protocol totals from the DeFi API's nested position list (addressList > protocolList), at most 50 rows. */
+export function summarizeDefi(data: unknown): { id: string; valueUsd: string }[] {
+  const out: { id: string; valueUsd: string }[] = [];
+  const addrs = (data as { addressList?: unknown })?.addressList;
+  if (!Array.isArray(addrs)) return out;
+  for (const a of addrs.slice(0, 5)) {
+    const list = (a as { protocolList?: unknown })?.protocolList;
+    if (!Array.isArray(list)) continue;
+    for (const p of list) {
+      if (out.length >= 50) return out;
+      const id = (p as { defiProtocolId?: unknown })?.defiProtocolId;
+      const v = (p as { protocolTotalValue?: unknown })?.protocolTotalValue;
+      if (typeof id === "string" || typeof id === "number") out.push({ id: String(id).slice(0, 64), valueUsd: (typeof v === "string" ? v : String(v ?? "")).slice(0, 40) });
+    }
+  }
+  return out;
+}
+
+async function defiPositions(e: ServerEnv, user: Address, fetchImpl?: typeof fetch): Promise<DefiSummary> {
+  const web3 = e.chainId === 56 ? web3Client(e, fetchImpl) : null;
+  if (!web3) return { status: "not-configured", protocols: [], lending: [] };
+  try {
+    const data = await defi.positions(web3, [user], [BINANCE_BSC]);
+    return { status: "ok", protocols: summarizeDefi(data), lending: lendingPositions(data) };
+  } catch (err) {
+    return { status: "unavailable", protocols: [], lending: [], detail: binanceMessage(err) };
+  }
+}
+
+type LoansAnswer = { chain: Awaited<ReturnType<typeof readLoans>>; defi: DefiSummary };
+const loansCache = ttlCache<LoansAnswer>(15_000, { errorTtlMs: 2_000, replayError });
+
+/** The wallet's own Lista/Venus loans, read on chain; the Binance DeFi API adds its position summary when keyed. */
+export async function handleLoans(req: Request, e: ServerEnv, c: ReadClient, fetchImpl?: typeof fetch): Promise<Response> {
+  const q = query(req);
+  if (q instanceof Response) return q;
+  const user = addressParam(q, "user");
+  if (user instanceof Response) return user;
+  try {
+    const h = await withDeadline(head(c), LIMITS.rpcTimeoutMs * 2);
+    const r = await loansCache.get(`${clientId(c)}|${e.chainId}|${user}|${h.blockNumber}`, () =>
+      bounded(async () => {
+        const [chain, defiSummary] = await Promise.all([readLoans(c, bscExternal(), user, { head: h }), defiPositions(e, user, fetchImpl)]);
+        return { chain, defi: defiSummary };
+      }),
+    );
+    return Response.json({ status: "ok", chainId: e.chainId, ...r.chain, defi: r.defi }, { headers: NO_STORE });
+  } catch (err) {
+    return failed(err, { defi: { status: "unavailable", protocols: [], lending: [] } satisfies DefiSummary });
+  }
+}
+
+/** A list in which some market could not be read: usable now, but not worth remembering for ten minutes. */
+class PartialMarkets extends Error {
+  constructor(readonly markets: MarketView[]) {
+    super("some markets could not be read");
+  }
+}
+
+const marketsCache = ttlCache<MarketView[]>(10 * 60_000, { errorTtlMs: 5_000, replayError });
+
+export async function handleMarkets(e: ServerEnv, c: ReadClient): Promise<Response> {
+  try {
+    const markets = await marketsCache.get(`${clientId(c)}|${e.chainId}`, async () => {
+      const list = await bounded(() => readMarkets(c, bscExternal()));
+      // only a complete read is kept for the long TTL; one with a failed market is retried after a few seconds
+      if (list.some((m) => m.error)) throw new PartialMarkets(list);
+      return list;
+    });
+    return Response.json({ status: "ok", markets }, { headers: { "cache-control": "public, s-maxage=300, stale-while-revalidate=600" } });
+  } catch (err) {
+    if (err instanceof PartialMarkets) return Response.json({ status: "ok", markets: err.markets, partial: true }, { headers: NO_STORE });
+    if (err instanceof BusyError) return failed(err);
+    return Response.json({ status: "unavailable", detail: shortMessage(err) }, { headers: NO_STORE });
+  }
+}
+
+const tokenCache = ttlCache<TokenView>(10_000, { errorTtlMs: 2_000, replayError });
+
+export async function handleToken(req: Request, c: ReadClient): Promise<Response> {
+  const q = query(req);
+  if (q instanceof Response) return q;
+  const token = addressParam(q, "token");
+  if (token instanceof Response) return token;
+  const owner = addressParam(q, "owner");
+  if (owner instanceof Response) return owner;
+  const spender = optionalAddress(q, "spender");
+  if (spender instanceof Response) return spender;
+  if (!isKnownToken(token)) return badRequest("token is not one this app uses");
+  try {
+    const h = await withDeadline(head(c), LIMITS.rpcTimeoutMs * 2);
+    const t = await tokenCache.get(`${clientId(c)}|${token}|${owner}|${spender ?? ""}|${h.blockNumber}`, () => bounded(() => readToken(c, token, owner, spender, { head: h })));
+    return Response.json({ status: "ok", ...t }, { headers: NO_STORE });
+  } catch (err) {
+    if (err instanceof BusyError) return failed(err);
+    return Response.json({ status: "unavailable", detail: shortMessage(err) }, { headers: NO_STORE });
+  }
+}
+
+const stocksCache = ttlCache<StocksBody>(20_000, { errorTtlMs: 2_000, replayError });
+
+/**
+ * The tokenized stocks a wallet holds, for the collateral picker. On BNB Chain with Binance keys the Wallet API
+ * answers (all issuers, with prices); when it is not set up or fails, the same tokens are read from the chain
+ * and the answer says so.
+ */
+export async function handleWalletStocks(req: Request, e: ServerEnv, c: ReadClient, fetchImpl?: typeof fetch): Promise<Response> {
+  const q = query(req);
+  if (q instanceof Response) return q;
+  const user = addressParam(q, "user");
+  if (user instanceof Response) return user;
+  try {
+    const body = await stocksCache.get(`${clientId(c)}|${e.chainId}|${user}`, async (): Promise<StocksBody> => {
+      const web3 = e.chainId === 56 ? web3Client(e, fetchImpl) : null;
+      let binance: "unavailable" | "not-configured" = "not-configured";
+      let detail: string | undefined;
+      if (web3) {
+        try {
+          return { status: "ok", source: "binance", binance: "ok", stocks: await walletStocks(web3, user) };
+        } catch (err) {
+          binance = "unavailable";
+          detail = binanceMessage(err);
+        }
+      }
+      try {
+        const stocks = await bounded(() => readStocks(c, user));
+        return { status: "ok", source: "chain", binance, ...(detail ? { detail } : {}), stocks };
+      } catch (err) {
+        if (err instanceof BusyError) throw err;
+        return { status: "unavailable", binance, detail: `chain read failed: ${shortMessage(err)}` };
+      }
+    });
+    return Response.json(body, { headers: NO_STORE });
+  } catch (err) {
+    return failed(err);
+  }
+}

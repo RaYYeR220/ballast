@@ -3,24 +3,32 @@
     "label": "Desk agent registered in the ERC-8004 identity registry (agentId 368122)",
     "txHash": "0x751156e36180eb7fd6e46c990df0470b645c5959de352efd6a05a4b16dc37d47",
     "at": "2026-10-08T17:43:14Z",
-    "note": "register() from the desk key 0xccD7f069275549793b2A8804A5691fCa6665D152"
+    "note": "register() from the desk key 0xccD7f069275549793b2A8804A5691fCa6665D152",
+    "step": "register",
+    "chainId": 56
   },
   {
     "label": "Desk agent registration file written (setAgentURI)",
     "txHash": "0x7384932d77c88a9231e8a29d5483efdb69fea2844cbbae7a8221ab21800a582d",
     "at": "2026-10-08T17:43:19Z",
-    "note": "second step of the registration: the URI now names agentId 368122"
+    "note": "second step of the registration: the URI now names agentId 368122",
+    "step": "register",
+    "chainId": 56
   },
   {
     "label": "First deployment transaction: SessionCalendar",
     "txHash": "0x46fbea5bf2ba4053a700d17e1e520dd3b7b73c10ff30a1459f47be910d5a949f",
     "at": "2026-10-08T17:50:46Z",
-    "note": "first of the 31 transactions of the deploy script; all eight contracts are exact matches on Sourcify (checked 2026-10-08)"
+    "note": "first of the 31 transactions of the deploy script; all eight contracts are exact matches on Sourcify (checked 2026-10-08)",
+    "step": "deploy",
+    "chainId": 56
   },
   {
     "label": "First Session Oracle overlay posted by the desk",
     "txHash": "0x95177e85cae6071af68b7d6a11735c0515529352595a8b418cce3606fd432368",
     "at": "2026-10-08T18:07:26Z",
-    "note": "postOverlays from the publisher key, which is the desk agent"
+    "note": "postOverlays from the publisher key, which is the desk agent",
+    "step": "overlay",
+    "chainId": 56
   }
 ]

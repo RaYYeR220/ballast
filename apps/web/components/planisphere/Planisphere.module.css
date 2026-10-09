@@ -1,0 +1,44 @@
+.root {
+  position: relative;
+}
+.svg {
+  display: block;
+  overflow: visible;
+  /* the page keeps vertical swipes and pinch zoom; sideways drags turn the dial */
+  touch-action: pan-y pinch-zoom;
+  cursor: grab;
+  border-radius: 50%;
+}
+.svg[data-dragging] {
+  cursor: grabbing;
+}
+.fill {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+.readout {
+  position: absolute;
+  left: 50%;
+  top: -34px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 500 14px/1 var(--f-ui);
+  color: var(--accent);
+}
+/* only on touch screens, where the gesture is not obvious */
+.hint {
+  display: none;
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font: 400 13px/1 var(--f-ui);
+  color: var(--text-3);
+}
+@media (hover: none) and (pointer: coarse) {
+  .hint {
+    display: block;
+  }
+}
