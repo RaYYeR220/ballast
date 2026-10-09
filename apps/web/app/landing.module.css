@@ -31,7 +31,9 @@
 .hero .cta:hover { background: var(--p-700); }
 .hero .how { margin-top: var(--s-5); max-width: 40ch; }
 /* the third term keeps the meridian readout clear of the nav on short laptop screens (1366x768) */
-.finder { position: relative; width: var(--D); height: var(--D); --D: min(84vh, 48vw, calc(100vh - 208px)); }
+.finder { position: relative; width: var(--D); height: var(--D); --D: min(84vh, 48vw, calc(100vh - 208px), 780px); }
+/* wide and tall screens: the dial follows the viewport height, so give the hero a wider column to keep the copy readable */
+@media (min-width: 1600px) { .hero .wrap { width: min(1560px, 100%); } }
 .finderSvg { position: absolute; inset: -6%; width: 112%; height: 112%; }
 /* the focus ring hugs the printed outer ring of the card instead of the svg box */
 .finderSvg:focus-visible { outline-offset: calc(14px - .0787 * var(--D)); }
