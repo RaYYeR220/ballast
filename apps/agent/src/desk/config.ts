@@ -80,6 +80,8 @@ export interface DeskConfig {
   readonly forkTickSec: number | null;
   /** Alert when the desk key holds less BNB than this. */
   readonly minBnbBalance: number;
+  /** Desk policy: the health the keeper keeps after the coming gap (shield and restore plans). */
+  readonly targetHfAfterGap: number;
   /** The sender never signs above this gas price. */
   readonly maxGasPriceGwei: number;
   /** How long the sender waits for a receipt before replacing a transaction. */
@@ -204,6 +206,8 @@ const envSchema = z.object({
   STUDIO_TOML: optionalText,
   FORK_TICK_SEC: z.preprocess(blank, z.coerce.number().optional()).refine((n) => n === undefined || (Number.isInteger(n) && n >= 1 && n <= 3600), "must be 1..3600 seconds"),
   MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
+  // Desk policy: the keeper shields when health after the coming gap would fall below this.
+  TARGET_HF_AFTER_GAP: numberVar(1.05).refine((n) => Number.isFinite(n) && n >= 1.01 && n <= 2, "must be a health factor from 1.01 to 2.0"),
   // Sized for BSC: sub-second blocks, gas at a small fraction of a gwei.
   MAX_GAS_PRICE_GWEI: numberVar(1).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
   RECEIPT_TIMEOUT_SEC: numberVar(20).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
@@ -335,6 +339,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `x402Earnings=${earningsUrl ? redactUrl(earningsUrl) : "off"}`,
     `webOrigin=${e.WEB_ORIGIN ?? "none"}`,
     `notes=${e.DESK_NOTES}`,
+    `targetHf=${e.TARGET_HF_AFTER_GAP}`,
     `dryRun=${e.DRY_RUN}`,
   ].join(" ");
 
@@ -359,6 +364,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     studioToml,
     forkTickSec: e.FORK_TICK_SEC ?? null,
     minBnbBalance: e.MIN_BNB_BALANCE,
+    targetHfAfterGap: e.TARGET_HF_AFTER_GAP,
     maxGasPriceGwei: e.MAX_GAS_PRICE_GWEI,
     receiptTimeoutSec: e.RECEIPT_TIMEOUT_SEC,
     receiptLagSec: e.RECEIPT_LAG_SEC,

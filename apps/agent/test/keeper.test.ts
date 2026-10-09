@@ -291,7 +291,7 @@ interface World {
   canShield: boolean;
 }
 
-async function setup(w: Partial<World> = {}, o: { gas?: (sender: StubSender, feed: Feed) => GasWatch } = {}) {
+async function setup(w: Partial<World> = {}, o: { gas?: (sender: StubSender, feed: Feed) => GasWatch; targetHfAfterGap?: number } = {}) {
   const world: World = { accounts: [], rereads: [], oracle: oracle(LEAD), covers: [], coverStates: new Map(), canShield: true, ...w };
   const sender = new StubSender();
   const feed = new Feed({ dir: await mkdtemp(path.join(tmpdir(), "desk-keeper-")), secrets: [], clock: () => world.oracle.at });
@@ -309,7 +309,7 @@ async function setup(w: Partial<World> = {}, o: { gas?: (sender: StubSender, fee
     coverState: async (e) => world.coverStates.get(e.key) ?? null,
     canShieldNow: async () => world.canShield,
   };
-  const keeper = new Keeper({ deployment: d, reads, sender, feed, clock: () => world.oracle.at, ...(o.gas ? { gas: o.gas(sender, feed) } : {}) });
+  const keeper = new Keeper({ deployment: d, reads, sender, feed, clock: () => world.oracle.at, ...(o.gas ? { gas: o.gas(sender, feed) } : {}), ...(o.targetHfAfterGap ? { targetHfAfterGap: o.targetHfAfterGap } : {}) });
   return { world, sender, feed, keeper, reads };
 }
 
@@ -538,6 +538,25 @@ describe("Keeper shields", () => {
     expect(feed.preShieldDebt(ACCOUNT)).toBeNull();
   });
 
+  it("shields a loan that survives the default target when the desk keeps a higher health", async () => {
+    // 10 tokens at $250, lltv 0.75, debt 1000: health after a 417 bps gap is 1.797.
+    const calm = await setup();
+    calm.world.accounts = [lista({ debt: 1000n * E18 })];
+    await calm.keeper.tick();
+    expect(calm.sender.sent).toEqual([]);
+    expect(calm.feed.list({ kind: "noop" })[0]).toMatchObject({ plan: { targetHfAfterGap: 1.05 } });
+
+    const { world, sender, feed, keeper } = await setup({}, { targetHfAfterGap: 1.9 });
+    world.accounts = [lista({ debt: 1000n * E18 })];
+    await keeper.tick();
+    // Target debt 0.75 x 2500 x 0.9583 / 1.9 = 945.7: about 54.3 from the cushion.
+    expect(sender.sent).toMatchObject([{ fn: "shieldRepay", to: ACCOUNT }]);
+    const assets = sender.sent[0]!.args[0] as bigint;
+    expect(assets).toBeGreaterThan(54n * E18);
+    expect(assets).toBeLessThan(55n * E18);
+    expect(feed.list({ kind: "shield" })[0]).toMatchObject({ plan: { kind: "repay", targetHfAfterGap: 1.9 } });
+  });
+
   it("records one noop per account and reason, not one per tick", async () => {
     const { world, sender, feed, keeper } = await setup();
     world.accounts = [lista({ debt: 1000n * E18 })];
@@ -573,6 +592,15 @@ describe("Keeper restores", () => {
       txHash: `0x${"aa".repeat(32)}`,
       plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1700n * E18).toString(), ltvBps: 7200 },
     });
+  });
+
+  it("plans a restore with the desk's target health, like the shield", async () => {
+    const t = await setup({ oracle: oracle(MORNING, { canAddRisk: true, reason: "OK" }) }, { targetHfAfterGap: 1.3 });
+    await t.feed.record({ kind: "shield", source: "keeper", account: ACCOUNT, txHash: `0x${"aa".repeat(32)}`, plan: { debtBefore: (1800n * E18).toString(), debtAfter: (1700n * E18).toString(), ltvBps: 7200 } });
+    t.world.accounts = [lista({ debt: 1700n * E18 })];
+    await t.keeper.tick();
+    expect(t.sender.sent).toMatchObject([{ fn: "restore", args: [100n * E18] }]);
+    expect(t.feed.list({ kind: "restore" })[0]).toMatchObject({ plan: { kind: "borrow", targetHfAfterGap: 1.3 } });
   });
 
   it("borrows back toward the pre-shield debt within the owner's cap, with both simulators required to agree", async () => {
@@ -653,6 +681,17 @@ describe("Keeper covers", () => {
     expect(amount).toBeLessThan(35n * E18);
     expect(feed.list({ kind: "shield" })[0]).toMatchObject({ account: USER, cover: { user: USER, key: KEY } });
     expect(feed.preShieldDebt(USER)).toBeNull(); // covers never restore
+  });
+
+  it("sizes a cover shield for the desk's target health", async () => {
+    const { world, sender, keeper } = await setup({}, { targetHfAfterGap: 1.3 });
+    world.covers = [entry()];
+    world.coverStates.set(KEY, venus({ address: USER, collateral: 1n * E18, debt: 200n * E18, cushion: 300n * E18 }));
+    await keeper.tick();
+    // Target debt 0.75 x 250 x 0.9583 / 1.3 = 138.2: about 61.8, against about 28.9 at the default 1.05.
+    expect(sender.sent).toMatchObject([{ fn: "shieldFor" }]);
+    expect(sender.sent[0]!.args[2]).toBeGreaterThan(60n * E18);
+    expect(sender.sent[0]!.args[2]).toBeLessThan(64n * E18);
   });
 
   it("caps a full close at the user's debt plus accrual headroom", async () => {

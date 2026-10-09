@@ -51,6 +51,7 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `STUDIO_TOML` | `app/agent/studio.toml` | where the notes read `[llm]` |
 | `FORK_TICK_SEC` | unset | fork only (`CHAIN_ID=31337`): every loop runs at this interval |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
+| `TARGET_HF_AFTER_GAP` | `1.05` | desk policy: the health the desk keeps after the coming gap (1.01 to 2.0) |
 | `MAX_GAS_PRICE_GWEI` | `1` | the sender never signs above this gas price (BSC gas is a small fraction of a gwei) |
 | `RECEIPT_TIMEOUT_SEC` | `20` | wait for a receipt this long before replacing a transaction (BSC blocks are sub-second) |
 | `RECEIPT_LAG_SEC` | `45` | how long a receipt may trail a used nonce (load-balanced RPCs) before the nonce is read as gone to someone else |
@@ -95,6 +96,11 @@ The same flag updates endpoints later. Running without `--agent-id` always mints
   restores run in the regular session, only when the owner allows them, only up to what the desk
   itself repaid in that shield cycle and never above the pre-shield LTV. If the owner repays or
   closes the loan after a shield, the cycle ends and the desk borrows nothing back.
+- `TARGET_HF_AFTER_GAP` is the desk's policy for every loan it keeps: the health the desk keeps after
+  the coming gap. Before a close the keeper repays until `liquidation threshold x (1 - gap) / LTV` is
+  back at this value; a loan already above it is left alone ("survives the gap"). Shield and restore
+  plans use the same value, and `/health` and the startup line show it. The default, 1.05, shields only
+  loans close to their limit; a higher value shields earlier and repays more.
 - A liquidated account is no longer managed. The desk records the seizure on-chain with
   `recordLiquidation()` once and then leaves the account alone; the owner takes it from there.
 - Shield amounts for the restore cycle come from the receipt's `Shielded` logs. Repays are sized against

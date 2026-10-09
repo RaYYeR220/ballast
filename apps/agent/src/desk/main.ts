@@ -299,7 +299,7 @@ export async function startDesk(env: Record<string, string | undefined> = proces
     busy: () => keeper.shieldBusy(),
     log,
   });
-  const keeper: Keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log });
+  const keeper: Keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log, targetHfAfterGap: config.targetHfAfterGap });
   const guardian = new Guardian({
     deployment,
     reads: chainGuardianReads(client, deployment),
@@ -354,6 +354,8 @@ export async function startDesk(env: Record<string, string | undefined> = proces
         chainId: config.chainId,
         agent: account.address,
         dryRun: config.dryRun,
+        // Desk policy: the health the keeper keeps after the coming gap.
+        targetHfAfterGap: config.targetHfAfterGap,
         startedAt: new Date(startedAt).toISOString(),
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
         feedSeq: feed.list({ limit: 1 })[0]?.seq ?? 0,

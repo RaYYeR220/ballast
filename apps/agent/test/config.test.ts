@@ -33,6 +33,11 @@ describe("loadConfig", () => {
     expect(c.minBnbBalance).toBe(0.003);
     expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([1, 20, 4, 0.003]);
     expect(c.receiptLagSec).toBe(45);
+    expect(c.targetHfAfterGap).toBe(1.05);
+    expect(loadConfig({ ...base, TARGET_HF_AFTER_GAP: "1.3" }).targetHfAfterGap).toBe(1.3);
+    expect(loadConfig({ ...base, TARGET_HF_AFTER_GAP: "1.3" }).describe()).toContain(" targetHf=1.3 ");
+    for (const bad of ["1", "2.01", "0", "abc"]) expect(issuesOf({ ...base, TARGET_HF_AFTER_GAP: bad })[0]).toMatch(/^TARGET_HF_AFTER_GAP/);
+    expect([loadConfig({ ...base, TARGET_HF_AFTER_GAP: "1.01" }).targetHfAfterGap, loadConfig({ ...base, TARGET_HF_AFTER_GAP: "2" }).targetHfAfterGap]).toEqual([1.01, 2]);
     expect(loadConfig({ ...base, RECEIPT_LAG_SEC: "90" }).receiptLagSec).toBe(90);
     expect(issuesOf({ ...base, RECEIPT_LAG_SEC: "2" })[0]).toMatch(/^RECEIPT_LAG_SEC/);
     expect(c.dryRun).toBe(true);
@@ -209,7 +214,7 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto targetHf=1.05 dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");

@@ -272,6 +272,8 @@ export interface DecideOptions {
    * start, with an alert that the cushion is not enough. No sale is built, simulated or handed to the sender.
    */
   salesDisabled?: boolean;
+  /** The desk's target health after the gap; the planner default when unset. */
+  targetHfAfterGap?: number | undefined;
 }
 
 const minBig = (a: bigint, b: bigint) => (a < b ? a : b);
@@ -345,8 +347,11 @@ function wholeCushion(state: AccountState): bigint | null {
   return guardRepay(minBig(state.cushion, withAccrual(state.debt)), state.debt, state.cushion, minLoanOf(state));
 }
 
+/** Planner options for the desk's target health after the gap: none when the planner default applies. */
+const targetOpt = (hf: number | undefined): { targetHfAfterGap?: number } => (hf === undefined ? {} : { targetHfAfterGap: hf });
+
 function decideShield(state: AccountState, oracle: PlanOracle, pathFor: (s: AccountState) => Hex | null, o: DecideOptions = {}): Decision {
-  const plan = planForAccount(accrued(state), oracle, { minLoanUsd: minLoanUsdPlus2(state) });
+  const plan = planForAccount(accrued(state), oracle, { minLoanUsd: minLoanUsdPlus2(state), ...targetOpt(o.targetHfAfterGap) });
   // The venue cannot price: no plan can be sized, but shieldRepay works without a price. Put the cushion on.
   if (state.debt > 0n && state.cushion > 0n && priceUnknown(state)) {
     const assets = wholeCushion(state);
@@ -457,16 +462,16 @@ export function restoreTargetUsd(state: AccountState, cycle: ShieldCycle): numbe
   return usd;
 }
 
-function decideRestore(state: AccountState, oracle: PlanOracle, cycle: ShieldCycle): Decision {
+function decideRestore(state: AccountState, oracle: PlanOracle, cycle: ShieldCycle, targetHf?: number): Decision {
   const target = restoreTargetUsd(state, cycle);
-  const plan = planForAccount(state, oracle, { restoreToDebtUsd: target ?? 0 });
+  const plan = planForAccount(state, oracle, { restoreToDebtUsd: target ?? 0, ...targetOpt(targetHf) });
   if (target === null) return { plan, step: null, noop: "price unavailable, cannot size a restore" };
   if (plan.kind !== "borrow") return { plan, step: null, noop: "reason" in plan ? plan.reason : "nothing to restore" };
   return { plan, step: { fn: "restore", assets: plan.amounts.borrowAssets } };
 }
 
-function decideCover(state: AccountState, oracle: PlanOracle): Decision {
-  const plan = planForAccount(accrued(state), oracle, { minLoanUsd: minLoanUsdPlus2(state) });
+function decideCover(state: AccountState, oracle: PlanOracle, targetHf?: number): Decision {
+  const plan = planForAccount(accrued(state), oracle, { minLoanUsd: minLoanUsdPlus2(state), ...targetOpt(targetHf) });
   if (state.debt > 0n && state.cushion > 0n && priceUnknown(state)) {
     const amount = wholeCushion(state);
     if (!amount || isDust(amount, state.debt, state.loanDecimals)) return { plan, step: null, noop: "price unavailable and the cover cannot repay a meaningful amount above the venue minimum" };
@@ -556,6 +561,8 @@ export interface KeeperOptions {
   /** Extra deleverage routes to try besides the configured ones. */
   paths?: readonly Hex[];
   leadTimeSec?: number;
+  /** Health the desk keeps after the coming gap (desk policy); the planner default, 1.05, when unset. */
+  targetHfAfterGap?: number;
   /** Shared low-BNB alert (one per process). */
   gas?: GasWatch;
   /** Unix seconds, for shieldBusy(); the wall clock by default. */
@@ -784,6 +791,7 @@ export class Keeper {
       return;
     }
     const pathFor = (s: AccountState) => deleveragePathFor(s, this.#o.paths);
+    const targetHfAfterGap = this.#o.targetHfAfterGap;
 
     if (phase.phase === "lead") {
       const key = `${address}|shield`;
@@ -801,15 +809,15 @@ export class Keeper {
           const [s, o] = await Promise.all([reads.account(address), reads.oracle(state.symbol)]);
           const p = keeperPhase(o.at, o.windowAhead, lead);
           if (p.phase !== "lead") return { decision: null, state: s, window: p.window, why: "the lead time is over" };
-          return { decision: decideShield(s, o, pathFor, { cushionOnly }), state: s, window: p.window };
+          return { decision: decideShield(s, o, pathFor, { cushionOnly, targetHfAfterGap }), state: s, window: p.window };
         },
         cushionStep: async () => {
           const [s, o] = await Promise.all([reads.account(address), reads.oracle(state.symbol)]);
-          const step = decideShield(s, o, pathFor, { cushionOnly: true }).step;
+          const step = decideShield(s, o, pathFor, { cushionOnly: true, targetHfAfterGap }).step;
           return step?.fn === "shieldRepay" ? step : null;
         },
       };
-      const decision = decideShield(state, snap, pathFor, { cushionOnly: saleOnHold, salesDisabled: salesDisabled() });
+      const decision = decideShield(state, snap, pathFor, { cushionOnly: saleOnHold, salesDisabled: salesDisabled(), targetHfAfterGap });
       if (saleOnHold && !salesDisabled() && decision.plan.kind === "repay+deleverage") {
         await this.#noop(target, `the collateral sale is on hold until ${this.#backoff.get(`${key}|sale`)} after a failure; cushion only`, phase.window);
       }
@@ -849,10 +857,10 @@ export class Keeper {
           if (p.phase !== "restore") return { decision: null, state: s, window: p.window, why: "the restore window is over" };
           if (!o.canAddRisk) return { decision: null, state: s, window: p.window, why: `the oracle now says ${o.reason}` };
           if (!s.mandate.autoRestore) return { decision: null, state: s, window: p.window, why: "auto-restore was disabled" };
-          return { decision: decideRestore(s, o, cycle), state: s, window: p.window };
+          return { decision: decideRestore(s, o, cycle, targetHfAfterGap), state: s, window: p.window };
         },
       };
-      await this.#act(target, decideRestore(state, snap, cycle), state, phase.window, report);
+      await this.#act(target, decideRestore(state, snap, cycle, targetHfAfterGap), state, phase.window, report);
     }
   }
 
@@ -969,10 +977,10 @@ export class Keeper {
         const p = keeperPhase(o.at, o.windowAhead, lead);
         if (p.phase !== "lead") return { decision: null, state: s, window: p.window, why: "the lead time is over" };
         if (!s || s.debt === 0n) return { decision: null, state: s, window: p.window, why: "the user has no debt" };
-        return { decision: decideCover(s, o), state: s, window: p.window };
+        return { decision: decideCover(s, o, this.#o.targetHfAfterGap), state: s, window: p.window };
       },
     };
-    await this.#act(target, decideCover(state, snap), state, phase.window, report);
+    await this.#act(target, decideCover(state, snap, this.#o.targetHfAfterGap), state, phase.window, report);
   }
 
   // --------------------------------------------------------------- execution
