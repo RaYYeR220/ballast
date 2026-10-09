@@ -249,6 +249,8 @@ describe("checkRestore", () => {
     expect(() => checkRestore({ ...ok, addUsd: 0.5 })).toThrow(/above the mandate cap 6000/);
     expect(() => checkRestore({ ...ok, addUsd: 0.5, maxLtvBps: 7000 })).toThrow(/venue's borrow limit 6000/);
     expect(checkRestore({ ...ok, addUsd: 0.37 })).toEqual({ ltvAfterBps: 6000 });
+    // One basis point over the mandate cap is already refused.
+    expect(() => checkRestore({ ...ok, addUsd: 0.3704, venueLimitBps: 7000 })).toThrow(/would be 6001 bps, above the mandate cap 6000/);
     expect(() => checkRestore({ ...ok, collateralValueUsd: 0 })).toThrow(/no priced collateral/);
     expect(() => checkRestore({ ...ok, addUsd: 0 })).toThrow(/nothing to restore/);
   });
