@@ -165,6 +165,21 @@ describe("/api/simulate is not a relay", () => {
     expect(c.calls).toHaveLength(3);
   });
 
+  it("simulates the guardian hire calls on the kernel and refuses every other kernel call", async () => {
+    const kernel = DEPLOYMENT.external.kernel;
+    const guard = simulateGuard({ chainId: 56, deployment: DEPLOYMENT, client: { readContract: vi.fn(async () => false) } as never, ticketSecret: null });
+    const t = (data: string) => ({ from: FROM, to: kernel, data: data as never, value: 0n });
+    const hire = [
+      writes.createJobWithToken(DEPLOYMENT, { provider: addr(0xaa), expiredAt: 1n, description: "d", token: addr(0xcc) }).data,
+      writes.setBudget(DEPLOYMENT, 1n, 5n).data,
+      writes.fund(DEPLOYMENT, { jobId: 1n, expectedBudget: 5n, terms: { account: ACCOUNT, start: 1, end: 2, agentId: 1n } }).data,
+    ];
+    for (const data of hire) expect(await guard.refuse(t(data), undefined)).toBeNull();
+    expect(await guard.refuse(t("0x095ea7b3" + "00".repeat(64)), undefined)).toContain("only createJobWithToken");
+    expect(await guard.refuse(t("0x12345678"), undefined)).toContain("only createJobWithToken");
+    expect(await guard.refuse(t("0x"), undefined)).toContain("only createJobWithToken");
+  });
+
   it("asks the factory once per address: a yes is kept, a no is not asked again right away", async () => {
     const { guard, readContract } = guardFor([ACCOUNT]);
     const t = { from: FROM, to: ACCOUNT, data: tx.data, value: 0n };

@@ -1,12 +1,12 @@
 /* POST /api/simulate: { from, to, data, value?, ticket? } -> SimResult. The Binance key and the RPC URL stay
    server-side, so this route must not become a relay for arbitrary calls on them. It answers only:
    - requests from this site's own pages (same origin, JSON),
-   - for a call to the Ballast factory, the cushion vault, an account the factory knows, or an `approve` on a
-     token this app uses,
+   - for a call to the Ballast factory, the cushion vault, an account the factory knows, an `approve` on a
+     token this app uses, or one of the three ERC-8183 kernel calls the guardian hire flow makes,
    - or for one exact transaction this server built and signed a ticket for (a swap from the Trading API). */
 import { transaction } from "@ballast/binance";
-import { ballastFactoryAbi, type Deployment } from "@ballast/sdk";
-import { getAddress, isAddress, isHex, type Address, type Hex, type PublicClient } from "viem";
+import { ballastFactoryAbi, kernelAbi, type Deployment } from "@ballast/sdk";
+import { getAddress, isAddress, isHex, toFunctionSelector, type Address, type Hex, type PublicClient } from "viem";
 import { tokenSymbol } from "@/lib/markets";
 import { web3Client } from "../binance";
 import { ttlCache } from "../cache";
@@ -19,6 +19,14 @@ import { checkTicket } from "../ticket";
 const NO_STORE = { "cache-control": "no-store" };
 /** approve(address,uint256) */
 const APPROVE = "0x095ea7b3";
+/** the kernel calls the hire flow simulates: post the job, set its fee, fund it. Nothing else on the kernel. */
+const KERNEL_SELECTORS: ReadonlySet<string> = new Set(
+  (["createJobWithToken", "setBudget", "fund"] as const).map((name) => {
+    const item = kernelAbi.find((x) => x.type === "function" && x.name === name);
+    if (!item) throw new Error(`kernel ABI has no ${name}`);
+    return toFunctionSelector(item as never).toLowerCase();
+  }),
+);
 
 export function simulateDeps(e: ServerEnv, client: Pick<PublicClient, "call">, fetchImpl?: typeof fetch): SimulateDeps {
   const web3 = web3Client(e, fetchImpl);
@@ -70,6 +78,9 @@ export function simulateGuard(o: {
   return {
     async refuse(tx, ticket) {
       if (d && (same(tx.to, d.factory) || same(tx.to, d.cushionVault))) return null;
+      if (d && same(tx.to, d.external.kernel)) {
+        return KERNEL_SELECTORS.has(tx.data.slice(0, 10).toLowerCase()) ? null : "only createJobWithToken, setBudget and fund are simulated on the kernel";
+      }
       if (tokenSymbol(tx.to) !== null) {
         return tx.data.slice(0, 10).toLowerCase() === APPROVE ? null : "only approve() is simulated on a token";
       }
