@@ -69,7 +69,7 @@ What this means for the headline tests:
 
 ## 3. TypeScript tests
 
-`pnpm test`, 987 tests. No network.
+`pnpm test`, 1001 tests. No network.
 
 | What | Stand-in |
 |---|---|

@@ -6,11 +6,11 @@
       "name": "TypeScript",
       "covers": "SDK, risk model, Binance client, MCP server, desk, web app, demo scripts",
       "command": "pnpm test",
-      "passed": 987,
+      "passed": 1001,
       "failed": 0,
       "skipped": 2,
       "ranAt": "2026-10-09",
-      "note": "54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set."
+      "note": "54 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set. One web test follows the wall clock (apps/web/test/oracle-states.test.tsx, \"says the oracle is not deployed ...\"): it passes while New York is closed and fails during the regular session, 09:30 to 16:00 Eastern time on trading days, when a run shows 1000 passed and 1 failed. This run was made after the close."
     },
     {
       "id": "contracts-unit",
@@ -20,7 +20,7 @@
       "passed": 57,
       "failed": 0,
       "skipped": 0,
-      "ranAt": "2026-10-08",
+      "ranAt": "2026-10-09",
       "note": "External contracts are mocks here (contracts/test/mocks/Mocks.sol)."
     },
     {
@@ -31,7 +31,7 @@
       "passed": 99,
       "failed": 0,
       "skipped": 0,
-      "ranAt": "2026-10-08",
+      "ranAt": "2026-10-09",
       "note": "Last full fork run. Forked at the chain head (no pinned block) through the default public RPC, https://bsc-rpc.publicnode.com."
     }
   ]

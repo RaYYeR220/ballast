@@ -49,7 +49,7 @@ The landing page also quotes figures from Ballast's gap study, first run on 2026
 
 `proof-txs.json` - mainnet transactions worth showing, as a list of `{ "label", "txHash", "at", "note", "step", "chainId" }`: what the transaction is, its hash (0x and 64 hex digits), when it was mined as a UTC time such as `2026-10-09T19:02:11Z`, and an optional note (say so here when a transaction reverted on purpose). Add an entry only for a transaction that exists; the command stops on a malformed hash or date.
 
-`proof-notes.json` - optional list of sentences shown under the transactions in PROOF.md: corrections and incidents.
+`proof-notes.json` - optional list of sentences shown under the transactions in PROOF.md: corrections, incidents, and what the list does not contain.
 
 `test-counts.json` - one entry per test suite: the command, the passed, failed and skipped counts, and the date of the last full run. Update it after running a suite in full. The command refuses to write the page when a contract count differs from the number of test functions in `contracts/test`.
 
