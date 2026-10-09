@@ -22,7 +22,10 @@ import {
   apiHealthTool,
   createBallastServer,
   createHttpServer,
+  httpOptionsFrom,
   MAX_BODY_BYTES,
+  parseAllowedHosts,
+  parseAllowedOrigins,
   guardianJobsTool,
   listAccountsTool,
   oraclePriceArgs,
@@ -439,6 +442,149 @@ describe("mcp server", () => {
       const port = new URL(h.url).port;
       expect((await fetch(`http://localhost:${port}/health`)).status).toBe(200);
     });
+  });
+});
+
+describe("public endpoint behind a reverse proxy", () => {
+  const PUBLIC = "mcp.example.org";
+  type Handle = Awaited<ReturnType<typeof createHttpServer>>;
+  const open: { close(): Promise<void> }[] = [];
+  const serve = async (o: Parameters<typeof createHttpServer>[0] = {}): Promise<Handle> => {
+    const h = await createHttpServer({ ctx, ...o });
+    open.push(h);
+    return h;
+  };
+  afterEach(async () => {
+    for (const h of open.splice(0)) await h.close();
+  });
+
+  const raw = (h: Handle, o: { path?: string; method?: string; headers?: Record<string, string>; body?: string } = {}) =>
+    new Promise<{ status: number; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
+      const u = new URL(h.url);
+      const req = http.request({ host: u.hostname, port: u.port, path: o.path ?? "/health", method: o.method ?? "GET", headers: o.headers ?? {} }, (res) => {
+        res.resume();
+        resolve({ status: res.statusCode ?? 0, headers: res.headers });
+      });
+      req.on("error", reject);
+      req.end(o.body);
+    });
+
+  /** A proxy on loopback, as Caddy is on the VPS: it forwards with the public Host and appends the client address. */
+  async function proxyTo(target: string, clientIp: string) {
+    const t = new URL(target);
+    const proxy = http.createServer((req, res) => {
+      const up = http.request({ host: t.hostname, port: t.port, path: req.url, method: req.method, headers: { ...req.headers, host: PUBLIC, "x-forwarded-for": clientIp } }, (r) => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      });
+      up.on("error", () => res.writeHead(502).end());
+      req.pipe(up);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const { port } = proxy.address() as { port: number };
+    const handle = { url: `http://127.0.0.1:${port}/mcp`, close: () => new Promise<void>((r) => proxy.close(() => r())) };
+    open.push(handle);
+    return handle;
+  }
+
+  it("lists and calls a tool through a proxy that forwards the public host", async () => {
+    const h = await serve({ allowedHosts: [PUBLIC] });
+    const p = await proxyTo(h.url, "203.0.113.7");
+    const client = new Client({ name: "test", version: "0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(p.url)));
+    expect((await client.listTools()).tools).toHaveLength(8);
+    const res = await client.callTool({ name: "oracle_price", arguments: { symbol: "NVDA" } });
+    expect(JSON.parse((res.content as { text: string }[])[0]!.text)).toMatchObject({ symbol: "NVDA", canAddRisk: true });
+    await client.close();
+  });
+
+  it("answers for the public host only when it is allowed, whatever its case", async () => {
+    const closed = await serve();
+    expect((await raw(closed, { headers: { host: PUBLIC } })).status).toBe(403);
+    const h = await serve({ allowedHosts: [PUBLIC] });
+    expect((await raw(h, { headers: { host: PUBLIC } })).status).toBe(200);
+    expect((await raw(h, { headers: { host: "MCP.Example.ORG" } })).status).toBe(200);
+    expect((await raw(h, { headers: { host: `${PUBLIC}:8443` } })).status).toBe(403);
+    expect((await raw(h, { headers: { host: "evil.example" } })).status).toBe(403);
+    // The loopback names keep working next to the public one.
+    expect((await raw(h)).status).toBe(200);
+  });
+
+  it("accepts the allowed host's own origin and the listed origins, nothing else", async () => {
+    const h = await serve({ allowedHosts: [PUBLIC], allowedOrigins: ["https://app.example.org"] });
+    const from = (origin: string) => raw(h, { headers: { host: PUBLIC, origin } }).then((r) => r.status);
+    expect(await from(`https://${PUBLIC}`)).toBe(200);
+    expect(await from("https://app.example.org")).toBe(200);
+    expect(await from("https://APP.example.org")).toBe(200);
+    expect(await from("https://evil.example")).toBe(403);
+    expect(await from("https://app.example.org.evil.example")).toBe(403);
+  });
+
+  it("limits each client address, as reported by the proxy on loopback", async () => {
+    let now = 1_000_000;
+    const h = await serve({ allowedHosts: [PUBLIC], ratePerMin: 3, clock: () => now });
+    const get = (forwarded?: string) => raw(h, { headers: { host: PUBLIC, ...(forwarded ? { "x-forwarded-for": forwarded } : {}) } });
+    for (let i = 0; i < 3; i++) expect((await get("203.0.113.7")).status).toBe(200);
+    const over = await get("203.0.113.7");
+    expect(over.status).toBe(429);
+    expect(over.headers["retry-after"]).toBe("60");
+    // Another client has its own budget, and so has a caller that comes without a proxy.
+    expect((await get("198.51.100.9")).status).toBe(200);
+    expect((await get()).status).toBe(200);
+    // Only the last hop counts: the proxy appended it, the rest is whatever the client wrote.
+    expect((await get("198.51.100.200, 203.0.113.7")).status).toBe(429);
+    now += 45_000;
+    expect((await get("203.0.113.7")).headers["retry-after"]).toBe("15");
+    now += 15_000;
+    expect((await get("203.0.113.7")).status).toBe(200);
+  });
+
+  it("limits POST /mcp too, with a JSON-RPC error body", async () => {
+    const h = await serve({ ratePerMin: 1 });
+    const post = () => fetch(h.url, { method: "POST", body: "{not json", headers: { "content-type": "application/json" } });
+    expect((await post()).status).toBe(400);
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(await res.json()).toMatchObject({ jsonrpc: "2.0", error: { message: "Too many requests" } });
+  });
+
+  it("does not believe X-Forwarded-For when told not to trust a proxy, and 0 turns the limit off", async () => {
+    const strict = await serve({ ratePerMin: 2, trustLoopbackProxy: false });
+    const statuses: number[] = [];
+    for (const ip of ["203.0.113.1", "203.0.113.2", "203.0.113.3"]) statuses.push((await raw(strict, { headers: { host: new URL(strict.url).host, "x-forwarded-for": ip } })).status);
+    expect(statuses).toEqual([200, 200, 429]);
+    const off = await serve({ ratePerMin: 0 });
+    for (let i = 0; i < 5; i++) expect((await raw(off)).status).toBe(200);
+  });
+
+  it("reads the options from flags and the environment, flags first", () => {
+    expect(httpOptionsFrom(["--http"], {})).toEqual({ host: "127.0.0.1", port: 8787, allowedHosts: [], allowedOrigins: [], ratePerMin: 120 });
+    expect(httpOptionsFrom(["--http"], { PORT: "8790", MCP_ALLOWED_HOSTS: " MCP.example.org , other.example:8443 ", MCP_ALLOWED_ORIGINS: "https://App.example.org", MCP_RATE_PER_MIN: "30" })).toEqual({
+      host: "127.0.0.1",
+      port: 8790,
+      allowedHosts: ["mcp.example.org", "other.example:8443"],
+      allowedOrigins: ["https://app.example.org"],
+      ratePerMin: 30,
+    });
+    expect(httpOptionsFrom(["--http", "--port", "9000", "--allowed-hosts", "a.example", "--rate-per-min", "0"], { PORT: "8790", MCP_ALLOWED_HOSTS: "b.example", MCP_RATE_PER_MIN: "30" })).toMatchObject({
+      port: 9000,
+      allowedHosts: ["a.example"],
+      ratePerMin: 0,
+    });
+    expect(() => httpOptionsFrom(["--http", "--port"], {})).toThrow(/--port needs a value/);
+    expect(() => httpOptionsFrom(["--http", "--port", "70000"], {})).toThrow(/the port must be a whole number/);
+    expect(() => httpOptionsFrom(["--http"], { MCP_RATE_PER_MIN: "fast" })).toThrow(/the rate limit must be a whole number/);
+  });
+
+  it("refuses allowlist entries that are not a bare host or a bare origin", () => {
+    expect(parseAllowedHosts(undefined)).toEqual([]);
+    expect(parseAllowedHosts("[::1]:8790,127.0.0.1")).toEqual(["[::1]:8790", "127.0.0.1"]);
+    for (const bad of ["https://mcp.example.org", "mcp.example.org/mcp", "mcp example", "*", "-x.example"]) expect(() => parseAllowedHosts(bad)).toThrow(/must be a host name/);
+    expect(parseAllowedOrigins("http://localhost:3000")).toEqual(["http://localhost:3000"]);
+    expect(() => parseAllowedOrigins("app.example.org")).toThrow(/not a URL|must be scheme/);
+    expect(() => parseAllowedOrigins("https://app.example.org/")).toThrow(/must be scheme/);
+    expect(() => parseAllowedOrigins("https://app.example.org/page")).toThrow(/must be scheme/);
+    expect(() => parseAllowedOrigins("ftp://app.example.org")).toThrow(/must be scheme/);
   });
 });
 

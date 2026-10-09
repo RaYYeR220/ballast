@@ -27,6 +27,20 @@ cd ballast
 pnpm install
 ```
 
+## Use the hosted endpoint
+
+The Ballast desk serves this MCP server publicly over Streamable HTTP. The URL is the public MCP endpoint
+listed in the repository README (it ends in `/mcp`); put it in `BALLAST_MCP_URL` or straight into the client
+configuration:
+
+```json
+{ "mcpServers": { "ballast": { "type": "http", "url": "<the public MCP endpoint from the repository README>" } } }
+```
+
+Nothing to install. The hosted endpoint is unauthenticated, read and plan only (it holds no key and signs
+nothing) and rate limited per client address; on HTTP 429 wait the number of seconds in `Retry-After`. It
+reads BSC mainnet. For a fork, another RPC or no dependence on that host, run the server yourself:
+
 ## Run the MCP server
 
 From the repository root:
@@ -47,7 +61,7 @@ For a client that connects over HTTP, serve Streamable HTTP and point the client
 npx tsx packages/mcp/bin/ballast-mcp.ts --http --port 8787
 ```
 
-The HTTP endpoint binds to 127.0.0.1 and only answers requests addressed to that host. It has no authentication: a non-loopback `--host` is open to anyone who can reach it, so keep it on loopback or put auth in front.
+The HTTP endpoint binds to 127.0.0.1 and only answers requests addressed to that host. It has no authentication: a non-loopback `--host` is open to anyone who can reach it. To serve it publicly keep the loopback bind, put a TLS reverse proxy in front and name the public host with `--allowed-hosts` (or `MCP_ALLOWED_HOSTS`); `--rate-per-min` (`MCP_RATE_PER_MIN`, default 120) limits each client address. `deploy/README.md` has the unit and the proxy configuration.
 
 Environment: `BSC_RPC_URL` (RPC), `CHAIN_ID` (56 by default, 31337 for a local fork), `DEPLOYMENT_FILE` (path to a deployment JSON, default `contracts/deployments/<chainId>.json`), `RWA_CHAIN_ID` (chain id for the Binance status lookup). The Binance RWA status is keyless mainnet data, so on a fork `tokenized_stock_status` still describes chain 56.
 
@@ -91,3 +105,4 @@ See `references/windows.md` for how sessions, windows and gap buffers work.
 - Tool reference: `references/tools.md`
 - Sessions, windows and gap buffers: `references/windows.md`
 - MCP server source: `packages/mcp`
+- Hosted endpoint: the public MCP endpoint listed in the repository README; how to host your own: `deploy/README.md`

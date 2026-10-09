@@ -6,8 +6,10 @@ it up on a small Debian or Ubuntu VPS with systemd and Caddy. Pick an EU region 
 Web3 API calls are refused from some countries (code `40304`), and the desk then falls back to the keyless
 public endpoints.
 
-Only the read API is public, through Caddy over HTTPS. The Agent Studio A2A/MCP faces and the Ballast MCP
-server are not started by this unit; if you run them, they bind to `127.0.0.1` and stay unproxied.
+The read API is public, through Caddy over HTTPS. The Ballast MCP server can be public too: it is a second
+unit (`ballast-mcp.service`) with no key, behind the same Caddy site at `/mcp` (see "Public MCP endpoint").
+The Agent Studio A2A/MCP faces are not started by either unit; if you run them, they bind to `127.0.0.1`
+and stay unproxied.
 
 ## 1. Node 22, pnpm and two users
 
@@ -142,6 +144,8 @@ desk.example.org {
 }
 ```
 
+With the MCP endpoint (next section) the site becomes two `handle` blocks: see there.
+
 ```bash
 sudo systemctl reload caddy
 curl -s https://desk.example.org/health
@@ -153,6 +157,67 @@ header from a loopback peer, for its per-IP rate limit. Open only 22, 80 and 443
 ```bash
 sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
 ```
+
+## Public MCP endpoint
+
+The MCP server (`packages/mcp`) gives any MCP client the Ballast read and plan tools: session state, oracle
+price and `canAddRisk`, position risk, shield plans, accounts, guardian jobs, token status. Served publicly it
+is **unauthenticated, read and plan only, and rate limited**: it holds no key, signs nothing, answers
+`MCP_RATE_PER_MIN` requests a minute per client address (120 by default) and caps heavy chain reads in
+flight. It binds `127.0.0.1:8790`; Caddy terminates TLS and forwards `/mcp` to it. The server refuses any
+request whose `Host` is not on its allowlist, so the public host name must be in `MCP_ALLOWED_HOSTS`.
+
+```bash
+sudo install -m 600 -o root -g root /opt/ballast/deploy/mcp.env.example /etc/ballast/mcp.env
+sudoedit /etc/ballast/mcp.env                 # BSC_RPC_URL, MCP_ALLOWED_HOSTS=<the public host name>
+sudo cp /opt/ballast/deploy/ballast-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ballast-mcp
+curl -s -H 'Host: desk.example.org' http://127.0.0.1:8790/health      # {"ok":true,"name":"ballast",...}
+```
+
+`/etc/caddy/Caddyfile`, replacing the site from section 5. `POST` is how MCP's Streamable HTTP works, so it
+is allowed on `/mcp` and nowhere else; everything but `/mcp` still goes to the desk's read API, `GET` only:
+
+```
+desk.example.org {
+	header -Server
+	header Strict-Transport-Security "max-age=31536000"
+
+	handle /mcp {
+		reverse_proxy 127.0.0.1:8790
+	}
+	handle {
+		encode gzip
+		@write not method GET HEAD OPTIONS
+		respond @write 405
+		reverse_proxy 127.0.0.1:8787
+	}
+}
+```
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
+curl -s https://desk.example.org/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'                   # the eight tools
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://desk.example.org/feed    # 405: the read API stays GET only
+```
+
+Start order: `ballast-mcp` first, then reload Caddy, so `/mcp` never answers 502. Neither step touches the
+desk (`ballast-agent`), which keeps running.
+
+Client configuration, one line (any MCP client that speaks Streamable HTTP):
+
+```json
+{ "mcpServers": { "ballast": { "type": "http", "url": "https://desk.example.org/mcp" } } }
+```
+
+Caddy passes the client address in `X-Forwarded-For`; like the desk, the MCP server believes that header
+only from a loopback peer. `journalctl -u ballast-mcp -f` shows the server's log. To take the endpoint down:
+`sudo systemctl disable --now ballast-mcp` and remove the `handle /mcp` block.
+
+Once `/mcp` answers, list it in the desk's ERC-8004 registration (`--mcp-url`, see `apps/agent/README.md`):
+the registration names only endpoints that are really served.
 
 ## Read API
 
@@ -176,4 +241,5 @@ sudo -u ballast-build -H git pull --ff-only
 sudo -u ballast-build -H corepack pnpm install --frozen-lockfile --ignore-scripts
 sudo chown -R root:root /opt/ballast
 sudo systemctl start ballast-agent
+sudo systemctl restart ballast-mcp          # if the MCP endpoint is installed
 ```

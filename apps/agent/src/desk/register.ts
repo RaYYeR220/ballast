@@ -30,10 +30,13 @@ export const DESK_DESCRIPTION =
   "restores them after the open and settles ERC-8183 guardian jobs. " +
   "Every action is deterministic code inside limits the Ballast contracts enforce.";
 
-/** A2A discovery document path and the protocol versions the Studio runtime serves. */
+/** A2A discovery document path and the protocol version the Studio runtime serves. */
 export const A2A_CARD_PATH = "/.well-known/agent-card.json";
 export const A2A_VERSION = "0.3.0";
+/** The MCP protocol version the Ballast MCP server (packages/mcp) speaks. */
 export const MCP_VERSION = "2025-11-25";
+/** Custom service name for the desk's read API (health, feed, accounts, oracle, ledger, evidence). */
+export const DESK_API_SERVICE = "desk-api";
 
 /** ERC-8004 identity registry per desk chain; the anvil fork carries the mainnet registry. */
 export const IDENTITY_REGISTRY: Record<DeskChainId, Address> = {
@@ -74,8 +77,14 @@ export interface RegistrationInput {
   agentWallet: Address;
   /** The public Ballast web app. */
   webUrl: string;
-  /** Base URL of the desk runtime; the A2A card and /mcp are served under it. */
-  agentUrl: string;
+  /** The public MCP endpoint (Streamable HTTP), in full. Listed only when given: give it only when it answers. */
+  mcpUrl?: string;
+  /** Base URL of the desk's public read API, listed as the custom "desk-api" service. */
+  apiUrl?: string;
+  /** The Agent Studio A2A face: its base URL or the URL of its agent card. Leave it out while that face is not public. */
+  a2aUrl?: string;
+  /** Whether the file says the agent supports x402. Default false: say so only when it is true of the public desk. */
+  x402Support?: boolean;
   /** Known only after the mint; until then `registrations` stays empty. */
   agentId?: bigint | number;
   name?: string;
@@ -95,10 +104,16 @@ function httpUrl(label: string, raw: string): URL {
   return u;
 }
 
-function agentBase(raw: string): string {
-  const u = httpUrl("agentUrl", raw);
-  if (u.search || u.hash) throw new Error("agentUrl must be a base URL without query or fragment");
+/** An endpoint as it goes into the file: no query, no fragment, no trailing slash. */
+function endpoint(label: string, raw: string): string {
+  const u = httpUrl(label, raw);
+  if (u.search || u.hash) throw new Error(`${label} must not carry a query or a fragment`);
   return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+}
+
+function a2aCard(raw: string): string {
+  const base = endpoint("a2aUrl", raw);
+  return base.endsWith("/agent-card.json") ? base : `${base}${A2A_CARD_PATH}`;
 }
 
 function toSafeNumber(id: bigint | number): number {
@@ -107,10 +122,13 @@ function toSafeNumber(id: bigint | number): number {
   return n;
 }
 
-/** Builds the ERC-8004 registration file for the desk. Pure: no I/O. */
+/**
+ * Builds the ERC-8004 registration file for the desk. Pure: no I/O. Besides the web app and the agent wallet
+ * it lists exactly the endpoints it is given, so the file never advertises a service that is not there.
+ */
 export function buildRegistration(input: RegistrationInput): Registration {
-  const base = agentBase(input.agentUrl);
   const registry = getAddress(input.identityRegistry);
+  if (input.mcpUrl !== undefined && !/\/mcp$/.test(endpoint("mcpUrl", input.mcpUrl))) throw new Error("mcpUrl must be the full endpoint, ending in /mcp");
   const reg: Registration = {
     type: REGISTRATION_TYPE,
     name: input.name ?? DESK_NAME,
@@ -118,11 +136,12 @@ export function buildRegistration(input: RegistrationInput): Registration {
     ...(input.image ? { image: httpUrl("image", input.image).toString() } : {}),
     services: [
       { name: "web", endpoint: httpUrl("webUrl", input.webUrl).toString() },
-      { name: "MCP", endpoint: `${base}/mcp`, version: MCP_VERSION },
-      { name: "A2A", endpoint: `${base}${A2A_CARD_PATH}`, version: A2A_VERSION },
+      ...(input.mcpUrl === undefined ? [] : [{ name: "MCP", endpoint: endpoint("mcpUrl", input.mcpUrl), version: MCP_VERSION }]),
+      ...(input.apiUrl === undefined ? [] : [{ name: DESK_API_SERVICE, endpoint: endpoint("apiUrl", input.apiUrl) }]),
+      ...(input.a2aUrl === undefined ? [] : [{ name: "A2A", endpoint: a2aCard(input.a2aUrl), version: A2A_VERSION }]),
       { name: "agentWallet", endpoint: `eip155:${input.chainId}:${getAddress(input.agentWallet)}` },
     ],
-    x402Support: true,
+    x402Support: input.x402Support ?? false,
     active: true,
     registrations:
       input.agentId === undefined
@@ -227,36 +246,81 @@ export async function registerDesk(opts: RegisterOptions): Promise<RegisterResul
   return { mode: "broadcast", agentId, registerTx, setUriTx: receipt.transactionHash, registration };
 }
 
-const USAGE = `usage: register --agent-url <desk base url> --web-url <app url> [--agent-id <id>] [--image <url>] [--confirm-mainnet]
+const USAGE = `usage: register --web-url <app url> [--mcp-url <url ending in /mcp>] [--api-url <desk read API base url>]
+                [--a2a-url <Studio face base url>] [--x402-support] [--image <url>] [--agent-id <id>] [--confirm-mainnet]
+  The file lists the web app, the agent wallet and only the endpoints named here: name an endpoint only when it answers.
+  --agent-id rewrites the agentURI of an identity the signer owns; without it a new identity is minted.
   env: CHAIN_ID, BSC_RPC_URL, AGENT_PRIVATE_KEY or AGENT_KEYSTORE_PATH + AGENT_KEYSTORE_PASSWORD,
-       DRY_RUN (default true: simulate only). AGENT_PUBLIC_URL and APP_URL stand in for the flags.`;
+       DRY_RUN (default true: simulate only and print the file). APP_URL stands in for --web-url.
+  Stop the desk while this runs with DRY_RUN=false: one sender per key.`;
 
-async function main(argv: string[]): Promise<void> {
+export interface RegisterCli {
+  help: boolean;
+  confirmMainnet: boolean;
+  agentId?: bigint;
+  /** What the registration file is built from, besides the chain and the signer. */
+  endpoints: Pick<RegistrationInput, "webUrl" | "mcpUrl" | "apiUrl" | "a2aUrl" | "image" | "x402Support">;
+}
+
+/** The command line of the register script. Throws the usage text when the web URL is missing. */
+export function parseRegisterArgs(argv: string[], env: Record<string, string | undefined> = process.env): RegisterCli {
   const { values } = parseArgs({
     args: argv,
     options: {
-      "agent-url": { type: "string" },
       "web-url": { type: "string" },
+      "mcp-url": { type: "string" },
+      "api-url": { type: "string" },
+      "a2a-url": { type: "string" },
+      "agent-url": { type: "string" },
       "agent-id": { type: "string" },
       image: { type: "string" },
+      "x402-support": { type: "boolean", default: false },
       "confirm-mainnet": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
   });
-  if (values.help) {
+  if (values["agent-url"] !== undefined) {
+    throw new Error("--agent-url is gone: it advertised /mcp and an A2A card whether or not they were served. Name each public endpoint with --mcp-url, --api-url and --a2a-url.");
+  }
+  const webUrl = values["web-url"] ?? env.APP_URL;
+  if (values.help) return { help: true, confirmMainnet: false, endpoints: { webUrl: webUrl ?? "" } };
+  if (!webUrl) throw new Error(USAGE);
+  const rawId = values["agent-id"];
+  if (rawId !== undefined && !/^\d+$/.test(rawId)) throw new Error("--agent-id must be a whole number");
+  return {
+    help: false,
+    confirmMainnet: values["confirm-mainnet"] === true,
+    ...(rawId === undefined ? {} : { agentId: BigInt(rawId) }),
+    endpoints: {
+      webUrl,
+      ...(values["mcp-url"] === undefined ? {} : { mcpUrl: values["mcp-url"] }),
+      ...(values["api-url"] === undefined ? {} : { apiUrl: values["api-url"] }),
+      ...(values["a2a-url"] === undefined ? {} : { a2aUrl: values["a2a-url"] }),
+      ...(values.image === undefined ? {} : { image: values.image }),
+      x402Support: values["x402-support"] === true,
+    },
+  };
+}
+
+/** On a public chain every endpoint in the file must be https. */
+export function assertPublicEndpoints(chainId: number, e: RegisterCli["endpoints"]): void {
+  if (chainId === 31337) return;
+  for (const [name, url] of Object.entries({ "--web-url": e.webUrl, "--mcp-url": e.mcpUrl, "--api-url": e.apiUrl, "--a2a-url": e.a2aUrl, "--image": e.image })) {
+    if (url !== undefined && !url.trim().toLowerCase().startsWith("https://")) throw new Error(`${name}: public chains need https endpoints`);
+  }
+}
+
+async function main(argv: string[]): Promise<void> {
+  const cli = parseRegisterArgs(argv);
+  if (cli.help) {
     console.log(USAGE);
     return;
   }
-  const agentUrl = values["agent-url"] ?? process.env.AGENT_PUBLIC_URL;
-  const webUrl = values["web-url"] ?? process.env.APP_URL;
-  if (!agentUrl || !webUrl) throw new Error(USAGE);
 
   const config = loadConfig();
   const broadcast = !config.dryRun;
-  if (config.chainId !== 31337 && [agentUrl, webUrl].some((u) => !u.startsWith("https://"))) {
-    throw new Error("public chains need https endpoints");
-  }
-  if (broadcast && config.chainId === 56 && !values["confirm-mainnet"]) {
+  assertPublicEndpoints(config.chainId, cli.endpoints);
+  if (broadcast && config.chainId === 56 && !cli.confirmMainnet) {
     throw new Error("DRY_RUN=false on BSC mainnet also needs --confirm-mainnet");
   }
 
@@ -279,12 +343,16 @@ async function main(argv: string[]): Promise<void> {
     publicClient,
     walletClient,
     registry: IDENTITY_REGISTRY[config.chainId],
-    input: { chainId: config.chainId, agentWallet: account.address, webUrl, agentUrl, image: values.image },
-    agentId: values["agent-id"] === undefined ? undefined : BigInt(values["agent-id"]),
+    input: { chainId: config.chainId, agentWallet: account.address, ...cli.endpoints },
+    agentId: cli.agentId,
     broadcast,
     log: (line) => console.log(line),
   });
-  console.log(JSON.stringify(result, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
+  const { registration, ...outcome } = result;
+  console.log(`registration file${broadcast ? " now on-chain" : " (DRY RUN: this is what would be written; nothing was sent)"}:`);
+  console.log(JSON.stringify(registration, null, 2));
+  console.log(`agentURI: ${encodeAgentURI(registration).length} characters (base64 JSON data URI)`);
+  console.log(JSON.stringify(outcome, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
 }
 
 function isEntryPoint(): boolean {

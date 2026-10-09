@@ -1,5 +1,7 @@
 # Ballast MCP tools
 
+The tools are the same whether the server runs locally (stdio or `http://127.0.0.1:8787/mcp`) or you use the hosted endpoint (the public MCP endpoint listed in the repository README, kept in `BALLAST_MCP_URL`). The hosted endpoint reads BSC mainnet, needs no key and answers HTTP 429 with `Retry-After` when a client address sends too many requests.
+
 Every tool is read or plan only. Results are JSON text; large integers are decimal strings; prices are USD decimal strings or numbers as noted. A failed call returns `isError: true` with `{ "error": "..." }` (contract reverts are decoded to a sentence).
 
 ## session_state

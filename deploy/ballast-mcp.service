@@ -1,0 +1,46 @@
+# Ballast MCP server: the read and plan tools over Streamable HTTP at /mcp, for the public endpoint behind
+# Caddy. Install: see deploy/README.md ("Public MCP endpoint"). It holds no key and writes nothing:
+# /etc/ballast/mcp.env carries an RPC URL, the chain id, the deployment file and the public host name.
+# It binds 127.0.0.1:8790 only; Caddy terminates TLS and forwards /mcp to it.
+[Unit]
+Description=Ballast MCP server (read and plan tools)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=ballast
+Group=ballast
+WorkingDirectory=/opt/ballast/packages/mcp
+EnvironmentFile=/etc/ballast/mcp.env
+ExecStart=/opt/ballast/packages/mcp/node_modules/.bin/tsx bin/ballast-mcp.ts --http --host 127.0.0.1 --port 8790
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0027
+
+# Hardening: the server needs the network, nothing else. No state directory: it keeps nothing on disk.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+LimitNOFILE=4096
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
