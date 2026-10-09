@@ -60,7 +60,7 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `DATA_DIR` | `apps/agent/var/` | feed, ledger, guardian cursor, evidence; outside git. Test-written at startup: the desk exits non-zero if it cannot write there |
 | `EARNINGS_FILE` | `config/earnings.json` | earnings schedule the publisher reads every run |
 | `DRY_RUN` | `true` | simulate every write, broadcast nothing |
-| `AGENT_PUBLIC_URL`, `APP_URL` | | register only: stand-ins for `--agent-url` and `--web-url` |
+| `APP_URL` | | register only: stands in for `--web-url` |
 
 ## Run
 
@@ -70,11 +70,18 @@ pnpm desk                        # the desk: read API on 127.0.0.1:8787, then th
 cd apps/agent
 bag dev                          # Studio faces on 127.0.0.1:9000 (needs a Studio wallet and LLM key)
 
-# ERC-8004 identity: simulation by default
-pnpm run register --agent-url https://desk.example.org --web-url https://ballast.example.org
+# ERC-8004 identity: simulation by default; the dry run prints the registration file it would write
+pnpm run register --web-url https://ballast.example.org \
+  --mcp-url https://desk.example.org/mcp --api-url https://desk.example.org
 # write it (mainnet also needs the explicit flag)
-DRY_RUN=false pnpm run register --agent-url ... --web-url ... --confirm-mainnet
+DRY_RUN=false pnpm run register --web-url ... --mcp-url ... --api-url ... --confirm-mainnet
 ```
+
+The registration file lists the web app (`--web-url`), the desk key as `agentWallet`, and only the
+endpoints named on the command line: `--mcp-url` (the public MCP endpoint, see `deploy/README.md`),
+`--api-url` (the desk's read API, listed as the custom service `desk-api`) and `--a2a-url` (the Agent
+Studio face; leave it out while that face is not public). Name an endpoint only when it answers.
+`x402Support` is false unless `--x402-support` is given.
 
 On a VPS the desk runs as a systemd service behind Caddy: see `deploy/README.md`.
 
@@ -87,7 +94,9 @@ A new identity takes two transactions: `register()` with the registration file, 
 with `registrations` filled in once the agentId is known. If the second one fails, the identity
 already exists. Re-run with `--agent-id <id>` (printed after the first transaction, also in its
 `Registered` event) to rewrite only the URI; the script checks that the signer owns that id first.
-The same flag updates endpoints later. Running without `--agent-id` always mints a new identity.
+The same flag updates endpoints later: pass the full set of endpoint flags again, the file is rewritten
+from them. Stop the desk first (`sudo systemctl stop ballast-agent`) and start it afterwards: the desk
+key must have one sender at a time. Running without `--agent-id` always mints a new identity.
 
 ## What the keeper manages
 
