@@ -1,0 +1,78 @@
+/* Session Oracle explorer: the pieces the shared app shell does not carry. */
+
+.span8 { grid-column: span 8; }
+.span4 { grid-column: span 4; }
+.span6 { grid-column: span 6; }
+
+/* reading */
+.reading dl { display: grid; grid-template-columns: 1fr auto; gap: 12px 16px; margin-top: var(--s-3); }
+.reading dt { color: var(--text-2); font-size: 14px; }
+.reading dd { text-align: right; font-size: 15px; color: var(--text); }
+.refp { font: 500 52px/1 var(--f-display); margin-top: var(--s-2); }
+.refcap { color: var(--text-3); font-size: 12.5px; margin-top: 6px; }
+.bandv { color: var(--mint); font-size: 15px; margin-top: 8px; }
+.use { margin-top: var(--s-4); padding-top: var(--s-3); border-top: 1px solid var(--rule); }
+
+/* chart */
+.closures { flex: none; flex-wrap: nowrap; margin-bottom: 0; }
+.chartBox { display: grid; gap: 10px; }
+.plot { position: relative; outline-offset: 4px; transition: opacity var(--m-base); }
+.plot[data-dim] { opacity: .45; }
+.plot svg { width: 100%; height: auto; display: block; overflow: visible; touch-action: pan-y; }
+.tip {
+  position: absolute; top: 40px; z-index: 2; pointer-events: none; min-width: 208px; max-width: 250px;
+  background: var(--p-950); border: 1px solid var(--rule-2); border-radius: var(--r-sm); padding: 10px 12px;
+  font: 400 13px/1.45 var(--f-ui); color: var(--c-100); box-shadow: 0 10px 30px -10px rgba(0, 0, 0, .6);
+  display: grid; gap: 1px;
+}
+.tip b { font: 600 15px/1.25 var(--f-display); margin-bottom: 2px; }
+.tip span { color: var(--p-200); }
+.tip i { font-style: normal; color: var(--text-2); margin-top: 4px; }
+.tip i[data-outside] { color: var(--ember); }
+.readout { font-size: 14px; color: var(--text); min-height: 1.55em; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.method { font-size: 13px; color: var(--text-3); max-width: 96ch; margin-top: 10px; }
+.tableTwin { font-size: 13.5px; }
+.tableTwin summary { cursor: pointer; color: var(--accent); width: fit-content; padding: 2px 0; }
+.tableTwin summary:hover { text-decoration: underline; }
+.tableScroll { max-height: 320px; overflow: auto; margin-top: 10px; border-top: 1px solid var(--rule-2); }
+.tableTwin table { width: 100%; border-collapse: collapse; min-width: 720px; }
+.tableTwin th, .tableTwin td { padding: 7px 12px 7px 0; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; font-weight: 300; }
+.tableTwin th:first-child, .tableTwin td:last-child, .tableTwin thead th:last-child { text-align: left; white-space: normal; }
+.tableTwin thead th { color: var(--text-2); font-size: 12.5px; position: sticky; top: 0; background: var(--surface); }
+.tableTwin tr[data-outside] td:last-child { color: var(--ember); }
+
+/* table of symbols */
+.scroll { overflow-x: auto; }
+.scroll table { min-width: 940px; }
+.scroll tbody th { text-align: left; font-weight: 400; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule); }
+.scroll tr[data-selected] th, .scroll tr[data-selected] td { background: rgba(18, 36, 74, .6); }
+.symBtn { background: transparent; border: 0; padding: 4px 0; color: var(--text); font: 400 14px/1.4 var(--f-ui); cursor: pointer; }
+.symBtn:hover { color: var(--accent); }
+.symBtn[aria-pressed="true"] { color: var(--accent); }
+.hi { color: var(--text); }
+.cellNote { display: block; font-size: 11.5px; color: var(--text-3); }
+
+/* week wheel and bars */
+.breath { width: 100%; max-width: 440px; height: auto; display: block; margin: 0 auto; }
+.how p { color: var(--text-2); margin-top: var(--s-2); max-width: 66ch; }
+.pbars { width: 100%; max-width: 640px; height: auto; display: block; margin-top: var(--s-3); }
+
+/* on chain */
+.chainGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-3) var(--s-6); }
+.facts { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr); gap: 10px 20px; align-content: start; font-size: 14.5px; }
+.facts dt { color: var(--text-2); font-size: 14px; }
+.facts dd { color: var(--text); overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .phWrap { flex-wrap: wrap; }
+  .refp { font-size: 44px; }
+  .chainGrid { grid-template-columns: 1fr; }
+  .facts { grid-template-columns: 1fr; gap: 2px; }
+  .facts dd { margin-bottom: 10px; }
+  .tip { top: 30px; min-width: 190px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plot { transition: none; }
+}
