@@ -1,0 +1,38 @@
+{
+  "note": "Updated by hand after running each suite in full. `pnpm proof` renders PROOF.md from this file and stops when a contract count disagrees with the number of test functions in contracts/test.",
+  "suites": [
+    {
+      "id": "typescript",
+      "name": "TypeScript",
+      "covers": "SDK, risk model, Binance client, MCP server, desk",
+      "command": "pnpm test",
+      "passed": 499,
+      "failed": 0,
+      "skipped": 2,
+      "ranAt": "2026-10-08",
+      "note": "33 test files. The 2 skipped tests call the keyed Binance Web3 API and only run when BINANCE_WEB3_API_KEY is set."
+    },
+    {
+      "id": "contracts-unit",
+      "name": "Contracts, unit",
+      "covers": "calendar, Session Oracle, SessionAwareFeed",
+      "command": "cd contracts && forge test --no-match-path \"test/fork/*\"",
+      "passed": 57,
+      "failed": 0,
+      "skipped": 0,
+      "ranAt": "2026-10-08",
+      "note": "External contracts are mocks here (contracts/test/mocks/Mocks.sol)."
+    },
+    {
+      "id": "contracts-fork",
+      "name": "Contracts, fork of BSC mainnet",
+      "covers": "accounts, vault, guardian, feed against real mainnet state",
+      "command": "cd contracts && forge test --match-path \"test/fork/*\"",
+      "passed": 99,
+      "failed": 0,
+      "skipped": 0,
+      "ranAt": "2026-10-08",
+      "note": "Last full fork run. Forked at the chain head (no pinned block) through the default public RPC, https://bsc-rpc.publicnode.com."
+    }
+  ]
+}

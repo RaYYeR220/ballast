@@ -6,6 +6,8 @@ Fields: `sym` (bStock), `und` (underlying), `type`, `d0`/`d1` (last session day 
 
 Sources: Binance public klines (`/api/v3/klines`, bStock/USDT pairs) and underlying prices from Yahoo Finance (v8 chart endpoint, daily bars, split-adjusted).
 
+Built by `research/fetch_klines.py`, `research/fetch_yahoo.py` and `research/weekend.py`. The rest of the study (the liquidation scan, the weekend timing, the gap quantiles) and its data are in `research/`, and `python research/check_figures.py` recomputes every published figure, including the ones taken from this file. Any liquidation dataset that appears in this directory in another shape, for a chart for instance, is derived from `research/data/liquidations_moolah_bstock_ctx.json`.
+
 ## Backtest model
 
 `pnpm backtest` replays the windows through `packages/risk/src/backtest.ts` and writes `backtest-lltv75.json`. For each window a position is opened at `startLtv` on an LLTV-0.75 market. Worst move = `min(gap, max_dn, 0)`. Unprotected: liquidated if `startLtv / (1 + worst) > lltv`. Protected: before the close the planner repays down to HF 1.05 against the ticker's p99 gap for that window type (`config/bsc-mainnet.json`), then the same liquidation test runs on the reduced debt.
@@ -18,3 +20,11 @@ Assumptions (read these before quoting the numbers):
 - `long_weekend_holiday` is treated as a holiday window. Only the 12 underlyings with a configured gap buffer are replayed (697 of 3378 rows); the rest are skipped. One ~3 month sample (2026-06-12 to 2026-09-24).
 
 Result and trigger rate (`backtest-lltv75.json`): at startLtv 0.70 the shield fires in 652 of 697 windows (average repay 2.6% of debt) and liquidations drop from 5 to 2; at 0.72 it fires in all 697 (average repay 5.1%) and liquidations drop from 27 to 2. At 0.65 it fires in 24 windows with no liquidations either way. The buffer is a p99, so the shield is often active at high starting LTVs; the two remaining protected liquidations are moves beyond the buffer, both earnings nights: META (closure 2026-07-29 to 2026-07-30, gap -10.2%) and AAPL (2026-07-30 to 2026-07-31, gap -8.6%).
+
+## Inputs of PROOF.md
+
+`pnpm proof` renders `PROOF.md` from these two files and from `contracts/deployments/56.json`. Both are kept by hand.
+
+`proof-txs.json` - mainnet transactions worth showing, as a list of `{ "label", "txHash", "at", "note" }`: what the transaction is, its hash (0x and 64 hex digits), when it was mined as a UTC time such as `2026-10-09T19:02:11Z`, and an optional note (say so here when a transaction reverted on purpose). Add an entry only for a transaction that exists; the command stops on a malformed hash or date.
+
+`test-counts.json` - one entry per test suite: the command, the passed, failed and skipped counts, and the date of the last full run. Update it after running a suite in full. The command refuses to write the page when a contract count differs from the number of test functions in `contracts/test`.
