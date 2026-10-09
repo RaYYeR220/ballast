@@ -5,7 +5,11 @@
 //   tsx scripts/demo/fork-demo.ts identity     # optional, before Deploy.s.sol: registers the desk's ERC-8004
 //                                              # identity and prints its id (deploy with PUBLISHER_AGENT_ID=<id>)
 //   tsx scripts/demo/fork-demo.ts setup        # after Deploy.s.sol on the fork (AGENT_ID=<id> reuses the identity)
+//   tsx scripts/demo/fork-demo.ts freeze       # fix the Lista and Venus oracle prices and the Session Oracle's
+//                                              # reference feeds so the clock can be warped
+//                                              # (rehearsals of scripts/demo/mainnet.ts on a fork of mainnet)
 //   tsx scripts/demo/fork-demo.ts warp lead    # 59 min before the next regular close
+//   tsx scripts/demo/fork-demo.ts warp 2026-10-09T15:02:00Z   # or unix seconds
 //   tsx scripts/demo/fork-demo.ts warp end     # just past the guardian window
 //   tsx scripts/demo/fork-demo.ts automine off # stop mining: the desk's next send stays unmined (stuck-send drill)
 //   tsx scripts/demo/fork-demo.ts automine on  # mine what is pending and resume
@@ -25,6 +29,8 @@ import {
   moolahAbi,
   readGuardianJobs,
   accountState,
+  sessionOracleAbi,
+  symbolToBytes32,
   writes,
   type Deployment,
   type MarketParams,
@@ -35,12 +41,16 @@ import {
   createTestClient,
   createWalletClient,
   defineChain,
+  encodeAbiParameters,
   encodeFunctionData,
   erc20Abi,
   http,
+  keccak256,
+  pad,
   parseAbi,
   parseEventLogs,
   parseUnits,
+  toHex,
   type Address,
   type Hex,
   type PrivateKeyAccount,
@@ -60,6 +70,7 @@ const pub = createPublicClient({ chain, transport: http(RPC), cacheTime: 0 });
 const test = createTestClient({ chain, mode: "anvil", transport: http(RPC) });
 const E18 = 10n ** 18n;
 
+const venusMockAbi = parseAbi(["function getUnderlyingPrice(address vToken) view returns (uint256)", "function set(address vToken, uint256 p)"]);
 const priceSourceAbi = parseAbi(["function peek(address asset) view returns (uint256)", "function set(address asset, uint256 p)"]);
 const erc721Transfer = parseAbi(["event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"]);
 
@@ -94,7 +105,13 @@ async function fundFromWhale(token: Address, to: Address, amount: bigint) {
 // contracts/test/mocks/Mocks.sol, built by `forge build`) holding the prices read just before, so the
 // clock can move. It is never part of the desk and refuses any chain but the local fork.
 // -------------------------------------------------------------------------------------------------------
-async function freezeListaPrices(payer: PrivateKeyAccount) {
+/** FORK ONLY: writes mock.price[key] straight into storage (mapping at slot 0), so no transaction is needed. */
+async function setMapped(mock: Address, key: Address, value: bigint) {
+  const index = keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [key, 0n]));
+  await test.setStorageAt({ address: mock, index, value: pad(toHex(value), { size: 32 }) });
+}
+
+async function freezeListaPrices() {
   const art = JSON.parse(readFileSync(path.join(ROOT, "contracts", "out", "Mocks.sol", "MockPriceSource.json"), "utf8"));
   const code = art.deployedBytecode.object as Hex;
   const tokens: Address[] = [
@@ -117,13 +134,55 @@ async function freezeListaPrices(payer: PrivateKeyAccount) {
     }
   }
   for (const src of sources) await test.setCode({ address: src, bytecode: code });
-  const w = createWalletClient({ account: payer, chain, transport: http(RPC) });
   for (const [k, p] of prices) {
     const [src, t] = k.split("|") as [Address, Address];
-    const hash = await w.writeContract({ address: src, abi: priceSourceAbi, functionName: "set", args: [t, p] });
-    await pub.waitForTransactionReceipt({ hash });
+    await setMapped(src, t, p);
   }
   console.log(`  FORK ONLY: froze ${prices.size} Lista oracle prices behind a mock at ${sources.join(", ")}`);
+}
+
+// FORK ONLY, demo only: the same for Venus. Its oracle rejects stale feeds after a warp, and then the account
+// cannot be priced, borrowed against or judged healthy. The oracle's address gets a fixed-price mock
+// (MockVenusOracle from contracts/test/mocks/Mocks.sol) holding the prices read just before.
+async function freezeVenusPrices() {
+  const art = JSON.parse(readFileSync(path.join(ROOT, "contracts", "out", "Mocks.sol", "MockVenusOracle.json"), "utf8"));
+  const oracle = cfg.venus.oracle as Address;
+  const vTokens = Object.entries(cfg.venus as Record<string, string>)
+    .filter(([name]) => /^v[A-Z]/.test(name))
+    .map(([, a]) => a as Address);
+  const prices: [Address, bigint][] = [];
+  for (const v of vTokens) prices.push([v, await pub.readContract({ address: oracle, abi: venusMockAbi, functionName: "getUnderlyingPrice", args: [v] })]);
+  await test.setCode({ address: oracle, bytecode: art.deployedBytecode.object as Hex });
+  for (const [v, p] of prices) {
+    await setMapped(oracle, v, p);
+    // Venus also asks the oracle by underlying asset (same scale for these 18-decimal tokens).
+    await setMapped(oracle, await pub.readContract({ address: v, abi: parseAbi(["function underlying() view returns (address)"]), functionName: "underlying" }), p);
+  }
+  for (const [v, p] of prices) {
+    if ((await pub.readContract({ address: oracle, abi: venusMockAbi, functionName: "getUnderlyingPrice", args: [v] })) !== p) throw new Error(`the Venus mock did not take the price of ${v}`);
+  }
+  console.log(`  FORK ONLY: froze ${prices.length} Venus oracle prices behind a mock at ${oracle}`);
+}
+
+// FORK ONLY, demo only: the Session Oracle compares the on-chain price with a reference (a Chainlink equity
+// feed for most tickers) that only moves while the US market is open. A fork taken outside market hours and
+// warped into a regular session would read NOT_CONVERGED or REFERENCE_STALE for ever. Each ticker's feed
+// gets a mock (MockFreshAggregator) answering the on-chain per-share price as just updated: what an open,
+// converged market looks like to the oracle.
+async function freezeReferences(d: Deployment) {
+  const art = JSON.parse(readFileSync(path.join(ROOT, "contracts", "out", "Mocks.sol", "MockFreshAggregator.json"), "utf8"));
+  let pinned = 0;
+  for (const t of cfg.tickers as { symbol: string }[]) {
+    const sym = symbolToBytes32(t.symbol);
+    const ticker = await pub.readContract({ address: d.sessionOracle, abi: sessionOracleAbi, functionName: "ticker", args: [sym] });
+    if (!ticker.listed || BigInt(ticker.chainlink) === 0n) continue;
+    const [perShare, ok] = await pub.readContract({ address: d.sessionOracle, abi: sessionOracleAbi, functionName: "perSharePrice", args: [sym] });
+    if (!ok || perShare === 0n) continue;
+    await test.setCode({ address: ticker.chainlink, bytecode: art.deployedBytecode.object as Hex });
+    await test.setStorageAt({ address: ticker.chainlink, index: pad("0x0", { size: 32 }), value: pad(toHex(perShare), { size: 32 }) });
+    pinned += 1;
+  }
+  console.log(`  FORK ONLY: pinned ${pinned} Session Oracle reference feeds to the on-chain per-share prices (always fresh)`);
 }
 
 // FORK ONLY: the well-known anvil keys carry EIP-7702 delegations on BSC mainnet (sweeper contracts), and
@@ -165,7 +224,7 @@ async function setup(d: Deployment) {
   const usd1 = mp.loanToken;
   console.log(`agent ${agent.address}, user ${user.address}, head ${new Date((await head()) * 1000).toISOString()}`);
 
-  await freezeListaPrices(agent);
+  await freezeListaPrices();
 
   await plainEoa([agent.address, user.address]);
   const agentId = process.env.AGENT_ID ? BigInt(process.env.AGENT_ID) : await registerIdentity(d.external.identityRegistry, agent);
@@ -261,17 +320,25 @@ async function main() {
     console.log(`automine ${arg}${arg === "on" ? ": pending transactions mined" : ": transactions stay in the mempool until it is turned on again"}`);
     return;
   }
+  if (cmd === "freeze") {
+    await assertFork();
+    await freezeListaPrices();
+    await freezeVenusPrices();
+    await freezeReferences(loadDeployment(31337, { file: process.env.DEPLOYMENT_FILE }));
+    return;
+  }
+  if (cmd === "warp") {
+    await assertFork();
+    const now = await head();
+    if (arg === "lead") return warp(nextClose(now) - 59 * 60);
+    if (arg === "end") return warp(JSON.parse(readFileSync(OUT, "utf8")).end + 90);
+    if (arg && /^\d+$/.test(arg)) return warp(Number(arg));
+    if (arg && Number.isFinite(Date.parse(arg))) return warp(Math.floor(Date.parse(arg) / 1000));
+  }
   const d = loadDeployment(31337, { file: process.env.DEPLOYMENT_FILE });
   if (cmd === "setup") return setup(d);
   if (cmd === "status") return status(d);
-  if (cmd === "warp") {
-    const demo = JSON.parse(readFileSync(OUT, "utf8"));
-    const now = await head();
-    if (arg === "lead") return warp(nextClose(now) - 59 * 60);
-    if (arg === "end") return warp(demo.end + 90);
-    if (arg && /^\d+$/.test(arg)) return warp(Number(arg));
-  }
-  console.error("usage: fork-demo.ts identity | setup | warp lead | warp end | warp <unix> | automine on|off | status");
+  console.error("usage: fork-demo.ts identity | setup | freeze | warp lead | warp end | warp <unix or ISO time> | automine on|off | status");
   process.exit(2);
 }
 

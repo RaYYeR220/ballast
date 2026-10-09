@@ -67,3 +67,46 @@ contract MockOndoShares is IOndoSharesOracle {
         return (sValue[token], false);
     }
 }
+
+/// @dev Fork rehearsals only (scripts/demo/fork-demo.ts freeze): fixed prices at the Venus oracle's address,
+///      so the clock of a local fork can be warped without the real feeds reading as stale.
+contract MockVenusOracle {
+    /// @dev Keyed by vToken and by underlying asset alike: Venus asks for both.
+    mapping(address => uint256) public prices;
+
+    function set(address vTokenOrAsset, uint256 p) external {
+        prices[vTokenOrAsset] = p;
+    }
+
+    function getUnderlyingPrice(address vToken) external view returns (uint256) {
+        require(prices[vToken] != 0, "no price");
+        return prices[vToken];
+    }
+
+    function getPrice(address asset) external view returns (uint256) {
+        require(prices[asset] != 0, "no price");
+        return prices[asset];
+    }
+
+    function updatePrice(address) external {}
+
+    function updateAssetPrice(address) external {}
+}
+
+/// @dev Fork rehearsals only (scripts/demo/fork-demo.ts freeze): a reference feed at a fixed answer that always
+///      reads as just updated, so the Session Oracle's reference stays fresh while the fork's clock is warped.
+contract MockFreshAggregator is IAggregatorV3 {
+    int256 public answer;
+
+    function set(int256 a) external {
+        answer = a;
+    }
+
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
+
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
+        return (1, answer, block.timestamp, block.timestamp, 1);
+    }
+}
