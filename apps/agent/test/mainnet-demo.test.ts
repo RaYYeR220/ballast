@@ -4,18 +4,28 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { encodeFunctionData, erc20Abi, pad, parseEther, parseUnits, toHex, type Address, type Hex } from "viem";
 import {
+  GUARD_MIN_WINDOW_SEC,
+  GUARD_START_SLACK_SEC,
   MAX_GAS_WEI,
   SpendGuard,
+  addRiskWindow,
   amountOption,
   appendProof,
   bscScanTx,
   checkBinanceSwap,
+  checkRestore,
+  expectRefusal,
+  guardWindow,
   intOption,
+  lastJobId,
   minOut,
   parseArgs,
+  parseWhen,
   planVenusOpen,
   priorSpend,
   readProofs,
+  utc,
+  type ProofTx,
 } from "../../../scripts/demo/mainnet-lib";
 
 const OWNER = "0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf" as Address;
@@ -28,14 +38,18 @@ const MIN = 14_711_950_186_643_927n; // OUT less 1.5%
 
 describe("parseArgs", () => {
   it("is a dry run unless --send is given, and takes options and the fork RPC", () => {
-    expect(parseArgs(["open-venus"])).toEqual({ command: "open-venus", send: false, forkRpc: null, confirmMainnet: false, options: {} });
+    expect(parseArgs(["open-venus"])).toEqual({ command: "open-venus", send: false, forkRpc: null, confirmMainnet: false, again: false, noBinanceSim: false, options: {} });
     expect(parseArgs(["open-venus", "--send", "--fork-rpc", "http://127.0.0.1:8572", "--usdt", "5.6", "--confirm-mainnet"])).toEqual({
       command: "open-venus",
       send: true,
       forkRpc: "http://127.0.0.1:8572",
       confirmMainnet: true,
+      again: false,
+      noBinanceSim: false,
       options: { usdt: "5.6" },
     });
+    expect(parseArgs(["refused-restore", "--again", "--amount", "0.05"])).toMatchObject({ again: true, send: false, noBinanceSim: false, options: { amount: "0.05" } });
+    expect(parseArgs(["restore", "--no-binance-sim"]).noBinanceSim).toBe(true);
   });
 
   it("refuses a missing subcommand, stray words and options without a value", () => {
@@ -199,5 +213,79 @@ describe("planVenusOpen", () => {
     expect(() => planVenusOpen({ ...base, ltvBps: 5901 })).toThrow(/too close to the Venus collateral factor \(6000 bps\): at most 5900/);
     expect(() => planVenusOpen({ ...base, ltvBps: 0 })).toThrow();
     expect(() => planVenusOpen({ ...base, collateralTokens: 0.00001, ltvBps: 5000 })).toThrow(/too small/);
+  });
+});
+
+describe("times", () => {
+  const NOW = Date.UTC(2026, 9, 9, 15, 5) / 1000;
+  it("reads relative, unix and ISO times", () => {
+    expect(parseWhen("+10", NOW)).toBe(NOW + 600);
+    expect(parseWhen(String(NOW + 5), NOW)).toBe(NOW + 5);
+    expect(parseWhen("2026-10-09T15:15:00Z", NOW)).toBe(NOW + 600);
+    expect(parseWhen("2026-10-09T15:15Z", NOW)).toBe(NOW + 600);
+    expect(utc(NOW)).toBe("2026-10-09T15:05:00Z");
+    for (const bad of ["10", "soon", "2026-10-09 15:15", "2026-10-09T15:15:00+02:00", "+", "-5"]) expect(() => parseWhen(bad, NOW)).toThrow(/cannot read the time/);
+  });
+
+  it("finds the part of the session in which risk may be added", () => {
+    const openAt = Date.UTC(2026, 9, 9, 13, 30) / 1000;
+    const closeAt = Date.UTC(2026, 9, 9, 20, 0) / 1000;
+    expect(addRiskWindow({ openAt, closeAt, restoreDelay: 5400, horizon: 3600 })).toEqual({ from: openAt + 5400, until: closeAt - 3600 });
+    // A delay and a horizon that meet leave no window at all.
+    expect(addRiskWindow({ openAt, closeAt, restoreDelay: 3 * 3600, horizon: 3.5 * 3600 })).toBeNull();
+    expect(addRiskWindow({ openAt, closeAt, restoreDelay: 4 * 3600, horizon: 4 * 3600 })).toBeNull();
+  });
+});
+
+describe("checkRestore", () => {
+  const ok = { canAddRisk: true, reason: "OK", debtUsd: 2.99, addUsd: 0.05, collateralValueUsd: 5.6, maxLtvBps: 6000, venueLimitBps: 6000 };
+  it("passes inside both caps and reports the LTV after, rounded up", () => {
+    expect(checkRestore(ok)).toEqual({ ltvAfterBps: 5429 });
+  });
+  it("refuses when the oracle says no, with its reason", () => {
+    expect(() => checkRestore({ ...ok, canAddRisk: false, reason: "NOT_REGULAR" })).toThrow(/refuses added risk now \(NOT_REGULAR\)/);
+  });
+  it("refuses above the mandate cap or the venue limit", () => {
+    expect(() => checkRestore({ ...ok, addUsd: 0.5 })).toThrow(/above the mandate cap 6000/);
+    expect(() => checkRestore({ ...ok, addUsd: 0.5, maxLtvBps: 7000 })).toThrow(/venue's borrow limit 6000/);
+    expect(checkRestore({ ...ok, addUsd: 0.37 })).toEqual({ ltvAfterBps: 6000 });
+    expect(() => checkRestore({ ...ok, collateralValueUsd: 0 })).toThrow(/no priced collateral/);
+    expect(() => checkRestore({ ...ok, addUsd: 0 })).toThrow(/nothing to restore/);
+  });
+});
+
+describe("expectRefusal", () => {
+  it("accepts only the expected oracle reason", () => {
+    expect(expectRefusal({ name: "RestoreRefused", reason: "NOT_REGULAR" }, "NOT_REGULAR")).toBe("RestoreRefused(NOT_REGULAR)");
+    expect(() => expectRefusal(null, "NOT_REGULAR")).toThrow(/would SUCCEED/);
+    expect(() => expectRefusal({ name: "RestoreRefused", reason: "WINDOW_AHEAD" }, "NOT_REGULAR")).toThrow(/refused for WINDOW_AHEAD, not for NOT_REGULAR/);
+    expect(() => expectRefusal({ name: "ExceedsMandate" }, "NOT_REGULAR")).toThrow(/fails with ExceedsMandate/);
+    expect(() => expectRefusal({ name: "RestoreRefused" }, "NOT_REGULAR")).toThrow(/unknown reason/);
+  });
+});
+
+describe("guardian window", () => {
+  const NOW = Date.UTC(2026, 9, 9, 15, 5) / 1000;
+  const MONDAY_OPEN = Date.UTC(2026, 9, 12, 13, 30) / 1000;
+  const base = { now: NOW, start: NOW + 600, end: NOW + 600 + 3900, reopen: MONDAY_OPEN, minGrace: 3600 };
+  it("gives the expiry the guardian accepts: next open plus grace plus a margin", () => {
+    expect(guardWindow(base)).toEqual({ start: NOW + 600, end: NOW + 4500, expiredAt: MONDAY_OPEN + 3600 + 3600 });
+    expect(guardWindow({ ...base, marginSec: 0 }).expiredAt).toBe(MONDAY_OPEN + 3600);
+  });
+  it("refuses what the contract would refuse", () => {
+    expect(() => guardWindow({ ...base, end: base.start + GUARD_MIN_WINDOW_SEC - 1 })).toThrow(/at least one hour/);
+    expect(guardWindow({ ...base, end: base.start + GUARD_MIN_WINDOW_SEC }).end).toBe(base.start + 3600);
+    expect(() => guardWindow({ ...base, start: NOW - 3600, end: NOW - 1 })).toThrow(/ends in the past/);
+    // A start up to 5 minutes old is accepted at funding time; the sends take a while.
+    expect(() => guardWindow({ ...base, start: NOW - GUARD_START_SLACK_SEC + 119 })).toThrow(/too far in the past/);
+    expect(guardWindow({ ...base, start: NOW - GUARD_START_SLACK_SEC + 120 }).start).toBe(NOW - 180);
+    expect(() => guardWindow({ ...base, reopen: 0 })).toThrow(/no regular open/);
+  });
+  it("finds the last job id recorded for the chain", () => {
+    const p = (jobId: string | undefined, chainId = 56): ProofTx => ({ label: "x", txHash: `0x${"1".repeat(64)}`, at: "t", note: "n", chainId, ...(jobId === undefined ? {} : { jobId }) });
+    expect(lastJobId([], 56)).toBeNull();
+    expect(lastJobId([p("7"), p(undefined), p("9", 31337)], 56)).toBe(7n);
+    expect(lastJobId([p("7"), p("12"), p(undefined)], 56)).toBe(12n);
+    expect(lastJobId([p("abc")], 56)).toBeNull();
   });
 });

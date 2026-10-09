@@ -1,5 +1,6 @@
 // Pure parts of the mainnet demo CLI (scripts/demo/mainnet.ts): argument parsing, the spend and gas caps,
-// the proof file, the checks on what the Binance Trading API hands back, and the sizing of the Venus loan.
+// the proof file, the checks on what the Binance Trading API hands back, the sizing of the Venus loan, and
+// the checks before a restore, a refused restore and a guardian job.
 // Nothing here talks to a chain or an API, so all of it is unit-tested.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -16,10 +17,14 @@ export interface Cli {
   forkRpc: string | null;
   /** Required with --send on real BSC mainnet. */
   confirmMainnet: boolean;
+  /** Repeat a step that the proof file already records (restore, refused-restore, guardian-job). */
+  again: boolean;
+  /** Skip the Binance Transaction API simulation and go by eth_call alone. */
+  noBinanceSim: boolean;
   options: Record<string, string>;
 }
 
-const BOOLEAN_FLAGS = new Set(["send", "confirm-mainnet"]);
+const BOOLEAN_FLAGS = new Set(["send", "confirm-mainnet", "again", "no-binance-sim"]);
 
 export function parseArgs(argv: readonly string[]): Cli {
   const [command, ...rest] = argv;
@@ -41,7 +46,7 @@ export function parseArgs(argv: readonly string[]): Cli {
   }
   const forkRpc = options["fork-rpc"] ?? null;
   delete options["fork-rpc"];
-  return { command, send: flags.has("send"), forkRpc, confirmMainnet: flags.has("confirm-mainnet"), options };
+  return { command, send: flags.has("send"), forkRpc, confirmMainnet: flags.has("confirm-mainnet"), again: flags.has("again"), noBinanceSim: flags.has("no-binance-sim"), options };
 }
 
 /** A decimal option as token units; throws on anything that is not a plain positive decimal. */
@@ -112,6 +117,8 @@ export interface ProofTx {
   usdtSpent?: string;
   /** gas limit x gas price signed for (wei), for the gas cap. */
   feeWei?: string;
+  /** The guardian job this transaction created or funded. */
+  jobId?: string;
 }
 
 export const bscScanTx = (hash: string) => `https://bscscan.com/tx/${hash}`;
@@ -306,4 +313,107 @@ export function planVenusOpen(i: VenusOpenInput): VenusOpenPlan {
     shield,
     restoreUsd: shield.kind === "repay" ? shield.repayUsd : 0,
   };
+}
+
+// ------------------------------------------------------------------- time
+
+export const utc = (t: number) => new Date(t * 1000).toISOString().replace(".000Z", "Z");
+
+/** A point in time from the command line: "+<minutes>" from `now`, unix seconds, or an ISO time in UTC. */
+export function parseWhen(value: string, now: number): number {
+  if (/^\+\d{1,5}$/.test(value)) return now + Number(value.slice(1)) * 60;
+  if (/^\d{9,11}$/.test(value)) return Number(value);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z$/.test(value)) {
+    const t = Date.parse(value);
+    if (Number.isFinite(t)) return Math.floor(t / 1000);
+  }
+  throw new Error(`cannot read the time ${value}: use +<minutes>, unix seconds or an ISO time like 2026-10-09T15:15:00Z`);
+}
+
+/**
+ * When SessionOracle.canAddRisk can answer OK inside one regular session: from the open plus the restore
+ * delay until the close comes within the horizon (`until` is the first second that is refused again).
+ */
+export function addRiskWindow(i: { openAt: number; closeAt: number; restoreDelay: number; horizon: number }): { from: number; until: number } | null {
+  const from = i.openAt + i.restoreDelay;
+  const until = i.closeAt - i.horizon;
+  return from < until ? { from, until } : null;
+}
+
+// ---------------------------------------------------------------- restore
+
+export interface RestoreCheck {
+  canAddRisk: boolean;
+  /** The oracle's reason name. */
+  reason: string;
+  debtUsd: number;
+  addUsd: number;
+  collateralValueUsd: number;
+  /** The owner's mandate cap. */
+  maxLtvBps: number;
+  /** The venue's borrow limit (Venus collateral factor). */
+  venueLimitBps: number;
+}
+
+/** The owner's restore goes out only when the oracle allows added risk and the loan stays inside both caps. */
+export function checkRestore(i: RestoreCheck): { ltvAfterBps: number } {
+  if (!i.canAddRisk) throw new Error(`the Session Oracle refuses added risk now (${i.reason}): a restore would revert`);
+  if (!(i.collateralValueUsd > 0)) throw new Error("the account holds no priced collateral");
+  if (!(i.addUsd > 0)) throw new Error("nothing to restore");
+  // Rounded up, after float noise is trimmed (2.99 + 0.37 over 5.6 is exactly 6000 bps).
+  const ltvAfterBps = Math.ceil(Number((((i.debtUsd + i.addUsd) / i.collateralValueUsd) * 10_000).toFixed(6)));
+  if (ltvAfterBps > i.maxLtvBps) throw new Error(`LTV after the restore would be ${ltvAfterBps} bps, above the mandate cap ${i.maxLtvBps} bps`);
+  if (ltvAfterBps > i.venueLimitBps) throw new Error(`LTV after the restore would be ${ltvAfterBps} bps, above the venue's borrow limit ${i.venueLimitBps} bps`);
+  return { ltvAfterBps };
+}
+
+/**
+ * The refused restore is a proof only if the call fails for exactly the expected oracle reason. `decoded`
+ * is the decoded revert of the simulation, or null when the simulation went through.
+ */
+export function expectRefusal(decoded: { name: string; reason?: string } | null, expected: string): string {
+  if (!decoded) throw new Error(`the call would SUCCEED: the Session Oracle allows added risk now, so there is no refusal to prove (expected RestoreRefused(${expected}))`);
+  if (decoded.name !== "RestoreRefused") throw new Error(`the call fails with ${decoded.name}, not with RestoreRefused(${expected})`);
+  if (decoded.reason !== expected) throw new Error(`the restore is refused for ${decoded.reason ?? "an unknown reason"}, not for ${expected}`);
+  return `RestoreRefused(${expected})`;
+}
+
+// --------------------------------------------------------------- guardian
+
+/** BallastGuardian: the shortest window, and how old a start may be when the job is funded. */
+export const GUARD_MIN_WINDOW_SEC = 3600;
+export const GUARD_START_SLACK_SEC = 300;
+
+export interface GuardWindowInput {
+  now: number;
+  start: number;
+  end: number;
+  /** SessionCalendar.nextOpen(end); 0 when the calendar does not know. */
+  reopen: number;
+  /** BallastGuardian.minGrace. */
+  minGrace: number;
+  /** Added to the contract's minimum expiry. */
+  marginSec?: number;
+  /** How long the transactions up to the funding may take: the start must still be acceptable then. */
+  sendSec?: number;
+}
+
+/** The checks BallastGuardian makes when the job is funded, and the job expiry it will accept. */
+export function guardWindow(i: GuardWindowInput): { start: number; end: number; expiredAt: number } {
+  if (i.end <= i.now) throw new Error("the guardian window ends in the past");
+  if (i.end < i.start + GUARD_MIN_WINDOW_SEC) throw new Error("the guardian window must be at least one hour long");
+  if (i.start + GUARD_START_SLACK_SEC < i.now + (i.sendSec ?? 120)) {
+    throw new Error("the guardian window starts too far in the past: the start may be at most 5 minutes old when the job is funded");
+  }
+  if (i.reopen <= i.end) throw new Error("the calendar gives no regular open after the window: no expiry the guardian would accept");
+  return { start: i.start, end: i.end, expiredAt: i.reopen + i.minGrace + (i.marginSec ?? 3600) };
+}
+
+/** The guardian job the demo created last on this chain, from the proof file. */
+export function lastJobId(proofs: readonly ProofTx[], chainId: number): bigint | null {
+  for (let i = proofs.length - 1; i >= 0; i--) {
+    const p = proofs[i] as ProofTx;
+    if (p.chainId === chainId && p.jobId !== undefined && /^\d+$/.test(p.jobId)) return BigInt(p.jobId);
+  }
+  return null;
 }
