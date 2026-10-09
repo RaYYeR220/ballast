@@ -1,0 +1,8 @@
+{
+  "chainId": 56,
+  "txs": {
+    "register": { "tx": "0x751156e36180eb7fd6e46c990df0470b645c5959de352efd6a05a4b16dc37d47", "label": "The desk registers its ERC-8004 identity" },
+    "deploy": { "tx": "0x46fbea5bf2ba4053a700d17e1e520dd3b7b73c10ff30a1459f47be910d5a949f", "label": "First transaction of the deployment" },
+    "overlay": { "tx": "0x95177e85cae6071af68b7d6a11735c0515529352595a8b418cce3606fd432368", "label": "The desk's first overlay post" }
+  }
+}
