@@ -7,7 +7,7 @@
 | `DESK_API_URL` | https://34-185-146-173.sslip.io | live |
 | `MCP_URL` | https://34-185-146-173.sslip.io/mcp | live |
 | `REPO_URL` | https://github.com/RaYYeR220/ballast | public |
-| `VIDEO_URL` | | TODO-AT-DEPLOY |
+| `VIDEO_URL` | https://youtu.be/tlmdsj-TjeM | live, 3.5 minutes |
 
 Mainnet addresses and transactions are not in this table. They are in [PROOF.md](PROOF.md), which is rendered from the deployment file and the transaction list and cannot show what is not in them.
 

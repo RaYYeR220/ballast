@@ -1,7 +1,8 @@
 /* Outbound links that only exist once Ballast is deployed and published. Until a URL is set the page
    shows the label without a link, instead of a link to nowhere. */
-export const LINKS: { contracts: string | null; notebook: string | null; source: string | null } = {
-  contracts: process.env.NEXT_PUBLIC_CONTRACTS_URL ?? null,
-  notebook: process.env.NEXT_PUBLIC_NOTEBOOK_URL ?? null,
-  source: process.env.NEXT_PUBLIC_SOURCE_URL ?? null,
+export const LINKS: { contracts: string | null; notebook: string | null; video: string | null; source: string | null } = {
+  contracts: process.env.NEXT_PUBLIC_CONTRACTS_URL ?? "https://github.com/RaYYeR220/ballast/blob/main/PROOF.md",
+  notebook: process.env.NEXT_PUBLIC_NOTEBOOK_URL ?? "https://github.com/RaYYeR220/ballast/tree/main/research",
+  video: process.env.NEXT_PUBLIC_VIDEO_URL ?? "https://youtu.be/tlmdsj-TjeM",
+  source: process.env.NEXT_PUBLIC_SOURCE_URL ?? "https://github.com/RaYYeR220/ballast",
 };

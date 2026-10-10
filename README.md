@@ -6,6 +6,7 @@ It is built for BNB Chain: bStock collateral on Lista Lending and Venus.
 
 | You want | Read |
 |---|---|
+| The demo video, 3.5 minutes | https://youtu.be/tlmdsj-TjeM |
 | To check everything in five minutes | [JUDGES.md](JUDGES.md) |
 | No setup: one full cycle, step by step | https://ballast-desk.vercel.app/judge |
 | Addresses, transactions, test counts | [PROOF.md](PROOF.md), rendered from data by `pnpm proof` |

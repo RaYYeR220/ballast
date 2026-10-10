@@ -367,8 +367,9 @@ export default function Landing() {
             <h3>Proof</h3>
             <Link href="/evidence">Evidence</Link>
             <Link href="/judge">For judges: replay the cycle</Link>
-            <FootLink href={LINKS.contracts}>Contracts on BscScan</FootLink>
-            <FootLink href={LINKS.notebook}>Data notebook</FootLink>
+            <FootLink href={LINKS.video}>Watch the demo (3.5 min)</FootLink>
+            <FootLink href={LINKS.contracts}>Contracts and transactions</FootLink>
+            <FootLink href={LINKS.notebook}>The study: scripts and data</FootLink>
           </div>
           <div>
             <h3>Honesty</h3>
