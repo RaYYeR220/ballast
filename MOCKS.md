@@ -132,4 +132,4 @@ No mocks.
 - The live account is real and small: 5.60 USDT of TSLAB as collateral on Venus, a 0.01 USD1 guard job. Nothing about it is staged except its size and the conservative target above.
 - Desk notes come from a real language model when one is configured. They are commentary on events that already happened.
 
-What has run on mainnet is recorded in [PROOF.md](PROOF.md), and nowhere else. On 2026-10-09 that is the deployment, the desk's registration and overlays, one Venus account, an owner-called restore, one guard job and the desk's shield before the weekend close. A refused restore and a restore sent by the desk are not in it.
+What has run on mainnet is recorded in [PROOF.md](PROOF.md), and nowhere else. By 2026-10-10 that is the deployment, the desk's registration and overlays, one Venus account, an owner-called restore, one guard job, the desk's shield before the weekend close and a restore the contract refused on Saturday. A restore sent by the desk is not in it.

@@ -23,25 +23,34 @@ It is a recording made on a fork of BNB Chain against the deployed contracts, wi
 
 ## Minute 2: what happened on mainnet
 
-Open [PROOF.md](PROOF.md). Section 1 lists the eight contracts with BscScan and Sourcify links. Section 2 lists the transactions in time order, 20 of them by the evening of 2026-10-09. The ones to open:
+Open [PROOF.md](PROOF.md). Section 1 lists the eight contracts with BscScan and Sourcify links. Section 2 lists every transaction in time order. The ones to open:
 
-| When (UTC, 2026-10-09) | Sender | What to look for |
+| When (UTC; Fri is 2026-10-09, Sat is 2026-10-10) | Sender | What to look for |
 |---|---|---|
-| 13:37:55 | owner | The collateral buy: 5.60 USDT to TSLAB through the Binance Trading API. |
-| 13:37:58 | owner | `createVenusAccount` on the factory: account `0x64b08268efb8B266c43A1751dDbB91702CA925e3`, keeper = the desk. |
-| 15:08:42 | owner | `restore(0.05 USDT)` in the regular session. It succeeds: the Session Oracle said yes. |
-| 15:09:25 | owner | Guard job 56956 funded on the ERC-8183 kernel, 0.01 USD1. |
-| 16:16:05 and 16:16:09 | desk | The desk submits its evidence hash and settles the job; `BallastGuardian` pays it. The evidence file: https://34-185-146-173.sslip.io/evidence/56956 |
-| 19:03:48 | desk | `shieldRepay(0.18017 USDT)`, sent by the desk on its own 56 minutes before the weekend close. LTV 53.95% to 50.60%. |
+| Fri 13:37:55 | owner | The collateral buy: 5.60 USDT to TSLAB through the Binance Trading API. |
+| Fri 13:37:58 | owner | `createVenusAccount` on the factory: account `0x64b08268efb8B266c43A1751dDbB91702CA925e3`, keeper = the desk. |
+| Fri 15:08:42 | owner | `restore(0.05 USDT)` in the regular session. It succeeds: the Session Oracle said yes. |
+| Fri 15:09:25 | owner | Guard job 56956 funded on the ERC-8183 kernel, 0.01 USD1. |
+| Fri 16:16:05 and 16:16:09 | desk | The desk submits its evidence hash and settles the job; `BallastGuardian` pays it. The evidence file: https://34-185-146-173.sslip.io/evidence/56956 |
+| Fri 19:03:48 | desk | `shieldRepay(0.18017 USDT)`, sent by the desk on its own 56 minutes before the weekend close. LTV 53.95% to 50.60%. |
+| Sat 15:43:33 | owner | The same `restore(0.05 USDT)` while New York is closed. A failed transaction, on purpose: the contract answered `RestoreRefused(NOT_REGULAR)` and nothing moved. |
 
 The desk's address is `0xccD7f069275549793b2A8804A5691fCa6665D152` (ERC-8004 agent 368122), the owner's is `0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf`. BscScan shows the sender of each transaction.
 
-Not on mainnet yet, said plainly:
+The Saturday transaction is the one to look at twice. BscScan shows it as failed, and that is the product working: its input is byte for byte the input of Friday's allowed restore, and what differs is the market session. A receipt does not carry the revert data, so to see the reason, replay the call at its block on an endpoint that still serves it:
 
-- **The refused restore.** A `restore` sent while the US market is closed, mined and reverted on purpose. The owner sends it over the weekend; when it is in PROOF.md its revert data starts with `0x399ce621`, the selector of `RestoreRefused(uint8)`, and ends with the reason code `3`, `NOT_REGULAR`.
+```bash
+cast call 0x64b08268efb8B266c43A1751dDbB91702CA925e3 "restore(uint256)" 50000000000000000 \
+  --from 0xE507125d7F8aE8f482B9F55a1b07Abe58b2564Bf --block 126853796 --rpc-url https://bsc.drpc.org
+```
+
+It fails with `0x399ce621` followed by `3`: the selector of `RestoreRefused(uint8)` and the reason code `NOT_REGULAR`.
+
+Not on mainnet, said plainly:
+
 - **The desk's own restore.** The contract allows it from Monday 12 October, 15:00 UTC, at the earliest. That is after the submission deadline, so it is not part of this submission.
 
-You can ask the oracle the question behind both at any time:
+You can ask the oracle the question behind every restore at any time:
 
 ```bash
 cast call 0x8Fc983D9cC9880e0FbBcd7F48304A175b4055388 "canAddRisk(bytes32)(bool,uint8)" \
