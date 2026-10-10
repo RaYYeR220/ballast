@@ -297,6 +297,8 @@ export async function startDesk(env: Record<string, string | undefined> = proces
     gas,
     // One key, one transaction at a time: a post that can wait stands back for a shield.
     busy: () => keeper.shieldBusy(),
+    refMoveBps: config.refMoveBps,
+    refMinIntervalSec: config.refMinIntervalSec,
     log,
   });
   const keeper: Keeper = new Keeper({ deployment, reads: chainKeeperReads(client, deployment), sender: ledgerSender(chainSender, gasBook, "keeper"), feed, gas, log, targetHfAfterGap: config.targetHfAfterGap });
@@ -356,6 +358,9 @@ export async function startDesk(env: Record<string, string | undefined> = proces
         dryRun: config.dryRun,
         // Desk policy: the health the keeper keeps after the coming gap.
         targetHfAfterGap: config.targetHfAfterGap,
+        // Desk policy: when a moved reference (tickers without a Chainlink feed) is posted again.
+        refMoveBps: config.refMoveBps,
+        refMinIntervalSec: config.refMinIntervalSec,
         startedAt: new Date(startedAt).toISOString(),
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
         feedSeq: feed.list({ limit: 1 })[0]?.seq ?? 0,

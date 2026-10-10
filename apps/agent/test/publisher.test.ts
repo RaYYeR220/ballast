@@ -136,7 +136,12 @@ interface Harness {
   earnings: { json: unknown; broken: boolean };
 }
 
-async function harness(tickers: TickerOnChain[], at = REGULAR_AT, session: PublisherSnapshot["session"] = "REGULAR"): Promise<Harness> {
+async function harness(
+  tickers: TickerOnChain[],
+  at = REGULAR_AT,
+  session: PublisherSnapshot["session"] = "REGULAR",
+  policy: { refMoveBps?: number; refMinIntervalSec?: number; params?: typeof params } = {},
+): Promise<Harness> {
   const state = { at, session, tickers };
   const status = new Map<Address, AssetStatus | Error>();
   const dyn = new Map<Address, RwaDynamic | Error>();
@@ -155,13 +160,15 @@ async function harness(tickers: TickerOnChain[], at = REGULAR_AT, session: Publi
   };
   const publisher = new Publisher({
     deployment: d,
-    reads: { snapshot: async () => ({ at: state.at, session: state.session, params, tickers: state.tickers }) },
+    reads: { snapshot: async () => ({ at: state.at, session: state.session, params: policy.params ?? params, tickers: state.tickers }) },
     rwa: {
       assetStatus: async (_chain, a) => answer(status, a),
       dynamic: async (_chain, a) => answer(dyn, a),
     },
     sender,
     feed,
+    ...(policy.refMoveBps === undefined ? {} : { refMoveBps: policy.refMoveBps }),
+    ...(policy.refMinIntervalSec === undefined ? {} : { refMinIntervalSec: policy.refMinIntervalSec }),
     earnings: async () => {
       if (earnings.broken) throw new Error("Unexpected token } in JSON");
       return parseEarnings(earnings.json);
@@ -613,6 +620,83 @@ describe("Publisher", () => {
       h2.state.at += 1800; // maxRefAge / 2
       await h2.publisher.tick();
       expect(h2.sender.sent).toHaveLength(2);
+    });
+  });
+
+  describe("reference policy (tickers without a Chainlink feed)", () => {
+    const CRCL_ONDO = TOKENS.CRCL!.ondo;
+    /** Moves the reference print and runs the next tick, ten minutes on. Returns how many posts there are now. */
+    const next = async (price: string) => {
+      h.dyn.set(CRCL_ONDO, dynamic({ price }));
+      h.state.at += 600;
+      await h.publisher.tick();
+      return h.sender.sent.length;
+    };
+    const lastReason = () => (h.feed.list({ kind: "publish" })[0]!.data as { reasons: Record<string, string> }).reasons.CRCL;
+    const lastRef = () => h.sender.sent.at(-1)!.overlays[0]!.referencePrice;
+
+    it("by default posts a reference again once it has moved more than 20 bps", async () => {
+      h = await harness([ticker("CRCL")]);
+      await h.publisher.tick(); // 100.25
+      expect(await next("100.46")).toBe(1); // 20 bps: not more than the threshold
+      expect(await next("100.47")).toBe(2); // 21 bps
+      expect(lastReason()).toBe("reference moved");
+      expect(lastRef()).toBe(10_047_000_000n);
+      // No minimum interval by default: the very next tick may post again, measured from the reference just posted.
+      expect(await next("100.25")).toBe(3);
+      expect(await next("100.40")).toBe(3);
+    });
+
+    it("waits for the configured move", async () => {
+      h = await harness([ticker("CRCL")], REGULAR_AT, "REGULAR", { refMoveBps: 100 });
+      await h.publisher.tick();
+      expect(await next("100.75")).toBe(1); // 49 bps: a post under the default
+      expect(await next("101.25")).toBe(1); // 99 bps
+      expect(await next("101.27")).toBe(2); // 101 bps
+      expect(lastReason()).toBe("reference moved");
+      expect(lastRef()).toBe(10_127_000_000n);
+    });
+
+    it("does not post a moved reference sooner than the minimum interval after the symbol's last post", async () => {
+      h = await harness([ticker("CRCL")], REGULAR_AT, "REGULAR", { refMinIntervalSec: 1800 });
+      await h.publisher.tick();
+      expect(await next("100.80")).toBe(1); // +600 s: moved 54 bps, held back
+      expect(await next("101.00")).toBe(1); // +1200 s
+      expect(await next("101.00")).toBe(2); // +1800 s: the interval is over
+      expect(lastReason()).toBe("reference moved");
+      expect(lastRef()).toBe(10_100_000_000n);
+      // The interval starts again at that post.
+      expect(await next("100.25")).toBe(2);
+      expect(await next("100.25")).toBe(2);
+      expect(await next("100.25")).toBe(3);
+    });
+
+    it("posts a flag change at once, inside the minimum interval, with the reference of the moment", async () => {
+      h = await harness([ticker("CRCL")], REGULAR_AT, "REGULAR", { refMinIntervalSec: 3600, refMoveBps: 250 });
+      await h.publisher.tick();
+      h.status.set(TOKENS.CRCL!.bStock, { openState: false, marketStatus: null, reasonCode: "ASSET_PAUSED", reasonMsg: "merger" });
+      expect(await next("100.90")).toBe(2);
+      expect(lastReason()).toMatch(/^flags 0 -> /);
+      expect(lastRef()).toBe(10_090_000_000n);
+    });
+
+    it("does not delay the maxRefAge refresh or the renewal of an expiring overlay", async () => {
+      // maxRefAge 3600: the reference is refreshed after 1800 s, although a moved one would wait 3600 s.
+      h = await harness([ticker("CRCL")], REGULAR_AT, "REGULAR", { refMinIntervalSec: 3600, params: { ...params, maxRefAge: 3600 } });
+      await h.publisher.tick();
+      expect(await next("100.80")).toBe(1);
+      expect(await next("100.80")).toBe(1);
+      expect(await next("100.80")).toBe(2);
+      expect(lastReason()).toBe("reference refresh");
+
+      // An overlay with under 30 minutes left is renewed whatever the interval says.
+      const at = REGULAR_AT;
+      const expiring = { validUntil: at + 1700, nextEarnings: 0, flags: 0, ondoMultiplier: 1_004n * 10n ** 15n, referencePrice: 0n, postedAt: at - 600 };
+      h = await harness([ticker("CRCL", { overlay: expiring, lastReference: { price: 10_025_000_000n, postedAt: at - 600 } })], at, "REGULAR", { refMinIntervalSec: 3600 });
+      h.dyn.set(CRCL_ONDO, dynamic({ price: "100.80" }));
+      await h.publisher.tick();
+      expect(h.sender.sent).toHaveLength(1);
+      expect(lastReason()).toBe("expiring");
     });
   });
 

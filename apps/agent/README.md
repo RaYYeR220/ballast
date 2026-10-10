@@ -52,6 +52,8 @@ deterministic code bounded by the Ballast contracts; the LLM only writes desk no
 | `FORK_TICK_SEC` | unset | fork only (`CHAIN_ID=31337`): every loop runs at this interval |
 | `MIN_BNB_BALANCE` | `0.003` | alert when the desk key holds less BNB than this |
 | `TARGET_HF_AFTER_GAP` | `1.05` | desk policy: the health the desk keeps after the coming gap (1.01 to 2.0) |
+| `REF_MOVE_BPS` | `20` | desk policy, tickers without a Chainlink feed: post a new reference once the print has moved more than this many bps from the posted one (5 to 250) |
+| `REF_MIN_INTERVAL_SEC` | `0` | desk policy: never post a symbol only because its reference moved sooner than this after its last post (0 to 3600) |
 | `MAX_GAS_PRICE_GWEI` | `1` | the sender never signs above this gas price (BSC gas is a small fraction of a gwei) |
 | `RECEIPT_TIMEOUT_SEC` | `20` | wait for a receipt this long before replacing a transaction (BSC blocks are sub-second) |
 | `RECEIPT_LAG_SEC` | `45` | how long a receipt may trail a used nonce (load-balanced RPCs) before the nonce is read as gone to someone else |
@@ -110,6 +112,15 @@ key must have one sender at a time. Running without `--agent-id` always mints a 
   back at this value; a loan already above it is left alone ("survives the gap"). Shield and restore
   plans use the same value, and `/health` and the startup line show it. The default, 1.05, shields only
   loans close to their limit; a higher value shields earlier and repays more.
+- `REF_MOVE_BPS` and `REF_MIN_INTERVAL_SEC` are the publisher's policy for tickers without a Chainlink
+  feed, whose reference price the desk posts itself. Every post is a transaction, so they trade gas
+  for freshness: a reference is posted again when the print has moved more than `REF_MOVE_BPS` from the
+  posted one, and no sooner than `REF_MIN_INTERVAL_SEC` after the symbol's last post. A staler reference
+  means `canAddRisk` answers NOT_CONVERGED for those tickers more often: the safe side. Flags, earnings,
+  the periodic reference refresh (half the oracle's `maxRefAge`), the heartbeat and an expiring overlay
+  are never delayed. The contract's rules stay the bound: a posted reference must be within the oracle's
+  deviation limit of the on-chain per-share price, and the convergence tolerance is the oracle's own.
+  `/health` and the startup line show both values.
 - A liquidated account is no longer managed. The desk records the seizure on-chain with
   `recordLiquidation()` once and then leaves the account alone; the owner takes it from there.
 - Shield amounts for the restore cycle come from the receipt's `Shielded` logs. Repays are sized against

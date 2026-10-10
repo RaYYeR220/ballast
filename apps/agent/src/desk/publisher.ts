@@ -30,8 +30,13 @@ export const VALIDITY_SEC = 5.5 * 3600;
 export const BACKOFF_SEC = 30 * 60;
 /** During the regular session, refresh the reference of a ticker without Chainlink after half the oracle's maxRefAge (at least one tick)... */
 export const refRefreshSec = (maxRefAge: number) => Math.max(TICK_SEC, Math.floor(maxRefAge / 2));
-/** ...or as soon as the print moved this far from the last one (a third of the oracle's convergence band). */
+/**
+ * ...or as soon as the print moved further than this from the last one. Desk policy (REF_MOVE_BPS); the
+ * default is a third of the oracle's convergence band.
+ */
 export const REF_MOVE_BPS = 20;
+/** Desk policy (REF_MIN_INTERVAL_SEC): the shortest time between two posts of a symbol made only because its reference moved. */
+export const REF_MIN_INTERVAL_SEC = 0;
 /** No reference this close to the regular close: the transaction could land after it and revert the batch. */
 export const REF_CLOSE_MARGIN_SEC = 300;
 /** Binance's chain id for the bStock and Ondo token addresses (also used on a fork of BSC). */
@@ -332,7 +337,13 @@ interface Last {
 /** A posted overlay with under 30 min of validity left (or none): it has to be renewed whatever else is going on. */
 const expiringSoon = (last: Last, at: number) => last.postedAt !== 0 && last.validUntil - at < 1800;
 
-function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: number): string | null {
+/** When a moved reference alone is worth a transaction. Nothing else is held back by it. */
+interface RefPolicy {
+  moveBps: number;
+  minIntervalSec: number;
+}
+
+function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: number, ref: RefPolicy): string | null {
   if (last.postedAt === 0) return "first post";
   if (o.flags !== last.flags) return `flags ${last.flags} -> ${o.flags}`;
   if (o.nextEarnings !== last.nextEarnings) return `nextEarnings ${last.nextEarnings} -> ${o.nextEarnings}`;
@@ -340,7 +351,7 @@ function dueReason(last: Last, o: Built["overlay"], at: number, refreshSec: numb
   if (o.referencePrice !== 0n) {
     if (last.refPrice === 0n) return "first reference";
     if (at - last.refAt >= refreshSec) return "reference refresh";
-    if (devBps(o.referencePrice, last.refPrice) > REF_MOVE_BPS) return "reference moved";
+    if (devBps(o.referencePrice, last.refPrice) > ref.moveBps && at - last.postedAt >= ref.minIntervalSec) return "reference moved";
   }
   if (at - last.postedAt >= HEARTBEAT_SEC) return "heartbeat";
   if (expiringSoon(last, at)) return "expiring";
@@ -364,6 +375,17 @@ export interface PublisherOptions {
    * next tick, unless an overlay is about to expire.
    */
   busy?: () => boolean;
+  /**
+   * Desk policy for tickers without a Chainlink feed: post a new reference once the print has moved more
+   * than this many basis points from the last posted one. Default REF_MOVE_BPS (20).
+   */
+  refMoveBps?: number;
+  /**
+   * Desk policy: never post a symbol only because its reference moved sooner than this after its last post.
+   * Flags, earnings, the multiplier, the first reference, the maxRefAge refresh, the heartbeat and an expiring
+   * overlay are not delayed. Default 0.
+   */
+  refMinIntervalSec?: number;
   log?: (line: string) => void;
 }
 
@@ -452,7 +474,10 @@ export class Publisher {
       const nextEarnings = this.#earnings ? nextEarningsFor(this.#earnings, t.symbol, snap.at) : last.nextEarnings;
       const built = buildOverlay(t, bStock.value, ondo, snap, nextEarnings);
       for (const f of built.findings) await finding(t.symbol, f);
-      const reason = dueReason(last, built.overlay, snap.at, refRefreshSec(snap.params.maxRefAge));
+      const reason = dueReason(last, built.overlay, snap.at, refRefreshSec(snap.params.maxRefAge), {
+        moveBps: this.#o.refMoveBps ?? REF_MOVE_BPS,
+        minIntervalSec: this.#o.refMinIntervalSec ?? REF_MIN_INTERVAL_SEC,
+      });
       if (reason) due.push({ symbol: t.symbol, overlay: built.overlay, reason, expiring: expiringSoon(last, snap.at) });
     }
     this.#findings = seen;

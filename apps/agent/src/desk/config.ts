@@ -82,6 +82,10 @@ export interface DeskConfig {
   readonly minBnbBalance: number;
   /** Desk policy: the health the keeper keeps after the coming gap (shield and restore plans). */
   readonly targetHfAfterGap: number;
+  /** Desk policy: a reference that moved more than this many bps from the posted one is posted again. */
+  readonly refMoveBps: number;
+  /** Desk policy: the shortest time between two posts of a symbol made only because its reference moved. */
+  readonly refMinIntervalSec: number;
   /** The sender never signs above this gas price. */
   readonly maxGasPriceGwei: number;
   /** How long the sender waits for a receipt before replacing a transaction. */
@@ -208,6 +212,10 @@ const envSchema = z.object({
   MIN_BNB_BALANCE: numberVar(0.003).refine((n) => Number.isFinite(n) && n >= 0, "must be a non-negative amount"),
   // Desk policy: the keeper shields when health after the coming gap would fall below this.
   TARGET_HF_AFTER_GAP: numberVar(1.05).refine((n) => Number.isFinite(n) && n >= 1.01 && n <= 2, "must be a health factor from 1.01 to 2.0"),
+  // Desk policy for tickers without a Chainlink feed: how far the reference print may drift before it is
+  // posted again, and how soon after a symbol's last post a moved reference alone may cause another one.
+  REF_MOVE_BPS: numberVar(20).refine((n) => Number.isInteger(n) && n >= 5 && n <= 250, "must be a whole number of basis points from 5 to 250"),
+  REF_MIN_INTERVAL_SEC: numberVar(0).refine((n) => Number.isInteger(n) && n >= 0 && n <= 3600, "must be a whole number of seconds from 0 to 3600"),
   // Sized for BSC: sub-second blocks, gas at a small fraction of a gwei.
   MAX_GAS_PRICE_GWEI: numberVar(1).refine((n) => Number.isFinite(n) && n > 0 && n <= 1000, "must be a gas price in gwei, above 0 and at most 1000"),
   RECEIPT_TIMEOUT_SEC: numberVar(20).refine((n) => Number.isFinite(n) && n >= 5 && n <= 600, "must be between 5 and 600 seconds"),
@@ -340,6 +348,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     `webOrigin=${e.WEB_ORIGIN ?? "none"}`,
     `notes=${e.DESK_NOTES}`,
     `targetHf=${e.TARGET_HF_AFTER_GAP}`,
+    `refMove=${e.REF_MOVE_BPS}bps`,
+    `refMinInterval=${e.REF_MIN_INTERVAL_SEC}s`,
     `dryRun=${e.DRY_RUN}`,
   ].join(" ");
 
@@ -365,6 +375,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     forkTickSec: e.FORK_TICK_SEC ?? null,
     minBnbBalance: e.MIN_BNB_BALANCE,
     targetHfAfterGap: e.TARGET_HF_AFTER_GAP,
+    refMoveBps: e.REF_MOVE_BPS,
+    refMinIntervalSec: e.REF_MIN_INTERVAL_SEC,
     maxGasPriceGwei: e.MAX_GAS_PRICE_GWEI,
     receiptTimeoutSec: e.RECEIPT_TIMEOUT_SEC,
     receiptLagSec: e.RECEIPT_LAG_SEC,

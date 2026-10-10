@@ -34,6 +34,14 @@ describe("loadConfig", () => {
     expect([c.maxGasPriceGwei, c.receiptTimeoutSec, c.maxBumps, c.maxFeeBnbPerHour]).toEqual([1, 20, 4, 0.003]);
     expect(c.receiptLagSec).toBe(45);
     expect(c.targetHfAfterGap).toBe(1.05);
+    expect([c.refMoveBps, c.refMinIntervalSec]).toEqual([20, 0]);
+    const ref = loadConfig({ ...base, REF_MOVE_BPS: "40", REF_MIN_INTERVAL_SEC: "1800" });
+    expect([ref.refMoveBps, ref.refMinIntervalSec]).toEqual([40, 1800]);
+    expect(ref.describe()).toContain(" refMove=40bps refMinInterval=1800s ");
+    expect([loadConfig({ ...base, REF_MOVE_BPS: "5" }).refMoveBps, loadConfig({ ...base, REF_MOVE_BPS: "250" }).refMoveBps]).toEqual([5, 250]);
+    expect([loadConfig({ ...base, REF_MIN_INTERVAL_SEC: "0" }).refMinIntervalSec, loadConfig({ ...base, REF_MIN_INTERVAL_SEC: "3600" }).refMinIntervalSec]).toEqual([0, 3600]);
+    for (const bad of ["4", "251", "20.5", "abc"]) expect(issuesOf({ ...base, REF_MOVE_BPS: bad })[0]).toMatch(/^REF_MOVE_BPS/);
+    for (const bad of ["-1", "3601", "1.5", "soon"]) expect(issuesOf({ ...base, REF_MIN_INTERVAL_SEC: bad })[0]).toMatch(/^REF_MIN_INTERVAL_SEC/);
     expect(loadConfig({ ...base, TARGET_HF_AFTER_GAP: "1.3" }).targetHfAfterGap).toBe(1.3);
     expect(loadConfig({ ...base, TARGET_HF_AFTER_GAP: "1.3" }).describe()).toContain(" targetHf=1.3 ");
     for (const bad of ["1", "2.01", "0", "abc"]) expect(issuesOf({ ...base, TARGET_HF_AFTER_GAP: bad })[0]).toMatch(/^TARGET_HF_AFTER_GAP/);
@@ -214,7 +222,7 @@ describe("secret handling", () => {
   it("describes the config in one safe line", () => {
     expect(configs[0]!.describe()).toBe(
       `chain=56 (bsc) rpc=https://bsc-mainnet.example.org/[redacted] signer=private key binance=keyed ` +
-        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto targetHf=1.05 dryRun=true`,
+        `deployment=${configs[0]!.deploymentFile} data=${configs[0]!.dataDir} agent=127.0.0.1:9000 http=127.0.0.1:8787 x402Cap=$0.5/day x402Earnings=off webOrigin=none notes=auto targetHf=1.05 refMove=20bps refMinInterval=0s dryRun=true`,
     );
     expect(configs[1]!.describe()).toContain("signer=keystore ");
     expect(configs[1]!.describe()).toContain("binance=keyless");
