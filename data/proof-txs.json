@@ -158,5 +158,13 @@
     "note": "sent by the desk agent on its own; debt 3.0101 to 2.8299 USDT, LTV 53.95% to 50.60%, health after a 5.51% weekend gap 1.30 (the desk's target); simulated through the Binance Transaction API before sending",
     "step": "shield",
     "chainId": 56
+  },
+  {
+    "label": "Owner calls restore while the market is closed: reverts with RestoreRefused(NOT_REGULAR), on purpose",
+    "txHash": "0x0b5e3726ad6983adff3a60266a6ed4ad1d84be017b4b43c23ae46e43147d1318",
+    "at": "2026-10-10T15:43:33Z",
+    "note": "restore(0.0500 USDT) sent while the Session Oracle refuses added risk | REVERTED as expected: RestoreRefused(NOT_REGULAR): restore refused by the Session Oracle: NOT_REGULAR (the US market is not in its regular session)",
+    "chainId": 56,
+    "step": "restore-refused"
   }
 ]
